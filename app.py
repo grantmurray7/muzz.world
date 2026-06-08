@@ -17,15 +17,15 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "DefaultPassword123!")
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
-# Initialize Upstash Redis Client synchronously from environment variables
+# Initialize Upstash Redis Client
 redis = Redis.from_env()
-
-# Async Non-Blocking Logging Queue
 log_queue = queue.Queue()
 
-# Trading Target Setup
+# --- Hard Safety Bounds ---
 SYMBOL = 'SOLUSDT'
-INTERVAL = 10  # strict 10-second ticker execution
+INTERVAL = 10
+MAX_TRADE_USDT = 50.00  # Hard ceiling per single trade allocation
+INSTANCE_ID = str(uuid.uuid4())[:8]
 
 # --- Authentication Guard ---
 @app.before_request
@@ -34,15 +34,13 @@ def require_login():
     if request.endpoint not in allowed_routes and not session.get('logged_in'):
         return redirect(url_for('login'))
 
-# --- Non-Blocking System Logging Utility ---
 def log_activity(msg, skip_db=False):
     timestamp = time.strftime('%H:%M:%S')
-    log_line = f"[{timestamp}] {msg}"
+    log_line = f"[{timestamp}] [{INSTANCE_ID}] {msg}"
     print(log_line)
     if not skip_db:
         log_queue.put(log_line)
 
-# --- Isolated Background Thread Worker for Upstash Network Submissions ---
 def redis_log_worker():
     while True:
         log_line = log_queue.get()
@@ -50,17 +48,64 @@ def redis_log_worker():
             redis.lpush('bot_logs', log_line)
             redis.ltrim('bot_logs', 0, 99)
         except Exception as e:
-            print(f"Background Upstash sync dropped a line: {e}")
+            print(f"Logging fail to Redis: {e}")
         finally:
             log_queue.task_done()
 
-# Launch the network logger worker thread
 Thread(target=redis_log_worker, daemon=True).start()
+
+# --- Truth Reconciliation Engine ---
+def reconcile_state_against_binance(client):
+    """Forces reality check against Binance data before executing logic."""
+    log_activity("Running core truth reconciliation step...")
+    try:
+        # 1. Fetch exact wallet values
+        usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
+        sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
+        
+        redis.set('balance_usdt', str(usdt_bal))
+        redis.set('balance_sol', str(sol_bal))
+        
+        # 2. Check for active open working orders
+        open_orders = client.get_open_orders(symbol=SYMBOL)
+        if open_orders:
+            log_activity(f"CRITICAL: Open working orders found on exchange! Forcing error lockout state.")
+            redis.set('engine_state', 'ERROR_LOCKOUT')
+            return False
+
+        # 3. Pull last trade execution to capture true mathematical entry basis
+        my_trades = client.get_my_trades(symbol=SYMBOL, limit=1)
+        
+        if my_trades:
+            last_trade = my_trades[0]
+            is_buyer = last_trade['isBuyer']
+            exec_price = float(last_trade['price'])
+            exec_qty = float(last_trade['qty'])
+            
+            # If our last action was a BUY and we still hold at least that much SOL
+            if is_buyer and sol_bal >= (exec_qty * 0.99):
+                log_activity(f"Reconciliation: Active position verified. Entry basis match: ${exec_price}")
+                redis.set('position_active', 'true')
+                redis.set('purchase_price', str(exec_price))
+                redis.set('bot_tracked_qty', str(exec_qty))
+                return True
+                
+        # Default fallback to cash tracking mode
+        log_activity("Reconciliation: No active bot holdings detected. Set to Cash Mode.")
+        redis.set('position_active', 'false')
+        redis.delete('purchase_price')
+        redis.delete('bot_tracked_qty')
+        return True
+        
+    except Exception as e:
+        log_activity(f"Reconciliation Engine Failure: {e}")
+        redis.set('engine_status', "Reconcile Error")
+        return False
 
 # --- Autonomous Strategy Background Loop ---
 def run_trading_bot():
     if not BINANCE_API_KEY or not BINANCE_API_SECRET:
-        print("API keys not set. The background execution loop has halted.")
+        print("API keys missing from environment profiles.")
         return
 
     proxy_url = os.environ.get("BINANCE_PROXY")
@@ -73,27 +118,28 @@ def run_trading_bot():
         requests_params['proxies'] = {'http': proxy_url, 'https': proxy_url}
 
     client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
-    log_activity("Core engine initiated with SOCKS5 configuration. Monitoring SOL/USDT at 10s intervals.")
+    
+    # Run absolute validation on startup/redeploy instance instantiation
+    if not reconcile_state_against_binance(client):
+        log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
+        return
 
     last_logged_thought = ""
 
     while True:
         try:
-            bot_running = redis.get('bot_running') == 'true'
-            
-            try:
-                usdt_bal = client.get_asset_balance(asset='USDT')['free']
-                sol_bal = client.get_asset_balance(asset='SOL')['free']
-                redis.set('balance_usdt', str(usdt_bal))
-                redis.set('balance_sol', str(sol_bal))
-                redis.set('engine_status', 'Connected & Syncing')
-            except Exception as e:
-                log_activity(f"Binance Connect Error: {e}")
-                redis.set('engine_status', f"Binance Connect Error")
+            # --- LOCKING SYSTEM: Prevent multiple container workers executing trades simultaneously ---
+            # Set a 15-second expiration lock unique to this thread instance
+            lock_acquired = redis.set('trading_execution_lock', INSTANCE_ID, nx=True, ex=15)
+            if not lock_acquired and redis.get('trading_execution_lock') != INSTANCE_ID:
+                print(f"[{time.strftime('%H:%M:%S')}] [{INSTANCE_ID}] Standby: Secondary engine worker detected. Idling execution loop.")
                 time.sleep(INTERVAL)
                 continue
+                
+            # Refresh lock lease to secure execution runtime window
+            redis.set('trading_execution_lock', INSTANCE_ID, ex=15)
 
-            if not bot_running:
+            if redis.get('bot_running') != 'true':
                 log_activity("Trading paused. Loop idling.", skip_db=True)
                 time.sleep(INTERVAL)
                 continue
@@ -103,8 +149,8 @@ def run_trading_bot():
             redis.set('current_sol_price', str(current_price))
 
             position_active = redis.get('position_active') == 'true'
-            purchase_price = redis.get('purchase_price')
-            purchase_price = float(purchase_price) if purchase_price else 0.0
+            purchase_price = float(redis.get('purchase_price') or 0.0)
+            bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 
             raw_history = redis.lrange('price_history', 0, 2)
             price_history = [float(p) for p in raw_history]
@@ -140,21 +186,27 @@ def run_trading_bot():
                 if not buy_triggered:
                     thought_msg += " | Conditions split. Holding."
                 
-                # Only write to the DB log if the content has changed to save network requests
                 skip_write = (thought_msg == last_logged_thought)
                 log_activity(thought_msg, skip_db=skip_write)
                 last_logged_thought = thought_msg
 
                 if buy_triggered:
-                    usdt_alloc = float(usdt_bal) * 0.95
+                    usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
+                    # Strict safety parameter checks: Max configuration floor caps
+                    usdt_alloc = min(usdt_bal * 0.95, MAX_TRADE_USDT)
+                    
                     if usdt_alloc >= 5.0:
-                        sol_quantity = round(usdt_alloc / current_price, 2)
-                        log_activity(f"Order dispatch: Purchasing SOL...")
-                        client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
-                        redis.set('position_active', 'true')
-                        redis.set('purchase_price', str(current_price))
+                        sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
+                        log_activity(f"EXECUTION: Dispatching Market BUY for {sol_quantity} SOL...")
+                        
+                        # Dispatch order and immediately extract exact fill weights
+                        order = client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
+                        time.sleep(1) # Quick wait for fill execution clarity
+                        
+                        # Re-verify fill states completely
+                        reconcile_state_against_binance(client)
                     else:
-                        log_activity(f"Transaction aborted: Balance below $5 limit.")
+                        log_activity("Transaction aborted: Available balance under operational thresholds.")
 
                 redis.lpush('price_history', str(current_price))
                 redis.ltrim('price_history', 0, 2)
@@ -169,18 +221,21 @@ def run_trading_bot():
                 last_logged_thought = thought_msg
 
                 if current_price >= target_price:
-                    sol_to_liquidate = math.floor(float(sol_bal) * 100) / 100.0
+                    sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
+                    # CRITICAL FIX: Only liquidate the specific quantity the bot bought, never your global wallet balance
+                    sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
+                    
                     if sol_to_liquidate > 0.01:
-                        log_activity(f"Target Hit. Executing Liquidating Sell of {sol_to_liquidate} SOL...")
+                        log_activity(f"EXECUTION: Target Hit. Market Selling bot-tracked size of {sol_to_liquidate} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
-                        redis.set('position_active', 'false')
-                        redis.delete('purchase_price')
+                        time.sleep(1)
+                        reconcile_state_against_binance(client)
                     else:
-                        log_activity("Sell error: Balances too low to pass market minimums.")
+                        log_activity("Sell error: Bot-tracked position parameters empty or invalid.")
 
         except Exception as e:
             log_activity(f"Process Loop Error: {e}")
-            redis.set('engine_status', f"Loop Error")
+            redis.set('engine_status', "Loop Error")
 
         time.sleep(INTERVAL)
 
@@ -202,7 +257,6 @@ def health_check():
             proxy_url = proxy_url.replace("socks5://", "socks5h://")
         elif proxy_url.startswith("http://"):
             proxy_url = proxy_url.replace("http://", "socks5h://")
-            
         proxies = {'http': proxy_url, 'https': proxy_url}
         try:
             res = requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=5)
@@ -317,8 +371,10 @@ def liquidate_to_usdt():
 
         client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
+        bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 
-        sol_to_liquidate = math.floor(sol_bal * 100) / 100.0
+        # Safety catch: limit liquidation to bot-owned size unless forced
+        sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty if bot_tracked_qty > 0 else sol_bal) * 100) / 100.0
         
         if sol_to_liquidate > 0.01:
             log_activity(f"MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.")
@@ -326,6 +382,7 @@ def liquidate_to_usdt():
             
             redis.set('position_active', 'false')
             redis.delete('purchase_price')
+            redis.delete('bot_tracked_qty')
             return jsonify({'status': 'success', 'message': f'Liquidated {sol_to_liquidate} SOL.'})
         else:
             return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
