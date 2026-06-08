@@ -103,6 +103,7 @@ def run_trading_bot():
                 buy_triggered = False
                 thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
 
+                # Trigger Route 1: 1% Flash Drop
                 if len(price_history) >= 1:
                     last_price = price_history[0]
                     drop_pct = ((last_price - current_price) / last_price) * 100
@@ -112,16 +113,21 @@ def run_trading_bot():
                         buy_triggered = True
                         log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
 
+                # Trigger Route 2: 3-Step Cascade Shield (Strict >= 0.20% per step)
                 if len(price_history) >= 3 and not buy_triggered:
-                    step1 = price_history[0]
-                    step2 = price_history[1]
-                    step3 = price_history[2]
+                    step1 = price_history[0]  # T-10s
+                    step2 = price_history[1]  # T-20s
+                    step3 = price_history[2]  # T-30s
                     
-                    if (step3 - step2) / step3 >= 0.0005:
-                        if (step2 - step1) / step2 >= 0.0005:
-                            if (step1 - current_price) / step1 >= 0.0005:
-                                buy_triggered = True
-                                log_activity(f"BUY ALERT: 3 consecutive descending steps")
+                    d1 = ((step3 - step2) / step3) * 100
+                    d2 = ((step2 - step1) / step2) * 100
+                    d3 = ((step1 - current_price) / step1) * 100
+                    
+                    thought_msg += f" | Cascade Dips: [{d1:+.2f}%, {d2:+.2f}%, {d3:+.2f}%]"
+                    
+                    if d1 >= 0.20 and d2 >= 0.20 and d3 >= 0.20:
+                        buy_triggered = True
+                        log_activity(f"BUY ALERT: 3-Step Cascade Confirmed (All steps >= 0.20%)")
 
                 if not buy_triggered:
                     thought_msg += " | Conditions split. Holding."
