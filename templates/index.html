@@ -77,10 +77,14 @@
             </div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             <div class="card p-6 rounded-lg">
                 <p class="text-xs text-gray-400 font-medium mb-1 uppercase tracking-wider">Active Entry Basis</p>
                 <p id="positionState" class="text-xl font-bold">No Open Positions</p>
+            </div>
+            <div class="card p-6 rounded-lg">
+                <p class="text-xs text-gray-400 font-medium mb-1 uppercase tracking-wider">Opening Purchase Price</p>
+                <p id="openingPurchasePrice" class="text-xl font-bold text-yellow-500">N/A</p>
             </div>
             <div class="card p-6 rounded-lg">
                 <p class="text-xs text-gray-400 font-medium mb-1 uppercase tracking-wider">Calculated Target Sell Price (+1.21%)</p>
@@ -88,8 +92,10 @@
             </div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <button onclick="toggleBot(true)" class="btn-green text-black font-bold py-3 px-4 rounded-lg transition duration-200 uppercase tracking-wide text-sm">Start Autonomous Loop</button>
+            <button onclick="manualSetPosition()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 uppercase tracking-wide text-sm">Manually Set Position</button>
+            <button onclick="liquidateStack()" class="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 uppercase tracking-wide text-sm">Convert Stack to USDT</button>
             <button onclick="toggleBot(false)" class="btn-red text-white font-bold py-3 px-4 rounded-lg transition duration-200 uppercase tracking-wide text-sm">Pause Core Engine</button>
         </div>
 
@@ -131,14 +137,16 @@
                     const buyPrice = parseFloat(data.purchase_price);
                     const targetExit = buyPrice * 1.0121;
 
-                    document.getElementById('positionState').innerText = `Long Position Locked at $${buyPrice.toFixed(2)}`;
+                    document.getElementById('positionState').innerText = "Long Position Active";
                     document.getElementById('positionState').className = "text-xl font-bold text-green-400";
                     
+                    document.getElementById('openingPurchasePrice').innerText = `$${buyPrice.toFixed(2)}`;
                     document.getElementById('targetSellPrice').innerText = `$${targetExit.toFixed(2)}`;
                 } else {
                     document.getElementById('positionState').innerText = "No Open Positions";
                     document.getElementById('positionState').className = "text-xl font-bold text-gray-400";
                     
+                    document.getElementById('openingPurchasePrice').innerText = "N/A";
                     document.getElementById('targetSellPrice').innerText = "N/A";
                 }
 
@@ -198,6 +206,40 @@
                 fetchState();
             } catch (err) {
                 console.error("Failed toggling state:", err);
+            }
+        }
+
+        async function manualSetPosition() {
+            const price = prompt("Enter your SOL purchase price to activate tracking (or leave blank/type 0 to clear):");
+            if (price === null) return;
+            
+            try {
+                await fetch('/api/manual_set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ price: price ? parseFloat(price) : 0 })
+                });
+                fetchState();
+            } catch (err) {
+                console.error("Failed setting manual position:", err);
+            }
+        }
+
+        async function liquidateStack() {
+            if (!confirm("Are you absolutely sure you want to market sell your entire SOL balance for USDT right now and clear the bot's state?")) return;
+            
+            try {
+                const response = await fetch('/api/liquidate', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    alert(result.message);
+                } else {
+                    alert("Liquidation failed: " + result.message);
+                }
+                fetchState();
+            } catch (err) {
+                console.error("Failed executing manual liquidation:", err);
             }
         }
 
