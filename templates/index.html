@@ -70,7 +70,7 @@
                         </div>
                         <div class="flex justify-between">
                             <span class="text-gray-400">3x Uplift Filter:</span>
-                            <span id="cascadeTracker" class="text-gray-200 font-bold">Monitoring...</span>
+                            <span id="cascadeTracker" class="text-gray-200 font-bold">3 x 10s rebounds...</span>
                         </div>
                     </div>
                     
@@ -130,8 +130,8 @@
                         <span id="debugBinance" class="text-gray-200">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xs font-bold">STREAM:</span>
-                        <span id="debugStream" class="text-gray-200 truncate block">...</span>
+                        <span class="text-gray-500 block text-xs font-bold">MARKET DATA:</span>
+                        <span id="debugMarketData" class="text-gray-200 truncate block">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
                         <span class="text-gray-500 block text-xs font-bold">ENGINE:</span>
@@ -226,7 +226,7 @@
                     solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-dim";
 
                     document.getElementById('flashTargetPrice').innerText = "Below anchor required";
-                    document.getElementById('cascadeTracker').innerText = "3 x +0.05% required";
+                    document.getElementById('cascadeTracker').innerText = "3 x +0.05% / 10s required";
 
                     document.getElementById('openingPurchasePrice').innerText = "N/A";
                     document.getElementById('targetSellPrice').innerText = "N/A";
@@ -278,21 +278,17 @@
 
                     if (displayValue.includes('OK')) {
                         el.className = "status-ok truncate block";
-                    } else if (displayValue.includes('NOT SET') || displayValue.includes('CONNECTING')) {
+                    } else if (displayValue.includes('NOT SET')) {
                         el.className = "status-warn truncate block";
                     } else {
                         el.className = "status-fail truncate block";
                     }
                 };
 
-                const streamText = health.market_stream === 'OK' && health.market_stream_age_sec !== null
-                    ? `OK (${health.market_stream_age_sec}s)`
-                    : health.market_stream;
-
                 setStatus('debugRedis', health.upstash_redis);
                 setStatus('debugProxy', health.proxy_server);
                 setStatus('debugBinance', health.binance_api);
-                setStatus('debugStream', streamText);
+                setStatus('debugMarketData', health.market_data);
 
                 const errConsole = document.getElementById('errorConsole');
                 if (health.errors.length > 0) {

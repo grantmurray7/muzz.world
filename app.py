@@ -5,9 +5,8 @@ import math
 import json
 import requests
 import queue
-from threading import Thread, Lock
+from threading import Thread
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
-from binance import ThreadedWebsocketManager
 from binance.client import Client
 from upstash_redis import Redis
 
@@ -25,28 +24,15 @@ log_queue = queue.Queue()
 
 # --- Hard Safety Bounds ---
 SYMBOL = 'SOLUSDT'
-SAMPLE_INTERVAL = 1
+SAMPLE_INTERVAL = 10
 SIGNAL_EVALUATION_INTERVAL = 10
 LOOKBACK_SECONDS = 120
 UPLIFT_THRESHOLD_PCT = 0.05
 AUTO_BUY_ALLOCATION = 0.95
 SELL_TARGET_MULTIPLIER = 1.006
-STREAM_STALE_AFTER = 15
-STREAM_RESTART_COOLDOWN = 20
-PRICE_HISTORY_LIMIT = LOOKBACK_SECONDS + 10
+PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 5
 MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
 INSTANCE_ID = str(uuid.uuid4())[:8]
-stream_state_lock = Lock()
-market_stream_state = {
-    'manager': None,
-    'socket_name': None,
-    'last_price': None,
-    'last_update_ts': 0.0,
-    'status': 'OFFLINE',
-    'last_error': '',
-    'last_restart_attempt_ts': 0.0,
-    'last_status_log': ''
-}
 
 # --- Authentication Guard ---
 @app.before_request
@@ -96,131 +82,6 @@ def get_binance_requests_params():
 
 def get_binance_client():
     return Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=get_binance_requests_params())
-
-def get_market_stream_snapshot():
-    with stream_state_lock:
-        return dict(market_stream_state)
-
-def update_market_stream_state(**kwargs):
-    with stream_state_lock:
-        market_stream_state.update(kwargs)
-
-def log_market_stream_once(msg):
-    should_log = False
-    with stream_state_lock:
-        if market_stream_state['last_status_log'] != msg:
-            market_stream_state['last_status_log'] = msg
-            should_log = True
-    if should_log:
-        log_activity(msg)
-
-def handle_market_stream_message(msg):
-    try:
-        payload = msg.get('data', msg) if isinstance(msg, dict) else {}
-
-        if payload.get('e') == 'error':
-            error_msg = payload.get('m') or payload.get('type') or 'Unknown market stream error'
-            update_market_stream_state(status='ERROR', last_error=error_msg)
-            log_market_stream_once(f"Market stream error: {error_msg}")
-            return
-
-        current_price = payload.get('c')
-        if current_price is None:
-            return
-
-        current_price = float(current_price)
-        now = time.time()
-        became_live = False
-
-        with stream_state_lock:
-            if market_stream_state['status'] != 'LIVE':
-                became_live = True
-            market_stream_state['last_price'] = current_price
-            market_stream_state['last_update_ts'] = now
-            market_stream_state['status'] = 'LIVE'
-            market_stream_state['last_error'] = ''
-
-        if became_live:
-            log_market_stream_once("Market stream active. Live prices connected.")
-    except Exception as e:
-        update_market_stream_state(status='ERROR', last_error=str(e))
-        log_market_stream_once(f"Market stream callback failure: {e}")
-
-def stop_market_stream():
-    snapshot = get_market_stream_snapshot()
-    manager = snapshot.get('manager')
-    socket_name = snapshot.get('socket_name')
-
-    if manager:
-        try:
-            if socket_name:
-                manager.stop_socket(socket_name)
-        except Exception:
-            pass
-        try:
-            manager.stop()
-        except Exception:
-            pass
-
-    update_market_stream_state(manager=None, socket_name=None, status='OFFLINE')
-
-def start_market_stream():
-    if get_market_stream_snapshot().get('manager') is not None:
-        return True
-
-    try:
-        stream_kwargs = {}
-        proxy_url = get_binance_proxy_url()
-        if proxy_url:
-            stream_kwargs['https_proxy'] = proxy_url
-
-        manager = ThreadedWebsocketManager(
-            api_key=BINANCE_API_KEY,
-            api_secret=BINANCE_API_SECRET,
-            **stream_kwargs
-        )
-        manager.start()
-        socket_name = manager.start_symbol_ticker_socket(callback=handle_market_stream_message, symbol=SYMBOL)
-        update_market_stream_state(
-            manager=manager,
-            socket_name=socket_name,
-            status='CONNECTING',
-            last_error=''
-        )
-        log_market_stream_once("Starting Binance market stream...")
-        return True
-    except Exception as e:
-        update_market_stream_state(
-            manager=None,
-            socket_name=None,
-            status='ERROR',
-            last_error=str(e)
-        )
-        log_market_stream_once(f"Failed to start market stream: {e}")
-        return False
-
-def ensure_market_stream_running():
-    snapshot = get_market_stream_snapshot()
-    now = time.time()
-
-    if snapshot.get('status') == 'LIVE' and (now - snapshot.get('last_update_ts', 0.0)) <= STREAM_STALE_AFTER:
-        return snapshot
-
-    if (
-        snapshot.get('manager') is not None and
-        (now - snapshot.get('last_update_ts', 0.0)) > STREAM_STALE_AFTER and
-        (now - snapshot.get('last_restart_attempt_ts', 0.0)) >= STREAM_RESTART_COOLDOWN
-    ):
-        update_market_stream_state(last_restart_attempt_ts=now)
-        log_market_stream_once("Market stream stale. Restarting connection...")
-        stop_market_stream()
-        snapshot = get_market_stream_snapshot()
-
-    if snapshot.get('manager') is None:
-        update_market_stream_state(last_restart_attempt_ts=now)
-        start_market_stream()
-
-    return get_market_stream_snapshot()
 
 def record_price_sample(price):
     sample = json.dumps({'ts': time.time(), 'price': price})
@@ -320,7 +181,6 @@ def run_trading_bot():
         return
 
     client = get_binance_client()
-    start_market_stream()
     
     if not reconcile_state_against_binance(client):
         log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
@@ -342,17 +202,8 @@ def run_trading_bot():
                 continue
                 
             redis.set('trading_execution_lock', INSTANCE_ID, ex=15)
-
-            stream_snapshot = ensure_market_stream_running()
-            current_price = stream_snapshot.get('last_price')
-            stream_age = time.time() - stream_snapshot.get('last_update_ts', 0.0)
-
-            if current_price is None or stream_age > STREAM_STALE_AFTER or stream_snapshot.get('status') != 'LIVE':
-                redis.set('engine_status', 'WAITING_FOR_LIVE_STREAM')
-                log_market_stream_once("Trading blocked until the Binance market stream is live.")
-                time.sleep(SAMPLE_INTERVAL)
-                continue
-
+            ticker = client.get_symbol_ticker(symbol=SYMBOL)
+            current_price = float(ticker['price'])
             redis.set('current_sol_price', str(current_price))
             record_price_sample(current_price)
 
@@ -382,8 +233,8 @@ def run_trading_bot():
                 thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
 
                 if len(samples) < 4 or anchor_price is None:
-                    warm_seconds = min(len(samples), LOOKBACK_SECONDS)
-                    thought_msg += f" | Warming 2m price cache ({warm_seconds}/{LOOKBACK_SECONDS}s)..."
+                    warm_seconds = min(len(samples) * SAMPLE_INTERVAL, LOOKBACK_SECONDS)
+                    thought_msg += f" | Warming 2m price cache ({warm_seconds}/{LOOKBACK_SECONDS}s via 10s polls)..."
                     log_activity(thought_msg, skip_db=True)
                     redis.set('engine_status', 'WARMING_2M_CACHE')
                     continue
@@ -411,7 +262,7 @@ def run_trading_bot():
                 skip_write = (thought_msg == last_logged_thought)
                 log_activity(thought_msg, skip_db=skip_write)
                 last_logged_thought = thought_msg
-                redis.set('engine_status', 'MONITORING_RECENT_DIP_REBOUND')
+                redis.set('engine_status', 'MONITORING_RECENT_DIP_REBOUND_REST_10S')
 
                 if buy_triggered:
                     usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
@@ -434,7 +285,7 @@ def run_trading_bot():
                 skip_write = (thought_msg == last_logged_thought)
                 log_activity(thought_msg, skip_db=skip_write)
                 last_logged_thought = thought_msg
-                redis.set('engine_status', 'HOLDING_FOR_+0.60%_EXIT')
+                redis.set('engine_status', 'HOLDING_FOR_+0.60%_EXIT_REST_10S')
 
                 if current_price >= target_price:
                     sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
@@ -483,7 +334,7 @@ def execute_manual_buy():
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    health = {'upstash_redis': 'FAIL', 'proxy_server': 'FAIL', 'binance_api': 'FAIL', 'market_stream': 'FAIL', 'errors': []}
+    health = {'upstash_redis': 'FAIL', 'proxy_server': 'FAIL', 'binance_api': 'FAIL', 'market_data': 'FAIL', 'errors': []}
     try:
         redis.ping()
         health['upstash_redis'] = 'OK'
@@ -512,16 +363,7 @@ def health_check():
             health['errors'].append(f"Binance API Handshake Failure: {str(e)}")
     else:
         health['binance_api'] = 'KEYS MISSING'
-
-    stream_snapshot = get_market_stream_snapshot()
-    stream_age = time.time() - stream_snapshot.get('last_update_ts', 0.0)
-    if stream_snapshot.get('status') == 'LIVE' and stream_age <= STREAM_STALE_AFTER:
-        health['market_stream'] = 'OK'
-    else:
-        health['market_stream'] = stream_snapshot.get('status') or 'OFFLINE'
-        if stream_snapshot.get('last_error'):
-            health['errors'].append(f"Market Stream Error: {stream_snapshot['last_error']}")
-    health['market_stream_age_sec'] = round(stream_age, 1) if stream_snapshot.get('last_update_ts') else None
+    health['market_data'] = f"OK (REST {SAMPLE_INTERVAL}s)"
 
     return jsonify(health)
 
