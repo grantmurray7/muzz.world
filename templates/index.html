@@ -14,6 +14,8 @@
         .status-warn { color: #fbbf24; font-weight: bold; }
         .mode-dim { opacity: 0.20; transition: opacity 0.3s ease; pointer-events: none; }
         .mode-active { opacity: 1; transition: opacity 0.3s ease; }
+        .left-panel .muted { color: #ffffff; }
+        .left-panel .soft { color: #ffffff; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1f2226; }
         ::-webkit-scrollbar-thumb { background: #434954; border-radius: 4px; }
@@ -45,68 +47,68 @@
 
     <div class="desktop-grid">
         
-        <div class="space-y-4 overflow-y-auto pr-0 md:pr-1">
+        <div class="left-panel space-y-4 overflow-y-auto pr-0 md:pr-1">
             
-            <div class="card p-3 rounded flex justify-between items-center font-mono text-sm">
-                <span class="text-gray-400 uppercase font-bold tracking-wider">Spot Benchmark:</span>
+            <div class="card p-4 rounded flex justify-between items-center font-mono">
+                <span class="muted uppercase font-bold tracking-wider text-sm">Spot Benchmark:</span>
                 <div>
-                    <span class="text-gray-400 mr-1.5">SOL/USDT:</span>
-                    <span id="solPrice" class="font-black text-xl text-yellow-400">$0.00</span>
+                    <span class="muted mr-1.5 text-sm">SOL/USDT:</span>
+                    <span id="solPrice" class="font-black text-2xl text-yellow-400">$0.00</span>
                 </div>
             </div>
 
             <div class="space-y-4">
                 
                 <div id="usdtSide" class="card p-4 rounded space-y-3 border-t-4 border-green-400">
-                    <p class="text-sm text-gray-300 font-bold uppercase font-mono tracking-wider">👈 USDT Cash Mode</p>
+                    <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👈 USDT Cash Mode</p>
                     <div>
-                        <span class="text-xs text-gray-500 block font-mono font-bold">AVAILABLE LIQUIDITY</span>
-                        <p id="balUsdt" class="text-2xl font-black text-white">$0.00</p>
+                        <span class="text-sm soft block font-mono font-bold">AVAILABLE LIQUIDITY</span>
+                        <p id="balUsdt" class="text-3xl font-black text-white">$0.00</p>
                     </div>
-                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-sm">
+                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-base">
                         <div class="flex justify-between">
-                            <span class="text-gray-400">2m Anchor Check:</span>
-                            <span id="flashTargetPrice" class="text-gray-200 font-bold">Warming...</span>
+                            <span class="muted">2m Anchor Check:</span>
+                            <span id="flashTargetPrice" class="text-white font-bold">Warming...</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="text-gray-400">3x Uplift Filter:</span>
-                            <span id="cascadeTracker" class="text-gray-200 font-bold">3 x 10s rebounds...</span>
+                            <span class="muted">3x Uplift Filter:</span>
+                            <span id="cascadeTracker" class="text-white font-bold">3 x 10s rebounds...</span>
                         </div>
                     </div>
                     
                     <div class="grid grid-cols-2 gap-2 pt-2 border-t border-gray-800">
-                        <button onclick="manualSetPosition()" class="bg-gray-700 hover:bg-gray-600 text-gray-200 font-mono py-1.5 px-2 rounded text-xs uppercase font-bold tracking-wide transition">
+                        <button onclick="manualSetPosition()" class="bg-gray-700 hover:bg-gray-600 text-white font-mono py-2 px-2 rounded text-sm uppercase font-bold tracking-wide transition">
                             Track Entry Price
                         </button>
-                        <button onclick="executeManualBuy()" class="bg-gray-100 hover:bg-white text-gray-900 font-mono py-1.5 px-2 rounded text-xs uppercase font-black tracking-wide transition shadow">
+                        <button onclick="executeManualBuy()" class="bg-gray-100 hover:bg-white text-gray-900 font-mono py-2 px-2 rounded text-sm uppercase font-black tracking-wide transition shadow">
                             Market Buy SOL
                         </button>
                     </div>
                 </div>
 
                 <div id="solSide" class="card p-4 rounded space-y-3 border-t-4 border-blue-400">
-                    <p class="text-sm text-gray-300 font-bold uppercase font-mono tracking-wider">👉 SOL Asset Mode</p>
+                    <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👉 SOL Asset Mode</p>
                     <div>
-                        <span class="text-xs text-gray-500 block font-mono font-bold">HELD TOKENS</span>
-                        <p id="balSol" class="text-2xl font-black text-white">0.0000</p>
+                        <span class="text-sm soft block font-mono font-bold">HELD TOKENS</span>
+                        <p id="balSol" class="text-3xl font-black text-white">0.0000</p>
                     </div>
-                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-sm">
+                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-base">
                         <div class="flex justify-between">
-                            <span class="text-gray-400">Purchase Basis:</span>
+                            <span class="muted">Purchase Basis:</span>
                             <span id="openingPurchasePrice" class="text-yellow-500 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="text-gray-400">Target Exit (+0.60%):</span>
+                            <span class="muted">Target Exit (+0.60%):</span>
                             <span id="targetSellPrice" class="text-red-400 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="text-gray-400">Margin Delta Gap:</span>
-                            <span id="marginDeltaGap" class="text-gray-200 font-bold">N/A</span>
+                            <span class="muted">Margin Delta Gap:</span>
+                            <span id="marginDeltaGap" class="text-white font-bold">N/A</span>
                         </div>
                     </div>
 
                     <div class="pt-2 border-t border-gray-700">
-                        <button onclick="liquidateStack()" class="w-full bg-gray-700 hover:bg-red-950 hover:text-red-200 border border-transparent hover:border-red-800 text-gray-200 font-mono py-2 px-3 rounded text-xs uppercase font-bold tracking-wide transition">
+                        <button onclick="liquidateStack()" class="w-full bg-gray-700 hover:bg-red-950 hover:text-red-200 border border-transparent hover:border-red-800 text-white font-mono py-2.5 px-3 rounded text-sm uppercase font-bold tracking-wide transition">
                             Convert Stack to USDT
                         </button>
                     </div>
@@ -115,26 +117,26 @@
             </div>
 
             <div class="card p-3 rounded">
-                <h2 class="text-xs font-bold tracking-wider text-gray-400 uppercase mb-2.5 font-mono">Pipeline Diagnostics</h2>
-                <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm font-mono">
+                <h2 class="text-sm font-bold tracking-wider text-white uppercase mb-2.5 font-mono">Pipeline Diagnostics</h2>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-base font-mono">
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xs font-bold">REDIS:</span>
-                        <span id="debugRedis" class="text-gray-200">...</span>
+                        <span class="text-white block text-sm font-bold">REDIS:</span>
+                        <span id="debugRedis" class="text-white">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xs font-bold">PROXY:</span>
-                        <span id="debugProxy" class="text-gray-200 truncate block">...</span>
+                        <span class="text-white block text-sm font-bold">PROXY:</span>
+                        <span id="debugProxy" class="text-white truncate block">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xs font-bold">BINANCE:</span>
-                        <span id="debugBinance" class="text-gray-200">...</span>
+                        <span class="text-white block text-sm font-bold">BINANCE:</span>
+                        <span id="debugBinance" class="text-white">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xs font-bold">MARKET DATA:</span>
-                        <span id="debugMarketData" class="text-gray-200 truncate block">...</span>
+                        <span class="text-white block text-sm font-bold">MARKET DATA:</span>
+                        <span id="debugMarketData" class="text-white truncate block">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xs font-bold">ENGINE:</span>
+                        <span class="text-white block text-sm font-bold">ENGINE:</span>
                         <span id="engineStatus" class="font-semibold truncate block">...</span>
                     </div>
                 </div>
@@ -142,7 +144,7 @@
             </div>
 
             <div class="pt-1">
-                <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="w-full bg-gray-600 hover:bg-gray-500 text-white font-mono font-bold py-3 px-4 rounded text-sm uppercase tracking-wider transition duration-150">
+                <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="w-full bg-gray-600 hover:bg-gray-500 text-white font-mono font-bold py-3 px-4 rounded text-base uppercase tracking-wider transition duration-150">
                     SYNCHRONIZING...
                 </button>
             </div>
@@ -150,7 +152,12 @@
         </div>
 
         <div class="log-container card p-3 rounded mt-4 md:mt-0">
-            <p class="text-xs text-gray-400 font-bold uppercase tracking-wider mb-2 font-mono px-1">Real-Time Execution Terminal Log</p>
+            <div class="flex items-center justify-between mb-2 px-1">
+                <p class="text-xs text-gray-400 font-bold uppercase tracking-wider font-mono">Real-Time Execution Terminal Log</p>
+                <button onclick="clearLogs()" class="bg-gray-700 hover:bg-gray-600 text-white font-mono py-1 px-2 rounded text-xs uppercase font-bold tracking-wide transition">
+                    Wipe Logs
+                </button>
+            </div>
             <div id="logBox" class="bg-black bg-opacity-40 p-3 rounded font-mono text-sm text-gray-200 h-96 overflow-y-auto space-y-1.5 border border-gray-800">
                 <p class="text-gray-500">[Awaiting backend handshake update metrics...]</p>
             </div>
@@ -238,7 +245,7 @@
                 logBox.innerHTML = '';
                 data.logs.forEach(log => {
                     const p = document.createElement('p');
-                    p.className = "leading-relaxed text-sm";
+                    p.className = "leading-snug text-sm";
                     p.innerText = log;
                     logBox.appendChild(p);
                 });
@@ -348,6 +355,17 @@
                 fetchState();
             } catch (err) {
                 console.error("Failed executing manual liquidation:", err);
+            }
+        }
+
+        async function clearLogs() {
+            if (!confirm("Wipe the terminal log history?")) return;
+
+            try {
+                await fetch('/api/logs/clear', { method: 'POST' });
+                fetchState();
+            } catch (err) {
+                console.error("Failed wiping logs:", err);
             }
         }
 

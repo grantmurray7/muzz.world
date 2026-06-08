@@ -444,6 +444,15 @@ def manual_set_position():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+@app.route('/api/logs/clear', methods=['POST'])
+def clear_logs():
+    try:
+        redis.delete('bot_logs')
+        log_activity("Terminal log wiped by operator.")
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/api/liquidate', methods=['POST'])
 def liquidate_to_usdt():
     try:
