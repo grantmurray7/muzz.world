@@ -84,7 +84,7 @@ def run_trading_bot():
                 continue
 
             if not bot_running:
-                log_activity("Engine state PAUSED. Skipping ticker request.")
+                log_activity("Trading paused. Loop idling.")
                 time.sleep(INTERVAL)
                 continue
 
@@ -124,7 +124,7 @@ def run_trading_bot():
                                 log_activity(f"BUY ALERT: 3 consecutive descending steps")
 
                 if not buy_triggered:
-                    thought_msg += " | No trigger. Holding cash."
+                    thought_msg += " | Conditions split. Holding."
                 
                 log_activity(thought_msg)
 
@@ -146,7 +146,7 @@ def run_trading_bot():
                 target_price = purchase_price * 1.0121
                 profit_pct = ((current_price - purchase_price) / purchase_price) * 100
                 
-                log_activity(f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +1.21% needed) | Holding stack.")
+                log_activity(f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +1.21%) | Holding.")
 
                 if current_price >= target_price:
                     sol_to_liquidate = math.floor(float(sol_bal) * 100) / 100.0
@@ -230,7 +230,6 @@ def get_state():
         current_price = float(redis.get('current_sol_price') or 0.0)
         
         total_usd = usdt_bal + (sol_bal * current_price)
-        
         total_gbp = total_usd * 0.78  
         try:
             fiat_res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=2)
@@ -261,7 +260,7 @@ def toggle_bot():
         data = request.json
         action = data.get('run', False)
         redis.set('bot_running', 'true' if action else 'false')
-        log_activity(f"System State Altered: SYSTEM {'ON' if action else 'PAUSED'}.")
+        log_activity(f"Trading State Update: ENGINE {'STARTED' if action else 'PAUSED'}")
         return jsonify({'status': 'success', 'bot_running': action})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -274,12 +273,12 @@ def manual_set_position():
         if price and float(price) > 0:
             redis.set('position_active', 'true')
             redis.set('purchase_price', str(round(float(price), 2)))
-            log_activity(f"Manual Override: Position forced ACTIVE at entry basis ${price}")
+            log_activity(f"Manual Track Override: Position set ACTIVE at Entry ${price}")
             return jsonify({'status': 'success'})
         else:
             redis.set('position_active', 'false')
             redis.delete('purchase_price')
-            log_activity("Manual Override: Position forced INACTIVE / Cleared")
+            log_activity("Manual Track Override: Position cleared to INACTIVE")
             return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -302,14 +301,14 @@ def liquidate_to_usdt():
         sol_to_liquidate = math.floor(sol_bal * 100) / 100.0
         
         if sol_to_liquidate > 0.01:
-            log_activity(f"MANUAL LIQUIDATION TRIGGERED: Selling {sol_to_liquidate} SOL at market rate.")
+            log_activity(f"MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
             
             redis.set('position_active', 'false')
             redis.delete('purchase_price')
-            return jsonify({'status': 'success', 'message': f'Successfully sold {sol_to_liquidate} SOL.'})
+            return jsonify({'status': 'success', 'message': f'Liquidated {sol_to_liquidate} SOL.'})
         else:
-            return jsonify({'status': 'error', 'message': 'SOL balance too low to execute a market sell.'}), 400
+            return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
             
     except Exception as e:
         log_activity(f"Manual Liquidation Error: {e}")
