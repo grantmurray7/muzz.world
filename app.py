@@ -78,12 +78,14 @@ def run_trading_bot():
                 redis.set('balance_sol', str(sol_bal))
                 redis.set('engine_status', 'Connected & Syncing')
             except Exception as e:
-                log_activity(f"Failed pulling asset metrics from Binance: {e}")
+                print(f"[{time.strftime('%H:%M:%S')}] Core Loop Exception pulling asset metrics: {e}")
                 redis.set('engine_status', f"Binance Connect Error")
                 time.sleep(INTERVAL)
                 continue
 
             if not bot_running:
+                # Engine heartbeat thought when paused
+                print(f"[{time.strftime('%H:%M:%S')}] Core Loop Sync: Engine execution state is currently PAUSED. Skipping ticker request.")
                 time.sleep(INTERVAL)
                 continue
 
@@ -100,10 +102,14 @@ def run_trading_bot():
 
             if not position_active:
                 buy_triggered = False
+                thought_msg = f"Mode: BUY | Spot: ${current_price:.2f}"
 
                 if len(price_history) >= 1:
                     last_price = price_history[0]
-                    if (last_price - current_price) / last_price >= 0.01:
+                    drop_pct = ((last_price - current_price) / last_price) * 100
+                    thought_msg += f" | Last: ${last_price:.2f} (Chg: {drop_pct:+.2f}%)"
+                    
+                    if drop_pct >= 1.0:
                         buy_triggered = True
                         log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
 
@@ -111,12 +117,19 @@ def run_trading_bot():
                     step1 = price_history[0]
                     step2 = price_history[1]
                     step3 = price_history[2]
+                    thought_msg += f" | Steps: [{step3:.2f} -> {step2:.2f} -> {step1:.2f} -> {current_price:.2f}]"
                     
                     if (step3 - step2) / step3 >= 0.0005:
                         if (step2 - step1) / step2 >= 0.0005:
                             if (step1 - current_price) / step1 >= 0.0005:
                                 buy_triggered = True
                                 log_activity(f"BUY ALERT: 3 consecutive descending steps")
+
+                if not buy_triggered:
+                    thought_msg += " | Result: Conditions not met. Holding cash stable."
+                
+                # Print 10s heartbeat analysis directly to Render console terminal log
+                print(f"[{time.strftime('%H:%M:%S')}] {thought_msg}")
 
                 if buy_triggered:
                     usdt_alloc = float(usdt_bal) * 0.95
@@ -134,10 +147,13 @@ def run_trading_bot():
 
             else:
                 target_price = purchase_price * 1.0121
+                profit_pct = ((current_price - purchase_price) / purchase_price) * 100
+                
+                # Print 10s heartbeat analysis directly to Render console terminal log
+                print(f"[{time.strftime('%H:%M:%S')}] Mode: SELL | Entry: ${purchase_price:.2f} | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +1.21% needed) | Result: Insufficient margin. Holding stack.")
+
                 if current_price >= target_price:
-                    # Safely floor to 2 decimal places to guarantee execution balance parameters
                     sol_to_liquidate = math.floor(float(sol_bal) * 100) / 100.0
-                    
                     if sol_to_liquidate > 0.01:
                         log_activity(f"Target Hit. Executing Liquidating Sell of {sol_to_liquidate} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
@@ -147,7 +163,7 @@ def run_trading_bot():
                         log_activity("Sell error: Balances too low to pass market minimums.")
 
         except Exception as e:
-            log_activity(f"Process Loop Error: {e}")
+            print(f"[{time.strftime('%H:%M:%S')}] Process Loop Crash Error: {e}")
             redis.set('engine_status', f"Loop Error")
 
         time.sleep(INTERVAL)
@@ -287,7 +303,6 @@ def liquidate_to_usdt():
         client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
 
-        # Truncate down safely to 2 decimal places to protect against fee/rounding overdrafts
         sol_to_liquidate = math.floor(sol_bal * 100) / 100.0
         
         if sol_to_liquidate > 0.01:
