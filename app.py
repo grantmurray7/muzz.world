@@ -1,7 +1,6 @@
 import os
 import time
 import uuid
-import base64
 import requests
 from threading import Thread
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
@@ -51,26 +50,22 @@ def run_trading_bot():
     
     requests_params = {}
     if proxy_url:
+        # Normalize incoming strings to force DNS-safe SOCKS5 routing
+        if proxy_url.startswith("socks5://"):
+            proxy_url = proxy_url.replace("socks5://", "socks5h://")
+        elif proxy_url.startswith("http://"):
+            proxy_url = proxy_url.replace("http://", "socks5h://")
+
         requests_params['proxies'] = {
             'http': proxy_url,
             'https': proxy_url
         }
-        # Force manual authentication injection to fix 407 errors
-        try:
-            if "@" in proxy_url:
-                creds = proxy_url.split("//")[1].split("@")[0]
-                encoded_creds = base64.b64encode(creds.encode()).decode()
-                requests_params['headers'] = {
-                    'Proxy-Authorization': f'Basic {encoded_creds}'
-                }
-            print(f"Proxy config detected with header injection: {proxy_url}")
-        except Exception as e:
-            print(f"Failed parsing proxy credentials: {e}")
+        print(f"SOCKS5 Configuration loaded. Tunneling traffic through: {proxy_url}")
     else:
         print("WARNING: No BINANCE_PROXY environment variable set.")
 
     client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
-    log_activity("Core engine initiated with proxy configurations. Monitoring SOL/USDT at 10s intervals.")
+    log_activity("Core engine initiated with SOCKS5 configuration. Monitoring SOL/USDT at 10s intervals.")
 
     while True:
         try:
@@ -168,31 +163,29 @@ def health_check():
         health['errors'].append(f"Redis Error: {str(e)}")
 
     proxy_url = os.environ.get("BINANCE_PROXY")
-    proxies = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
-    
-    headers = {}
-    if proxy_url and "@" in proxy_url:
-        creds = proxy_url.split("//")[1].split("@")[0]
-        encoded_creds = base64.b64encode(creds.encode()).decode()
-        headers['Proxy-Authorization'] = f'Basic {encoded_creds}'
-
     if proxy_url:
+        if proxy_url.startswith("socks5://"):
+            proxy_url = proxy_url.replace("socks5://", "socks5h://")
+        elif proxy_url.startswith("http://"):
+            proxy_url = proxy_url.replace("http://", "socks5h://")
+            
+        proxies = {'http': proxy_url, 'https': proxy_url}
         try:
-            res = requests.get('https://api.ipify.org?format=json', proxies=proxies, headers=headers, timeout=5)
+            res = requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=5)
             if res.status_code == 200:
                 health['proxy_server'] = f"OK ({res.json().get('ip')})"
         except Exception as e:
-            health['errors'].append(f"Proxy Failure: {str(e)}")
+            health['errors'].append(f"SOCKS5 Routing Failure: {str(e)}")
     else:
         health['proxy_server'] = 'NOT SET'
 
     if BINANCE_API_KEY and BINANCE_API_SECRET:
         try:
-            test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params={'proxies': proxies, 'headers': headers} if proxy_url else {})
+            test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params={'proxies': proxies} if proxy_url else {})
             if test_client.get_server_time():
                 health['binance_api'] = 'OK'
         except Exception as e:
-            health['errors'].append(f"Binance Failure: {str(e)}")
+            health['errors'].append(f"Binance API Handshake Failure: {str(e)}")
     else:
         health['binance_api'] = 'KEYS MISSING'
 
