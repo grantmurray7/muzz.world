@@ -29,7 +29,14 @@
             <h1 class="text-2xl font-black tracking-tight leading-none">muzz.world</h1>
             <p class="text-xs text-gray-400 font-mono mt-0.5">"no solana, no banana"</p>
         </div>
-        <span id="engineBadge" class="px-2 py-0.5 rounded text-xs font-mono font-bold bg-gray-600 text-gray-200">OFFLINE</span>
+        <div class="flex items-center space-x-3 text-xs font-mono">
+            <div class="text-right leading-tight">
+                <span id="totalNetUsd" class="text-green-400 font-bold">$0.00</span>
+                <span class="text-gray-400 mx-1">|</span>
+                <span id="totalNetGbp" class="text-blue-400 font-bold">£0.00</span>
+            </div>
+            <span id="engineBadge" class="px-2 py-0.5 rounded text-xs font-mono font-bold bg-gray-600 text-gray-200">OFFLINE</span>
+        </div>
     </div>
 
     <div class="desktop-grid">
@@ -59,17 +66,6 @@
                 <div id="errorConsole" class="mt-2 text-xxs font-mono text-red-400 hidden bg-red-950 bg-opacity-40 p-1.5 rounded border border-red-900"></div>
             </div>
 
-            <div class="grid grid-cols-2 gap-2">
-                <div class="card p-3 rounded border-l-2 border-green-400">
-                    <p class="text-xxs text-gray-400 font-bold uppercase tracking-wider font-mono">Portfolio (USD)</p>
-                    <p id="totalNetUsd" class="text-xl font-black text-green-400">$0.00</p>
-                </div>
-                <div class="card p-3 rounded border-l-2 border-blue-400">
-                    <p class="text-xxs text-gray-400 font-bold uppercase tracking-wider font-mono">Portfolio (GBP)</p>
-                    <p id="totalNetGbp" class="text-xl font-black text-blue-400">£0.00</p>
-                </div>
-            </div>
-
             <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
                 <div class="card p-2.5 rounded">
                     <p class="text-xxs text-gray-400 font-bold uppercase font-mono">USDT Balance</p>
@@ -80,7 +76,7 @@
                     <p id="balSol" class="text-md font-bold">0.0000</p>
                 </div>
                 <div class="card p-2.5 rounded col-span-2 md:col-span-1">
-                    <p class="text-xxs text-gray-400 font-bold uppercase font-mono">SOL Price</p>
+                    <p class="text-xxs text-gray-400 font-bold uppercase font-mono">SOL/USDT Spot Price</p>
                     <p id="solPrice" class="text-md font-bold text-yellow-400">$0.00</p>
                 </div>
             </div>
@@ -202,7 +198,6 @@
 
         async function handleToggleRequest() {
             if (currentBotRunningState === null) return;
-            // Simply flip whatever state we currently hold via the unified button handler
             await toggleBot(!currentBotRunningState);
         }
 
@@ -275,7 +270,6 @@
             }
         }
 
-        // Font sizing CSS injection for tight screen layout efficiency optimization
         const style = document.createElement('style');
         style.innerHTML = '.text-xxs { font-size: 0.65rem; } .text-xs { font-size: 0.75rem; }';
         document.head.appendChild(style);
