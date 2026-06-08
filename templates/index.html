@@ -114,7 +114,7 @@
                     </div>
                     <div class="p-1.5 bg-black bg-opacity-30 rounded border border-gray-700">
                         <span class="text-gray-500 block text-xxs">ENGINE:</span>
-                        <span id="engineStatus" class="text-green-400 font-semibold truncate block">...</span>
+                        <span id="engineStatus" class="font-semibold truncate block">...</span>
                     </div>
                 </div>
                 <div id="errorConsole" class="mt-2 text-xxs font-mono text-red-400 hidden bg-red-950 bg-opacity-40 p-1.5 rounded border border-red-900"></div>
@@ -165,8 +165,8 @@
                 const engStatus = document.getElementById('engineStatus');
                 engStatus.innerText = data.engine_status;
                 if (data.engine_status.includes('Connected')) {
-                    engStatus.className = "text-green-400 font-semibold truncate block";
-                } else if (data.engine_status.includes('Error')) {
+                    engStatus.className = "text-green-400 font-semibold truncate block animate-pulse";
+                } else if (data.engine_status.includes('LOCKOUT') || data.engine_status.includes('Error')) {
                     engStatus.className = "text-red-400 font-bold truncate block";
                 } else {
                     engStatus.className = "text-yellow-400 font-semibold truncate block";
