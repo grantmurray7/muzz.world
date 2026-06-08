@@ -210,23 +210,20 @@ def get_state():
     try:
         logs = redis.lrange('bot_logs', 0, 20)
         
-        # Load numeric conversion states securely
         usdt_bal = float(redis.get('balance_usdt') or 0.0)
         sol_bal = float(redis.get('balance_sol') or 0.0)
         current_price = float(redis.get('current_sol_price') or 0.0)
         
-        # Calculate dynamic total wallet asset values in USD
         total_usd = usdt_bal + (sol_bal * current_price)
         
-        # Fetch standard fallback spot conversion rate for GBP currency mapping
-        total_gbp = total_usd * 0.78  # Clean flat conversion basis mapping
+        total_gbp = total_usd * 0.78  
         try:
             fiat_res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=2)
             if fiat_res.status_code == 200:
                 rates = fiat_res.json().get('rates', {})
                 total_gbp = total_usd * rates.get('GBP', 0.78)
         except Exception:
-            pass # Use hardcoded fallback calculation if external fiat api limits exceed
+            pass
 
         return jsonify({
             'bot_running': redis.get('bot_running') == 'true',
@@ -252,6 +249,54 @@ def toggle_bot():
         log_activity(f"System State Altered: SYSTEM {'ON' if action else 'PAUSED'}.")
         return jsonify({'status': 'success', 'bot_running': action})
     except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/manual_set', methods=['POST'])
+def manual_set_position():
+    try:
+        data = request.json
+        price = data.get('price')
+        if price and float(price) > 0:
+            redis.set('position_active', 'true')
+            redis.set('purchase_price', str(round(float(price), 2)))
+            log_activity(f"Manual Override: Position forced ACTIVE at entry basis ${price}")
+            return jsonify({'status': 'success'})
+        else:
+            redis.set('position_active', 'false')
+            redis.delete('purchase_price')
+            log_activity("Manual Override: Position forced INACTIVE / Cleared")
+            return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/liquidate', methods=['POST'])
+def liquidate_to_usdt():
+    try:
+        proxy_url = os.environ.get("BINANCE_PROXY")
+        requests_params = {}
+        if proxy_url:
+            if proxy_url.startswith("socks5://"):
+                proxy_url = proxy_url.replace("socks5://", "socks5h://")
+            elif proxy_url.startswith("http://"):
+                proxy_url = proxy_url.replace("http://", "socks5h://")
+            requests_params['proxies'] = {'http': proxy_url, 'https': proxy_url}
+
+        client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
+        sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
+
+        sol_to_liquidate = round(sol_bal, 2)
+        if sol_to_liquidate > 0.01:
+            log_activity(f"MANUAL LIQUIDATION TRIGGERED: Selling {sol_to_liquidate} SOL at market rate.")
+            client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
+            
+            redis.set('position_active', 'false')
+            redis.delete('purchase_price')
+            return jsonify({'status': 'success', 'message': f'Successfully sold {sol_to_liquidate} SOL.'})
+        else:
+            return jsonify({'status': 'error', 'message': 'SOL balance too low to execute a market sell.'}), 400
+            
+    except Exception as e:
+        log_activity(f"Manual Liquidation Error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == '__main__':
