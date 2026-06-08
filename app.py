@@ -47,8 +47,22 @@ def run_trading_bot():
         print("API keys not set. The background execution loop has halted.")
         return
 
-    client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
-    log_activity("Core engine initiated. Monitoring SOL/USDT at 10s intervals.")
+    # Fetch proxy string from Render environment variables
+    proxy_url = os.environ.get("BINANCE_PROXY")
+    
+    requests_params = {}
+    if proxy_url:
+        requests_params['proxies'] = {
+            'http': proxy_url,
+            'https': proxy_url
+        }
+        print(f"Proxy config detected. Routing Binance traffic through: {proxy_url}")
+    else:
+        print("WARNING: No BINANCE_PROXY environment variable set. Running directly from host IP.")
+
+    # Initialize client with proxy parameters attached
+    client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
+    log_activity("Core engine initiated with proxy configurations. Monitoring SOL/USDT at 10s intervals.")
 
     while True:
         try:
@@ -109,9 +123,9 @@ def run_trading_bot():
                 if buy_triggered:
                     usdt_alloc = float(usdt_bal) * 0.95
                     
-                    if usdt_alloc >= 5.0: # Binance operational floor limit check
+                    if usdt_alloc >= 5.0:  # Binance floor limit check
                         sol_quantity = usdt_alloc / current_price
-                        sol_quantity = round(sol_quantity, 2) # Truncate down to exact valid lot step size
+                        sol_quantity = round(sol_quantity, 2)
 
                         log_activity(f"Order dispatch: Purchasing SOL with 95% stake (${round(usdt_alloc, 2)} USDT)...")
                         
@@ -126,7 +140,7 @@ def run_trading_bot():
                         redis.set('purchase_price', str(current_price))
                         log_activity(f"EXECUTION SUCCESS: Bought SOL at execution price: {current_price}")
                     else:
-                        log_activity(f"Transaction aborted: 95% allocated allocation (${round(usdt_alloc, 2)}) sits below Binance $5 absolute threshold.")
+                        log_activity(f"Transaction aborted: 95% allocated allocation (${round(usdt_alloc, 2)}) sits below Binance $5 threshold.")
 
                 # Persist Price History Data Arrays to Upstash
                 redis.lpush('price_history', str(current_price))
@@ -134,7 +148,6 @@ def run_trading_bot():
 
             else:
                 # --- ACTIONABLE TARGET SELL EVALUATION ---
-                # 1.21% gross markup targets 1.0% exact clean net return post maximum standard roundtrip fees.
                 target_price = purchase_price * 1.0121
                 
                 if current_price >= target_price:
@@ -161,7 +174,7 @@ def run_trading_bot():
 
         time.sleep(INTERVAL)
 
-# Safe launch thread
+# Safe launch background thread
 Thread(target=run_trading_bot, daemon=True).start()
 
 # --- WEB UI SYSTEM ROUTING ---
