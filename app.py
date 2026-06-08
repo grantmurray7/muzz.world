@@ -59,35 +59,49 @@ def reconcile_state_against_binance(client):
     """Forces reality check against Binance data before executing logic."""
     log_activity("Running core truth reconciliation step...")
     try:
-        # 1. Fetch exact wallet values
+        # 1. Clear out historical price arrays to ensure zero cross-process contamination
+        redis.delete('price_history')
+        
+        # 2. Fetch exact wallet values
         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
         
         redis.set('balance_usdt', str(usdt_bal))
         redis.set('balance_sol', str(sol_bal))
         
-        # 2. Check for active open working orders
+        # 3. Check for active open working orders
         open_orders = client.get_open_orders(symbol=SYMBOL)
         if open_orders:
-            log_activity(f"CRITICAL: Open working orders found on exchange! Forcing error lockout state.")
-            redis.set('engine_state', 'ERROR_LOCKOUT')
+            log_activity("CRITICAL: Open working orders found on exchange! Forcing lockout.")
+            redis.set('engine_status', 'ERROR_LOCKOUT_OPEN_ORDERS')
             return False
 
-        # 3. Pull last trade execution to capture true mathematical entry basis
-        my_trades = client.get_my_trades(symbol=SYMBOL, limit=1)
+        # 4. Pull a deeper trade history window to accurately reconstruct the net active position
+        my_trades = client.get_my_trades(symbol=SYMBOL, limit=20)
         
-        if my_trades:
-            last_trade = my_trades[0]
-            is_buyer = last_trade['isBuyer']
-            exec_price = float(last_trade['price'])
-            exec_qty = float(last_trade['qty'])
+        if sol_bal >= 0.05:  # Operational threshold: Do we hold an asset balance worth tracking?
+            accumulated_qty = 0.0
+            weighted_cost = 0.0
             
-            # If our last action was a BUY and we still hold at least that much SOL
-            if is_buyer and sol_bal >= (exec_qty * 0.99):
-                log_activity(f"Reconciliation: Active position verified. Entry basis match: ${exec_price}")
+            # Iterate backward through executions to calculate true average entry cost basis
+            for trade in reversed(my_trades):
+                if trade['isBuyer']:
+                    qty = float(trade['qty'])
+                    price = float(trade['price'])
+                    
+                    accumulated_qty += qty
+                    weighted_cost += (price * qty)
+                    
+                    # Stop calculating once history accounts for our current wallet balance
+                    if accumulated_qty >= (sol_bal * 0.99):
+                        break
+            
+            if accumulated_qty > 0:
+                avg_entry_price = weighted_cost / accumulated_qty
+                log_activity(f"Reconciliation: Active position verified. Reconstructed Cost Basis: ${avg_entry_price:.2f}, Size: {sol_bal}")
                 redis.set('position_active', 'true')
-                redis.set('purchase_price', str(exec_price))
-                redis.set('bot_tracked_qty', str(exec_qty))
+                redis.set('purchase_price', str(avg_entry_price))
+                redis.set('bot_tracked_qty', str(sol_bal))
                 return True
                 
         # Default fallback to cash tracking mode
@@ -128,15 +142,20 @@ def run_trading_bot():
 
     while True:
         try:
-            # --- LOCKING SYSTEM: Prevent multiple container workers executing trades simultaneously ---
-            # Set a 15-second expiration lock unique to this thread instance
+            # Check for permanent hard lockout errors set by reconciliation before attempting execution
+            current_status = redis.get('engine_status') or ""
+            if "LOCKOUT" in current_status:
+                print(f"[{time.strftime('%H:%M:%S')}] [{INSTANCE_ID}] Loop Blocked: System in LOCKOUT state. Manual review required.")
+                time.sleep(INTERVAL)
+                continue
+
+            # --- LOCKING SYSTEM ---
             lock_acquired = redis.set('trading_execution_lock', INSTANCE_ID, nx=True, ex=15)
             if not lock_acquired and redis.get('trading_execution_lock') != INSTANCE_ID:
                 print(f"[{time.strftime('%H:%M:%S')}] [{INSTANCE_ID}] Standby: Secondary engine worker detected. Idling execution loop.")
                 time.sleep(INTERVAL)
                 continue
                 
-            # Refresh lock lease to secure execution runtime window
             redis.set('trading_execution_lock', INSTANCE_ID, ex=15)
 
             if redis.get('bot_running') != 'true':
@@ -159,19 +178,28 @@ def run_trading_bot():
                 buy_triggered = False
                 thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
 
-                if len(price_history) >= 1:
-                    last_price = price_history[0]
-                    drop_pct = ((last_price - current_price) / last_price) * 100
-                    thought_msg += f" | Last: ${last_price:.2f} ({drop_pct:+.2f}%)"
-                    
-                    if drop_pct >= 1.0:
-                        buy_triggered = True
-                        log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
+                # Handle tracking warmup to prevent out-of-date array evaluations
+                if len(price_history) < 3:
+                    thought_msg += f" | Warming up price cache ({len(price_history)}/3 matches)..."
+                    log_activity(thought_msg, skip_db=True)
+                    redis.lpush('price_history', str(current_price))
+                    time.sleep(INTERVAL)
+                    continue
 
-                if len(price_history) >= 3 and not buy_triggered:
-                    step1 = price_history[0]
-                    step2 = price_history[1]
-                    step3 = price_history[2]
+                # Trigger Route 1: 1% Flash Drop
+                last_price = price_history[0]
+                drop_pct = ((last_price - current_price) / last_price) * 100
+                thought_msg += f" | Last: ${last_price:.2f} ({drop_pct:+.2f}%)"
+                
+                if drop_pct >= 1.0:
+                    buy_triggered = True
+                    log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
+
+                # Trigger Route 2: 3-Step Cascade Shield (Strict >= 0.20% per step)
+                if not buy_triggered:
+                    step1 = price_history[0]  # T-10s
+                    step2 = price_history[1]  # T-20s
+                    step3 = price_history[2]  # T-30s
                     
                     d1 = ((step3 - step2) / step3) * 100
                     d2 = ((step2 - step1) / step2) * 100
@@ -192,18 +220,15 @@ def run_trading_bot():
 
                 if buy_triggered:
                     usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
-                    # Strict safety parameter checks: Max configuration floor caps
                     usdt_alloc = min(usdt_bal * 0.95, MAX_TRADE_USDT)
                     
                     if usdt_alloc >= 5.0:
                         sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
                         log_activity(f"EXECUTION: Dispatching Market BUY for {sol_quantity} SOL...")
                         
-                        # Dispatch order and immediately extract exact fill weights
-                        order = client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
-                        time.sleep(1) # Quick wait for fill execution clarity
+                        client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
+                        time.sleep(1) 
                         
-                        # Re-verify fill states completely
                         reconcile_state_against_binance(client)
                     else:
                         log_activity("Transaction aborted: Available balance under operational thresholds.")
@@ -222,7 +247,6 @@ def run_trading_bot():
 
                 if current_price >= target_price:
                     sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-                    # CRITICAL FIX: Only liquidate the specific quantity the bot bought, never your global wallet balance
                     sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
                     
                     if sol_to_liquidate > 0.01:
@@ -373,7 +397,6 @@ def liquidate_to_usdt():
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
         bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 
-        # Safety catch: limit liquidation to bot-owned size unless forced
         sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty if bot_tracked_qty > 0 else sol_bal) * 100) / 100.0
         
         if sol_to_liquidate > 0.01:
