@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 import math
+import json
 import requests
 import queue
 from threading import Thread
@@ -23,8 +24,14 @@ log_queue = queue.Queue()
 
 # --- Hard Safety Bounds ---
 SYMBOL = 'SOLUSDT'
-INTERVAL = 10
-MAX_TRADE_USDT = 50.00  # Hard ceiling per single trade allocation
+SAMPLE_INTERVAL = 1
+SIGNAL_EVALUATION_INTERVAL = 10
+LOOKBACK_SECONDS = 120
+UPLIFT_THRESHOLD_PCT = 0.05
+AUTO_BUY_ALLOCATION = 0.95
+SELL_TARGET_MULTIPLIER = 1.006
+PRICE_HISTORY_LIMIT = LOOKBACK_SECONDS + 10
+MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
 # --- Authentication Guard ---
@@ -53,6 +60,58 @@ def redis_log_worker():
             log_queue.task_done()
 
 Thread(target=redis_log_worker, daemon=True).start()
+
+def get_binance_requests_params():
+    proxy_url = os.environ.get("BINANCE_PROXY")
+    if not proxy_url:
+        return {}
+
+    if proxy_url.startswith("socks5://"):
+        proxy_url = proxy_url.replace("socks5://", "socks5h://")
+    elif proxy_url.startswith("http://"):
+        proxy_url = proxy_url.replace("http://", "socks5h://")
+
+    return {'proxies': {'http': proxy_url, 'https': proxy_url}}
+
+def get_binance_client():
+    return Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=get_binance_requests_params())
+
+def record_price_sample(price):
+    sample = json.dumps({'ts': time.time(), 'price': price})
+    redis.lpush('price_history', sample)
+    redis.ltrim('price_history', 0, PRICE_HISTORY_LIMIT - 1)
+
+def load_price_samples():
+    raw_samples = redis.lrange('price_history', 0, PRICE_HISTORY_LIMIT - 1)
+    parsed_samples = []
+
+    for raw_sample in reversed(raw_samples):
+        try:
+            sample = json.loads(raw_sample)
+            parsed_samples.append({'ts': float(sample['ts']), 'price': float(sample['price'])})
+        except Exception:
+            try:
+                parsed_samples.append({'ts': 0.0, 'price': float(raw_sample)})
+            except Exception:
+                continue
+
+    return parsed_samples
+
+def find_anchor_price(samples, anchor_ts):
+    anchor_price = None
+
+    for sample in samples:
+        if sample['ts'] <= anchor_ts:
+            anchor_price = sample['price']
+        else:
+            break
+
+    return anchor_price
+
+def pct_change(from_price, to_price):
+    if from_price <= 0:
+        return 0.0
+    return ((to_price - from_price) / from_price) * 100
 
 # --- Truth Reconciliation Engine ---
 def reconcile_state_against_binance(client):
@@ -114,97 +173,94 @@ def run_trading_bot():
         print("API keys missing from environment profiles.")
         return
 
-    proxy_url = os.environ.get("BINANCE_PROXY")
-    requests_params = {}
-    if proxy_url:
-        if proxy_url.startswith("socks5://"):
-            proxy_url = proxy_url.replace("socks5://", "socks5h://")
-        elif proxy_url.startswith("http://"):
-            proxy_url = proxy_url.replace("http://", "socks5h://")
-        requests_params['proxies'] = {'http': proxy_url, 'https': proxy_url}
-
-    client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
+    client = get_binance_client()
     
     if not reconcile_state_against_binance(client):
         log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
         return
 
     last_logged_thought = ""
+    last_signal_check = 0.0
 
     while True:
         try:
             current_status = redis.get('engine_status') or ""
             if "LOCKOUT" in current_status:
-                time.sleep(INTERVAL)
+                time.sleep(SAMPLE_INTERVAL)
                 continue
 
             lock_acquired = redis.set('trading_execution_lock', INSTANCE_ID, nx=True, ex=15)
             if not lock_acquired and redis.get('trading_execution_lock') != INSTANCE_ID:
-                time.sleep(INTERVAL)
+                time.sleep(SAMPLE_INTERVAL)
                 continue
                 
             redis.set('trading_execution_lock', INSTANCE_ID, ex=15)
 
             if redis.get('bot_running') != 'true':
-                log_activity("Trading paused. Loop idling.", skip_db=True)
-                time.sleep(INTERVAL)
+                redis.set('engine_status', 'PAUSED')
+                if last_logged_thought != "Trading paused. Loop idling.":
+                    log_activity("Trading paused. Loop idling.", skip_db=True)
+                    last_logged_thought = "Trading paused. Loop idling."
+                time.sleep(SAMPLE_INTERVAL)
                 continue
 
             ticker = client.get_symbol_ticker(symbol=SYMBOL)
             current_price = float(ticker['price'])
             redis.set('current_sol_price', str(current_price))
+            record_price_sample(current_price)
 
             position_active = redis.get('position_active') == 'true'
             purchase_price = float(redis.get('purchase_price') or 0.0)
             bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 
-            raw_history = redis.lrange('price_history', 0, 2)
-            price_history = [float(p) for p in raw_history]
-
             if not position_active:
+                samples = load_price_samples()
+                now = time.time()
+                anchor_price = find_anchor_price(samples, now - LOOKBACK_SECONDS)
+
+                if (now - last_signal_check) < SIGNAL_EVALUATION_INTERVAL:
+                    time.sleep(SAMPLE_INTERVAL)
+                    continue
+
+                last_signal_check = now
                 buy_triggered = False
                 thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
 
-                if len(price_history) < 3:
-                    thought_msg += f" | Warming up price cache ({len(price_history)}/3 matches)..."
+                if len(samples) < 4 or anchor_price is None:
+                    warm_seconds = min(len(samples), LOOKBACK_SECONDS)
+                    thought_msg += f" | Warming 2m price cache ({warm_seconds}/{LOOKBACK_SECONDS}s)..."
                     log_activity(thought_msg, skip_db=True)
-                    redis.lpush('price_history', str(current_price))
-                    time.sleep(INTERVAL)
+                    redis.set('engine_status', 'WARMING_2M_CACHE')
                     continue
 
-                last_price = price_history[0]
-                drop_pct = ((last_price - current_price) / last_price) * 100
-                thought_msg += f" | Last: ${last_price:.2f} ({drop_pct:+.2f}%)"
-                
-                if drop_pct >= 1.0:
+                latest_prices = [sample['price'] for sample in samples[-4:]]
+                uplifts = [
+                    pct_change(latest_prices[0], latest_prices[1]),
+                    pct_change(latest_prices[1], latest_prices[2]),
+                    pct_change(latest_prices[2], latest_prices[3])
+                ]
+                anchor_delta = pct_change(anchor_price, current_price)
+                thought_msg += (
+                    f" | 2m Anchor: ${anchor_price:.2f} ({anchor_delta:+.2f}%)"
+                    f" | Uplifts: [{uplifts[0]:+.2f}%, {uplifts[1]:+.2f}%, {uplifts[2]:+.2f}%]"
+                )
+
+                if all(step >= UPLIFT_THRESHOLD_PCT for step in uplifts) and current_price < anchor_price:
                     buy_triggered = True
-                    log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
-
-                if not buy_triggered:
-                    step1 = price_history[0]
-                    step2 = price_history[1]
-                    step3 = price_history[2]
-                    
-                    d1 = ((step3 - step2) / step3) * 100
-                    d2 = ((step2 - step1) / step2) * 100
-                    d3 = ((step1 - current_price) / step1) * 100
-                    
-                    thought_msg += f" | Cascade Dips: [{d1:+.2f}%, {d2:+.2f}%, {d3:+.2f}%]"
-                    
-                    if d1 >= 0.20 and d2 >= 0.20 and d3 >= 0.20:
-                        buy_triggered = True
-                        log_activity(f"BUY ALERT: 3-Step Cascade Confirmed (All steps >= 0.20%)")
-
-                if not buy_triggered:
-                    thought_msg += " | Conditions split. Holding."
+                    log_activity(
+                        "BUY ALERT: Three consecutive +0.05% uplifts confirmed while price remains below the 2-minute anchor."
+                    )
+                else:
+                    thought_msg += " | Waiting for rebound under anchor."
                 
                 skip_write = (thought_msg == last_logged_thought)
                 log_activity(thought_msg, skip_db=skip_write)
                 last_logged_thought = thought_msg
+                redis.set('engine_status', 'MONITORING_RECENT_DIP_REBOUND')
 
                 if buy_triggered:
                     usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
-                    usdt_alloc = min(usdt_bal * 0.95, MAX_TRADE_USDT)
+                    usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
                     
                     if usdt_alloc >= 5.0:
                         sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
@@ -215,17 +271,15 @@ def run_trading_bot():
                     else:
                         log_activity("Transaction aborted: Available balance under operational thresholds.")
 
-                redis.lpush('price_history', str(current_price))
-                redis.ltrim('price_history', 0, 2)
-
             else:
-                target_price = purchase_price * 1.0121
+                target_price = purchase_price * SELL_TARGET_MULTIPLIER
                 profit_pct = ((current_price - purchase_price) / purchase_price) * 100
-                thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +1.21%) | Holding."
+                thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +0.60%) | Holding."
                 
                 skip_write = (thought_msg == last_logged_thought)
                 log_activity(thought_msg, skip_db=skip_write)
                 last_logged_thought = thought_msg
+                redis.set('engine_status', 'HOLDING_FOR_+0.60%_EXIT')
 
                 if current_price >= target_price:
                     sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
@@ -243,7 +297,7 @@ def run_trading_bot():
             log_activity(f"Process Loop Error: {e}")
             redis.set('engine_status', "Loop Error")
 
-        time.sleep(INTERVAL)
+        time.sleep(SAMPLE_INTERVAL)
 
 Thread(target=run_trading_bot, daemon=True).start()
 
@@ -255,17 +309,8 @@ def execute_manual_buy():
     try:
         data = request.json or {}
         usdt_amount = min(float(data.get('usdt_amount', 0)), MAX_TRADE_USDT)
-        
-        proxy_url = os.environ.get("BINANCE_PROXY")
-        requests_params = {}
-        if proxy_url:
-            if proxy_url.startswith("socks5://"):
-                proxy_url = proxy_url.replace("socks5://", "socks5h://")
-            elif proxy_url.startswith("http://"):
-                proxy_url = proxy_url.replace("http://", "socks5h://")
-            requests_params['proxies'] = {'http': proxy_url, 'https': proxy_url}
 
-        client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
+        client = get_binance_client()
         ticker = client.get_symbol_ticker(symbol=SYMBOL)
         current_price = float(ticker['price'])
         
@@ -291,12 +336,9 @@ def health_check():
         health['errors'].append(f"Redis Error: {str(e)}")
 
     proxy_url = os.environ.get("BINANCE_PROXY")
+    requests_params = get_binance_requests_params()
+    proxies = requests_params.get('proxies')
     if proxy_url:
-        if proxy_url.startswith("socks5://"):
-            proxy_url = proxy_url.replace("socks5://", "socks5h://")
-        elif proxy_url.startswith("http://"):
-            proxy_url = proxy_url.replace("http://", "socks5h://")
-        proxies = {'http': proxy_url, 'https': proxy_url}
         try:
             res = requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=5)
             if res.status_code == 200:
@@ -308,7 +350,7 @@ def health_check():
 
     if BINANCE_API_KEY and BINANCE_API_SECRET:
         try:
-            test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params={'proxies': proxies} if proxy_url else {})
+            test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
             if test_client.get_server_time():
                 health['binance_api'] = 'OK'
         except Exception as e:
@@ -398,16 +440,7 @@ def manual_set_position():
 @app.route('/api/liquidate', methods=['POST'])
 def liquidate_to_usdt():
     try:
-        proxy_url = os.environ.get("BINANCE_PROXY")
-        requests_params = {}
-        if proxy_url:
-            if proxy_url.startswith("socks5://"):
-                proxy_url = proxy_url.replace("socks5://", "socks5h://")
-            elif proxy_url.startswith("http://"):
-                proxy_url = proxy_url.replace("http://", "socks5h://")
-            requests_params['proxies'] = {'http': proxy_url, 'https': proxy_url}
-
-        client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
+        client = get_binance_client()
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
         bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 

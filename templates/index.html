@@ -64,12 +64,12 @@
                     </div>
                     <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-sm">
                         <div class="flex justify-between">
-                            <span class="text-gray-400">1% Flash Target:</span>
-                            <span id="flashTargetPrice" class="text-gray-200 font-bold">Calculating...</span>
+                            <span class="text-gray-400">2m Anchor Check:</span>
+                            <span id="flashTargetPrice" class="text-gray-200 font-bold">Warming...</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="text-gray-400">Cascade Filter:</span>
-                            <span id="cascadeTracker" class="text-gray-200 font-bold">Shield Active...</span>
+                            <span class="text-gray-400">3x Uplift Filter:</span>
+                            <span id="cascadeTracker" class="text-gray-200 font-bold">Monitoring...</span>
                         </div>
                     </div>
                     
@@ -95,7 +95,7 @@
                             <span id="openingPurchasePrice" class="text-yellow-500 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="text-gray-400">Target Exit (+1.21%):</span>
+                            <span class="text-gray-400">Target Exit (+0.60%):</span>
                             <span id="targetSellPrice" class="text-red-400 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
@@ -206,12 +206,12 @@
                     solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-active";
 
                     const buyPrice = parseFloat(data.purchase_price);
-                    const targetExit = buyPrice * 1.0121;
+                    const targetExit = buyPrice * 1.006;
                     const profitPct = ((currentSpot - buyPrice) / buyPrice) * 100;
 
                     document.getElementById('openingPurchasePrice').innerText = `$${buyPrice.toFixed(2)}`;
                     document.getElementById('targetSellPrice').innerText = `$${targetExit.toFixed(2)}`;
-                    document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +1.21%`;
+                    document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +0.60%`;
                     document.getElementById('marginDeltaGap').className = profitPct >= 0 ? "text-green-400 font-black" : "text-red-400 font-black";
 
                     document.getElementById('flashTargetPrice').innerText = "N/A";
@@ -220,9 +220,8 @@
                     usdtSide.className = "card p-4 rounded space-y-3 border-t-4 border-green-400 mode-active";
                     solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-dim";
 
-                    const staticCalculatedFlashTarget = currentSpot * 0.99;
-                    document.getElementById('flashTargetPrice').innerText = `$${staticCalculatedFlashTarget.toFixed(2)}`;
-                    document.getElementById('cascadeTracker').innerText = "Scan Active...";
+                    document.getElementById('flashTargetPrice').innerText = "Below anchor required";
+                    document.getElementById('cascadeTracker').innerText = "3 x +0.05% required";
 
                     document.getElementById('openingPurchasePrice').innerText = "N/A";
                     document.getElementById('targetSellPrice').innerText = "N/A";
