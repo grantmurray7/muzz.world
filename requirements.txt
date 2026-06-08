@@ -2,4 +2,5 @@ Flask
 python-binance
 upstash-redis
 requests[socks]
+websockets-proxy
 gunicorn
