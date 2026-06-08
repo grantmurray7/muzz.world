@@ -27,7 +27,7 @@ SYMBOL = 'SOLUSDT'
 SAMPLE_INTERVAL = 10
 SIGNAL_EVALUATION_INTERVAL = 10
 LOOKBACK_SECONDS = 120
-UPLIFT_THRESHOLD_PCT = 0.05
+UPLIFT_THRESHOLD_PCT = 0.02
 AUTO_BUY_ALLOCATION = 0.95
 SELL_TARGET_MULTIPLIER = 1.006
 PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 5
@@ -254,7 +254,7 @@ def run_trading_bot():
                 if all(step >= UPLIFT_THRESHOLD_PCT for step in uplifts) and current_price < anchor_price:
                     buy_triggered = True
                     log_activity(
-                        "BUY ALERT: Three consecutive +0.05% uplifts confirmed while price remains below the 2-minute anchor."
+                        "BUY ALERT: Three consecutive +0.02% uplifts confirmed while price remains below the 2-minute anchor."
                     )
                 else:
                     thought_msg += " | Waiting for rebound under anchor."
