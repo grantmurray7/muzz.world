@@ -50,7 +50,6 @@ def run_trading_bot():
     
     requests_params = {}
     if proxy_url:
-        # Normalize incoming strings to force DNS-safe SOCKS5 routing
         if proxy_url.startswith("socks5://"):
             proxy_url = proxy_url.replace("socks5://", "socks5h://")
         elif proxy_url.startswith("http://"):
@@ -210,13 +209,34 @@ def index():
 def get_state():
     try:
         logs = redis.lrange('bot_logs', 0, 20)
+        
+        # Load numeric conversion states securely
+        usdt_bal = float(redis.get('balance_usdt') or 0.0)
+        sol_bal = float(redis.get('balance_sol') or 0.0)
+        current_price = float(redis.get('current_sol_price') or 0.0)
+        
+        # Calculate dynamic total wallet asset values in USD
+        total_usd = usdt_bal + (sol_bal * current_price)
+        
+        # Fetch standard fallback spot conversion rate for GBP currency mapping
+        total_gbp = total_usd * 0.78  # Clean flat conversion basis mapping
+        try:
+            fiat_res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=2)
+            if fiat_res.status_code == 200:
+                rates = fiat_res.json().get('rates', {})
+                total_gbp = total_usd * rates.get('GBP', 0.78)
+        except Exception:
+            pass # Use hardcoded fallback calculation if external fiat api limits exceed
+
         return jsonify({
             'bot_running': redis.get('bot_running') == 'true',
             'position_active': redis.get('position_active') == 'true',
             'purchase_price': redis.get('purchase_price') or '0.00',
-            'current_sol_price': redis.get('current_sol_price') or '0.00',
-            'balance_usdt': redis.get('balance_usdt') or '0.00',
-            'balance_sol': redis.get('balance_sol') or '0.00',
+            'current_sol_price': str(current_price),
+            'balance_usdt': str(usdt_bal),
+            'balance_sol': str(sol_bal),
+            'total_portfolio_usd': str(round(total_usd, 2)),
+            'total_portfolio_gbp': str(round(total_gbp, 2)),
             'engine_status': redis.get('engine_status') or 'Initializing...',
             'logs': logs
         })
