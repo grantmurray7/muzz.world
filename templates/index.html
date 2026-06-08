@@ -11,6 +11,7 @@
         .card { background-color: #1f2226; border: 1px solid #434954; }
         .status-ok { color: #52e5a4; font-weight: bold; }
         .status-fail { color: #ff6b6b; font-weight: bold; }
+        .status-warn { color: #fbbf24; font-weight: bold; }
         .mode-dim { opacity: 0.20; transition: opacity 0.3s ease; pointer-events: none; }
         .mode-active { opacity: 1; transition: opacity 0.3s ease; }
         ::-webkit-scrollbar { width: 8px; }
@@ -115,7 +116,7 @@
 
             <div class="card p-3 rounded">
                 <h2 class="text-xs font-bold tracking-wider text-gray-400 uppercase mb-2.5 font-mono">Pipeline Diagnostics</h2>
-                <div class="grid grid-cols-2 gap-2 text-sm font-mono">
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm font-mono">
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
                         <span class="text-gray-500 block text-xs font-bold">REDIS:</span>
                         <span id="debugRedis" class="text-gray-200">...</span>
@@ -127,6 +128,10 @@
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
                         <span class="text-gray-500 block text-xs font-bold">BINANCE:</span>
                         <span id="debugBinance" class="text-gray-200">...</span>
+                    </div>
+                    <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
+                        <span class="text-gray-500 block text-xs font-bold">STREAM:</span>
+                        <span id="debugStream" class="text-gray-200 truncate block">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
                         <span class="text-gray-500 block text-xs font-bold">ENGINE:</span>
@@ -266,15 +271,28 @@
                 const response = await fetch('/api/health');
                 const health = await response.json();
 
-                const setStatus = (elId, val, okPattern) => {
+                const setStatus = (elId, val) => {
                     const el = document.getElementById(elId);
-                    el.innerText = val.includes(okPattern) ? "OK" : "ERR";
-                    el.className = val.includes(okPattern) ? "status-ok" : "status-fail";
+                    const displayValue = String(val || 'UNKNOWN');
+                    el.innerText = displayValue;
+
+                    if (displayValue.includes('OK')) {
+                        el.className = "status-ok truncate block";
+                    } else if (displayValue.includes('NOT SET') || displayValue.includes('CONNECTING')) {
+                        el.className = "status-warn truncate block";
+                    } else {
+                        el.className = "status-fail truncate block";
+                    }
                 };
 
-                setStatus('debugRedis', health.upstash_redis, 'OK');
-                setStatus('debugProxy', health.proxy_server, 'OK');
-                setStatus('debugBinance', health.binance_api, 'OK');
+                const streamText = health.market_stream === 'OK' && health.market_stream_age_sec !== null
+                    ? `OK (${health.market_stream_age_sec}s)`
+                    : health.market_stream;
+
+                setStatus('debugRedis', health.upstash_redis);
+                setStatus('debugProxy', health.proxy_server);
+                setStatus('debugBinance', health.binance_api);
+                setStatus('debugStream', streamText);
 
                 const errConsole = document.getElementById('errorConsole');
                 if (health.errors.length > 0) {

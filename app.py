@@ -521,6 +521,7 @@ def health_check():
         health['market_stream'] = stream_snapshot.get('status') or 'OFFLINE'
         if stream_snapshot.get('last_error'):
             health['errors'].append(f"Market Stream Error: {stream_snapshot['last_error']}")
+    health['market_stream_age_sec'] = round(stream_age, 1) if stream_snapshot.get('last_update_ts') else None
 
     return jsonify(health)
 
