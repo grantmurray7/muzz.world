@@ -20,7 +20,7 @@
 <body class="p-4 md:p-8 font-sans">
 
     <div class="max-w-5xl mx-auto">
-<div class="flex justify-between items-center mb-6">
+        <div class="flex justify-between items-center mb-6">
             <div class="flex flex-col">
                 <h1 class="text-4xl font-extrabold tracking-tight">muzz.world</h1>
                 <p class="text-sm text-gray-400 font-mono mt-1">"no solana, no banana"</p>
@@ -45,7 +45,7 @@
                 </div>
                 <div class="p-3 bg-black rounded border border-gray-800">
                     <span class="text-gray-500 block">Engine Execution State:</span>
-                    <span id="engineStatus" class="text-yellow-500 font-semibold">Initializing...</span>
+                    <span id="engineStatus" class="text-green-400 font-semibold">Initializing...</span>
                 </div>
             </div>
             <div id="errorConsole" class="mt-3 text-xs font-mono text-red-400 hidden bg-red-950 p-2 rounded border border-red-900"></div>
@@ -120,7 +120,17 @@
                 
                 document.getElementById('totalNetUsd').innerText = `$${parseFloat(data.total_portfolio_usd).toFixed(2)}`;
                 document.getElementById('totalNetGbp').innerText = `£${parseFloat(data.total_portfolio_gbp).toFixed(2)}`;
-                document.getElementById('engineStatus').innerText = data.engine_status;
+                
+                // Dynamic coloration for execution engine text state box
+                const engStatus = document.getElementById('engineStatus');
+                engStatus.innerText = data.engine_status;
+                if (data.engine_status.includes('Connected')) {
+                    engStatus.className = "text-green-400 font-semibold animate-pulse";
+                } else if (data.engine_status.includes('Error')) {
+                    engStatus.className = "text-red-500 font-bold";
+                } else {
+                    engStatus.className = "text-yellow-500 font-semibold";
+                }
 
                 // Sync engine execution badge state
                 const badge = document.getElementById('engineBadge');
