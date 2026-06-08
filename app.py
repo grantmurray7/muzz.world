@@ -30,7 +30,7 @@ INSTANCE_ID = str(uuid.uuid4())[:8]
 # --- Authentication Guard ---
 @app.before_request
 def require_login():
-    allowed_routes = ['login', 'static', 'api/health']
+    allowed_routes = ['login', 'static', 'api/health', 'api/manual_buy']
     if request.endpoint not in allowed_routes and not session.get('logged_in'):
         return redirect(url_for('login'))
 
@@ -56,34 +56,28 @@ Thread(target=redis_log_worker, daemon=True).start()
 
 # --- Truth Reconciliation Engine ---
 def reconcile_state_against_binance(client):
-    """Forces reality check against Binance data before executing logic."""
     log_activity("Running core truth reconciliation step...")
     try:
-        # 1. Clear out historical price arrays to ensure zero cross-process contamination
         redis.delete('price_history')
         
-        # 2. Fetch exact wallet values
         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
         
         redis.set('balance_usdt', str(usdt_bal))
         redis.set('balance_sol', str(sol_bal))
         
-        # 3. Check for active open working orders
         open_orders = client.get_open_orders(symbol=SYMBOL)
         if open_orders:
             log_activity("CRITICAL: Open working orders found on exchange! Forcing lockout.")
             redis.set('engine_status', 'ERROR_LOCKOUT_OPEN_ORDERS')
             return False
 
-        # 4. Pull a deeper trade history window to accurately reconstruct the net active position
         my_trades = client.get_my_trades(symbol=SYMBOL, limit=20)
         
-        if sol_bal >= 0.05:  # Operational threshold: Do we hold an asset balance worth tracking?
+        if sol_bal >= 0.05:  
             accumulated_qty = 0.0
             weighted_cost = 0.0
             
-            # Iterate backward through executions to calculate true average entry cost basis
             for trade in reversed(my_trades):
                 if trade['isBuyer']:
                     qty = float(trade['qty'])
@@ -92,7 +86,6 @@ def reconcile_state_against_binance(client):
                     accumulated_qty += qty
                     weighted_cost += (price * qty)
                     
-                    # Stop calculating once history accounts for our current wallet balance
                     if accumulated_qty >= (sol_bal * 0.99):
                         break
             
@@ -104,7 +97,6 @@ def reconcile_state_against_binance(client):
                 redis.set('bot_tracked_qty', str(sol_bal))
                 return True
                 
-        # Default fallback to cash tracking mode
         log_activity("Reconciliation: No active bot holdings detected. Set to Cash Mode.")
         redis.set('position_active', 'false')
         redis.delete('purchase_price')
@@ -133,7 +125,6 @@ def run_trading_bot():
 
     client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
     
-    # Run absolute validation on startup/redeploy instance instantiation
     if not reconcile_state_against_binance(client):
         log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
         return
@@ -142,17 +133,13 @@ def run_trading_bot():
 
     while True:
         try:
-            # Check for permanent hard lockout errors set by reconciliation before attempting execution
             current_status = redis.get('engine_status') or ""
             if "LOCKOUT" in current_status:
-                print(f"[{time.strftime('%H:%M:%S')}] [{INSTANCE_ID}] Loop Blocked: System in LOCKOUT state. Manual review required.")
                 time.sleep(INTERVAL)
                 continue
 
-            # --- LOCKING SYSTEM ---
             lock_acquired = redis.set('trading_execution_lock', INSTANCE_ID, nx=True, ex=15)
             if not lock_acquired and redis.get('trading_execution_lock') != INSTANCE_ID:
-                print(f"[{time.strftime('%H:%M:%S')}] [{INSTANCE_ID}] Standby: Secondary engine worker detected. Idling execution loop.")
                 time.sleep(INTERVAL)
                 continue
                 
@@ -178,7 +165,6 @@ def run_trading_bot():
                 buy_triggered = False
                 thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
 
-                # Handle tracking warmup to prevent out-of-date array evaluations
                 if len(price_history) < 3:
                     thought_msg += f" | Warming up price cache ({len(price_history)}/3 matches)..."
                     log_activity(thought_msg, skip_db=True)
@@ -186,7 +172,6 @@ def run_trading_bot():
                     time.sleep(INTERVAL)
                     continue
 
-                # Trigger Route 1: 1% Flash Drop
                 last_price = price_history[0]
                 drop_pct = ((last_price - current_price) / last_price) * 100
                 thought_msg += f" | Last: ${last_price:.2f} ({drop_pct:+.2f}%)"
@@ -195,11 +180,10 @@ def run_trading_bot():
                     buy_triggered = True
                     log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
 
-                # Trigger Route 2: 3-Step Cascade Shield (Strict >= 0.20% per step)
                 if not buy_triggered:
-                    step1 = price_history[0]  # T-10s
-                    step2 = price_history[1]  # T-20s
-                    step3 = price_history[2]  # T-30s
+                    step1 = price_history[0]
+                    step2 = price_history[1]
+                    step3 = price_history[2]
                     
                     d1 = ((step3 - step2) / step3) * 100
                     d2 = ((step2 - step1) / step2) * 100
@@ -225,10 +209,8 @@ def run_trading_bot():
                     if usdt_alloc >= 5.0:
                         sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
                         log_activity(f"EXECUTION: Dispatching Market BUY for {sol_quantity} SOL...")
-                        
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
                         time.sleep(1) 
-                        
                         reconcile_state_against_binance(client)
                     else:
                         log_activity("Transaction aborted: Available balance under operational thresholds.")
@@ -265,7 +247,40 @@ def run_trading_bot():
 
 Thread(target=run_trading_bot, daemon=True).start()
 
-# --- DIAGNOSTIC HEALTH CHECK ENDPOINT ---
+# --- INSTANT INTERVENTION ENDPOINTS ---
+@app.route('/api/manual_buy', methods=['POST'])
+def execute_manual_buy():
+    if not session.get('logged_in'):
+        return jsonify({'status': 'error', 'message': 'Unauthorized'}), 401
+    try:
+        data = request.json or {}
+        usdt_amount = min(float(data.get('usdt_amount', 0)), MAX_TRADE_USDT)
+        
+        proxy_url = os.environ.get("BINANCE_PROXY")
+        requests_params = {}
+        if proxy_url:
+            if proxy_url.startswith("socks5://"):
+                proxy_url = proxy_url.replace("socks5://", "socks5h://")
+            elif proxy_url.startswith("http://"):
+                proxy_url = proxy_url.replace("http://", "socks5h://")
+            requests_params['proxies'] = {'http': proxy_url, 'https': proxy_url}
+
+        client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
+        ticker = client.get_symbol_ticker(symbol=SYMBOL)
+        current_price = float(ticker['price'])
+        
+        sol_quantity = math.floor((usdt_amount / current_price) * 100) / 100.0
+        
+        if sol_quantity > 0.01:
+            log_activity(f"MANUAL INTERVENTION: Executing forced Market BUY for {sol_quantity} SOL...")
+            client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
+            time.sleep(1)
+            reconcile_state_against_binance(client)
+            return jsonify({'status': 'success', 'message': f'Successfully purchased {sol_quantity} SOL.'})
+        return jsonify({'status': 'error', 'message': 'Calculated order size too low.'}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     health = {'upstash_redis': 'FAIL', 'proxy_server': 'FAIL', 'binance_api': 'FAIL', 'errors': []}
@@ -322,7 +337,6 @@ def index():
 def get_state():
     try:
         logs = redis.lrange('bot_logs', 0, 20)
-        
         usdt_bal = float(redis.get('balance_usdt') or 0.0)
         sol_bal = float(redis.get('balance_sol') or 0.0)
         current_price = float(redis.get('current_sol_price') or 0.0)
