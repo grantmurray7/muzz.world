@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 import logging
+import requests
 from threading import Thread
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from binance.client import Client
@@ -25,7 +26,7 @@ INTERVAL = 10  # strict 10-second ticker execution
 # --- Authentication Guard ---
 @app.before_request
 def require_login():
-    allowed_routes = ['login', 'static']
+    allowed_routes = ['login', 'static', 'api/health'] # allow health check access
     if request.endpoint not in allowed_routes and not session.get('logged_in'):
         return redirect(url_for('login'))
 
@@ -75,8 +76,10 @@ def run_trading_bot():
                 sol_bal = client.get_asset_balance(asset='SOL')['free']
                 redis.set('balance_usdt', str(usdt_bal))
                 redis.set('balance_sol', str(sol_bal))
+                redis.set('engine_status', 'Connected & Syncing')
             except Exception as e:
-                log_activity(f"Failed pulling asset metrics: {e}")
+                log_activity(f"Failed pulling asset metrics from Binance: {e}")
+                redis.set('engine_status', f"Binance Connect Error: {str(e)[:30]}")
                 time.sleep(INTERVAL)
                 continue
 
@@ -102,14 +105,12 @@ def run_trading_bot():
                 buy_triggered = False
 
                 if len(price_history) >= 1:
-                    # Metric 1: One-step flash drop of 1.0% or greater
                     last_price = price_history[0]
                     if (last_price - current_price) / last_price >= 0.01:
                         buy_triggered = True
                         log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
 
                 if len(price_history) >= 3 and not buy_triggered:
-                    # Metric 2: 3 consecutive descending iterations >= 0.05% drop per step
                     step1 = price_history[0]
                     step2 = price_history[1]
                     step3 = price_history[2]
@@ -123,7 +124,7 @@ def run_trading_bot():
                 if buy_triggered:
                     usdt_alloc = float(usdt_bal) * 0.95
                     
-                    if usdt_alloc >= 5.0:  # Binance floor limit check
+                    if usdt_alloc >= 5.0:
                         sol_quantity = usdt_alloc / current_price
                         sol_quantity = round(sol_quantity, 2)
 
@@ -142,7 +143,6 @@ def run_trading_bot():
                     else:
                         log_activity(f"Transaction aborted: 95% allocated allocation (${round(usdt_alloc, 2)}) sits below Binance $5 threshold.")
 
-                # Persist Price History Data Arrays to Upstash
                 redis.lpush('price_history', str(current_price))
                 redis.ltrim('price_history', 0, 2)
 
@@ -171,11 +171,59 @@ def run_trading_bot():
 
         except Exception as e:
             log_activity(f"Process Loop Error Event: {e}")
+            redis.set('engine_status', f"Loop Error: {str(e)[:30]}")
 
         time.sleep(INTERVAL)
 
 # Safe launch background thread
 Thread(target=run_trading_bot, daemon=True).start()
+
+# --- DIAGNOSTIC HEALTH CHECK ENDPOINT ---
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    health = {
+        'upstash_redis': 'FAIL',
+        'proxy_server': 'FAIL',
+        'binance_api': 'FAIL',
+        'errors': []
+    }
+    
+    # 1. Test Upstash Redis
+    try:
+        redis.ping()
+        health['upstash_redis'] = 'OK'
+    except Exception as e:
+        health['errors'].append(f"Redis Error: {str(e)}")
+
+    # 2. Test Proxy Connection Output
+    proxy_url = os.environ.get("BINANCE_PROXY")
+    if proxy_url:
+        try:
+            proxies = {'http': proxy_url, 'https': proxy_url}
+            # Ping a generic IP check service through the proxy to see if credentials match
+            res = requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=5)
+            if res.status_code == 200:
+                health['proxy_server'] = f"OK ({res.json().get('ip')})"
+        except Exception as e:
+            health['errors'].append(f"Proxy Authentication Failure: {str(e)}")
+    else:
+        health['proxy_server'] = 'NOT SET'
+
+    # 3. Test Direct Authenticated Binance API
+    if BINANCE_API_KEY and BINANCE_API_SECRET:
+        try:
+            params = {'proxies': proxies} if proxy_url else {}
+            test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=params)
+            # Fetch server time to test key permission signatures
+            server_time = test_client.get_server_time()
+            if server_time:
+                health['binance_api'] = 'OK'
+        except Exception as e:
+            health['errors'].append(f"Binance Authentication Failure: {str(e)}")
+    else:
+        health['binance_api'] = 'KEYS MISSING'
+
+    return jsonify(health)
 
 # --- WEB UI SYSTEM ROUTING ---
 @app.route('/login', methods=['GET', 'POST'])
@@ -195,7 +243,6 @@ def index():
 
 @app.route('/api/state', methods=['GET'])
 def get_state():
-    """State transmission endpoint for dynamic async frontend rendering."""
     try:
         logs = redis.lrange('bot_logs', 0, 20)
         decoded_logs = [log for log in logs]
@@ -207,6 +254,7 @@ def get_state():
             'current_sol_price': redis.get('current_sol_price') or '0.00',
             'balance_usdt': redis.get('balance_usdt') or '0.00',
             'balance_sol': redis.get('balance_sol') or '0.00',
+            'engine_status': redis.get('engine_status') or 'Initializing Engine...',
             'logs': decoded_logs
         })
     except Exception as e:
@@ -214,7 +262,6 @@ def get_state():
 
 @app.route('/api/toggle', methods=['POST'])
 def toggle_bot():
-    """System ignition master switch trigger control."""
     try:
         data = request.json
         action = data.get('run', False)
