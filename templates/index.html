@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>muzz.world - $SOL trading bot</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
         body { background-color: #0b0e11; color: #eaecef; }
@@ -20,7 +21,10 @@
 
     <div class="max-w-5xl mx-auto">
         <div class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl font-bold tracking-tight">muzz.world - "no solana, no banana"</h1>
+            <div>
+                <h1 class="text-2xl font-bold tracking-tight">muzz.world</h1>
+                <p class="text-xs text-gray-400 font-mono mt-0.5">"no solana, no banana"</p>
+            </div>
             <span id="engineBadge" class="px-3 py-1 rounded text-xs font-semibold bg-gray-700 text-gray-300">SYSTEM OFFLINE</span>
         </div>
 
