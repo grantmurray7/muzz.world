@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+import math
 import requests
 from threading import Thread
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
@@ -134,14 +135,16 @@ def run_trading_bot():
             else:
                 target_price = purchase_price * 1.0121
                 if current_price >= target_price:
-                    sol_to_liquidate = round(float(sol_bal), 2)
+                    # Safely floor to 2 decimal places to guarantee execution balance parameters
+                    sol_to_liquidate = math.floor(float(sol_bal) * 100) / 100.0
+                    
                     if sol_to_liquidate > 0.01:
-                        log_activity(f"Target Hit. Executing Liquidating Sell...")
+                        log_activity(f"Target Hit. Executing Liquidating Sell of {sol_to_liquidate} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
                         redis.set('position_active', 'false')
                         redis.delete('purchase_price')
                     else:
-                        log_activity("Sell error: Balances too low.")
+                        log_activity("Sell error: Balances too low to pass market minimums.")
 
         except Exception as e:
             log_activity(f"Process Loop Error: {e}")
@@ -284,7 +287,9 @@ def liquidate_to_usdt():
         client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
 
-        sol_to_liquidate = round(sol_bal, 2)
+        # Truncate down safely to 2 decimal places to protect against fee/rounding overdrafts
+        sol_to_liquidate = math.floor(sol_bal * 100) / 100.0
+        
         if sol_to_liquidate > 0.01:
             log_activity(f"MANUAL LIQUIDATION TRIGGERED: Selling {sol_to_liquidate} SOL at market rate.")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
