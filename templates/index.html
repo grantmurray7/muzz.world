@@ -7,128 +7,130 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
-        body { background-color: #2d3139; color: #ffffff; padding: 0.5rem; }
+        body { background-color: #2d3139; color: #ffffff; padding: 0.75rem; font-size: 1rem; }
         .card { background-color: #1f2226; border: 1px solid #434954; }
         .status-ok { color: #52e5a4; font-weight: bold; }
         .status-fail { color: #ff6b6b; font-weight: bold; }
-        .mode-dim { opacity: 0.25; transition: opacity 0.3s ease; pointer-events: none; }
+        .mode-dim { opacity: 0.20; transition: opacity 0.3s ease; pointer-events: none; }
         .mode-active { opacity: 1; transition: opacity 0.3s ease; }
-        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1f2226; }
-        ::-webkit-scrollbar-thumb { background: #434954; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: #434954; border-radius: 4px; }
+        
         @media (min-width: 768px) {
-            body { padding: 1rem; }
-            .desktop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; height: calc(100vh - 5rem); }
+            body { padding: 1.5rem; }
+            /* Desktop Split: Left column takes 1 part, right log column takes 2 parts */
+            .desktop-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; height: calc(100vh - 6rem); }
             .log-container { height: 100% !important; display: flex; flex-direction: column; }
-            #logBox { flex-grow: 1; height: 100% !important; }
+            #logBox { flex-grow: 1; height: 100% !important; font-size: 0.95rem !important; }
         }
     </style>
 </head>
 <body class="font-sans antialiased">
 
-    <div class="flex justify-between items-center mb-3 px-1">
+    <div class="flex justify-between items-end mb-4 px-1">
         <div class="flex flex-col">
-            <h1 class="text-2xl font-black tracking-tight leading-none">muzz.world</h1>
-            <p class="text-xs text-gray-400 font-mono mt-0.5">"no solana, no banana"</p>
+            <h1 class="text-4xl font-black tracking-tight leading-none">muzz.world</h1>
+            <p class="text-sm text-gray-400 font-mono mt-1">"no solana, no banana"</p>
         </div>
-        <div class="flex items-center space-x-3 text-xs font-mono">
-            <div class="text-right leading-tight">
-                <span id="totalNetUsd" class="text-green-400 font-bold">$0.00</span>
-                <span class="text-gray-400 mx-1">|</span>
-                <span id="totalNetGbp" class="text-blue-400 font-bold">£0.00</span>
+        <div class="flex items-center space-x-4 text-sm font-mono">
+            <div class="text-right leading-tight text-base">
+                <span id="totalNetUsd" class="text-green-400 font-black">$0.00</span>
+                <span class="text-gray-500 mx-1.5">|</span>
+                <span id="totalNetGbp" class="text-blue-400 font-black">£0.00</span>
             </div>
-            <span id="engineBadge" class="px-2 py-0.5 rounded text-xs font-mono font-bold bg-gray-600 text-gray-200">OFFLINE</span>
+            <span id="engineBadge" class="px-3 py-1 rounded text-sm font-mono font-bold bg-gray-600 text-gray-200">OFFLINE</span>
         </div>
     </div>
 
     <div class="desktop-grid">
         
-        <div class="space-y-3 overflow-y-auto pr-0 md:pr-1">
+        <div class="space-y-4 overflow-y-auto pr-0 md:pr-1">
             
-            <div class="card p-2 rounded flex justify-between items-center font-mono text-xs">
-                <span class="text-gray-400 uppercase font-bold text-xxs">Global Spot Benchmark:</span>
+            <div class="card p-3 rounded flex justify-between items-center font-mono text-sm">
+                <span class="text-gray-400 uppercase font-bold tracking-wider">Spot Benchmark:</span>
                 <div>
-                    <span class="text-gray-500 mr-1">SOL/USDT:</span>
-                    <span id="solPrice" class="font-bold text-yellow-400">$0.00</span>
+                    <span class="text-gray-400 mr-1.5">SOL/USDT:</span>
+                    <span id="solPrice" class="font-black text-xl text-yellow-400">$0.00</span>
                 </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-2">
+            <div class="space-y-3">
                 
-                <div id="usdtSide" class="card p-3 rounded space-y-2 border-t-2 border-green-400">
-                    <p class="text-xxs text-gray-400 font-bold uppercase font-mono tracking-wider">👈 USDT Cash Mode</p>
+                <div id="usdtSide" class="card p-4 rounded space-y-3 border-t-4 border-green-400">
+                    <p class="text-sm text-gray-300 font-bold uppercase font-mono tracking-wider">👈 USDT Cash Mode</p>
                     <div>
-                        <span class="text-xxs text-gray-500 block font-mono">AVAILABLE LIQUIDITY</span>
-                        <p id="balUsdt" class="text-lg font-black">$0.00</p>
+                        <span class="text-xs text-gray-500 block font-mono font-bold">AVAILABLE LIQUIDITY</span>
+                        <p id="balUsdt" class="text-2xl font-black text-white">$0.00</p>
                     </div>
-                    <div class="pt-1 border-t border-gray-700 space-y-1 font-mono text-xxs">
-                        <div>
-                            <span class="text-gray-500">1% Flash Target:</span>
-                            <span id="flashTargetPrice" class="text-gray-300 block font-bold">Calculating...</span>
+                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-sm">
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">1% Flash Target:</span>
+                            <span id="flashTargetPrice" class="text-gray-200 font-bold">Calculating...</span>
                         </div>
-                        <div>
-                            <span class="text-gray-500">Cascade Filter (>=0.20%):</span>
-                            <span id="cascadeTracker" class="text-gray-300 block font-bold">Shield Active...</span>
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Cascade Filter:</span>
+                            <span id="cascadeTracker" class="text-gray-200 font-bold">Shield Active...</span>
                         </div>
                     </div>
                 </div>
 
-                <div id="solSide" class="card p-3 rounded space-y-2 border-t-2 border-blue-400">
-                    <p class="text-xxs text-gray-400 font-bold uppercase font-mono tracking-wider">👉 SOL Asset Mode</p>
+                <div id="solSide" class="card p-4 rounded space-y-3 border-t-4 border-blue-400">
+                    <p class="text-sm text-gray-300 font-bold uppercase font-mono tracking-wider">👉 SOL Asset Mode</p>
                     <div>
-                        <span class="text-xxs text-gray-500 block font-mono">HELD TOKENS</span>
-                        <p id="balSol" class="text-lg font-black">0.0000</p>
+                        <span class="text-xs text-gray-500 block font-mono font-bold">HELD TOKENS</span>
+                        <p id="balSol" class="text-2xl font-black text-white">0.0000</p>
                     </div>
-                    <div class="pt-1 border-t border-gray-700 space-y-1 font-mono text-xxs">
-                        <div>
-                            <span class="text-gray-500">Purchase Basis:</span>
-                            <span id="openingPurchasePrice" class="text-yellow-500 block font-bold">N/A</span>
+                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-sm">
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Purchase Basis:</span>
+                            <span id="openingPurchasePrice" class="text-yellow-500 font-bold">N/A</span>
                         </div>
-                        <div>
-                            <span class="text-gray-500">Target Exit (+1.21%):</span>
-                            <span id="targetSellPrice" class="text-red-400 block font-bold">N/A</span>
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Target Exit (+1.21%):</span>
+                            <span id="targetSellPrice" class="text-red-400 font-bold">N/A</span>
                         </div>
-                        <div>
-                            <span class="text-gray-500">Margin Delta Gap:</span>
-                            <span id="marginDeltaGap" class="text-gray-300 block font-bold">N/A</span>
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Margin Delta Gap:</span>
+                            <span id="marginDeltaGap" class="text-gray-200 font-bold">N/A</span>
                         </div>
                     </div>
                 </div>
 
             </div>
 
-            <div class="card p-2 rounded">
-                <h2 class="text-xxs font-bold tracking-wider text-gray-400 uppercase mb-1.5 font-mono">Pipeline Diagnostics</h2>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs font-mono">
-                    <div class="p-1.5 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xxs">REDIS:</span>
-                        <span id="debugRedis" class="text-gray-300">...</span>
+            <div class="card p-3 rounded">
+                <h2 class="text-xs font-bold tracking-wider text-gray-400 uppercase mb-2.5 font-mono">Pipeline Diagnostics</h2>
+                <div class="grid grid-cols-2 gap-2 text-sm font-mono">
+                    <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
+                        <span class="text-gray-500 block text-xs font-bold">REDIS:</span>
+                        <span id="debugRedis" class="text-gray-200">...</span>
                     </div>
-                    <div class="p-1.5 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xxs">PROXY:</span>
-                        <span id="debugProxy" class="text-gray-300 truncate block">...</span>
+                    <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
+                        <span class="text-gray-500 block text-xs font-bold">PROXY:</span>
+                        <span id="debugProxy" class="text-gray-200 truncate block">...</span>
                     </div>
-                    <div class="p-1.5 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xxs">BINANCE:</span>
-                        <span id="debugBinance" class="text-gray-300">...</span>
+                    <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
+                        <span class="text-gray-500 block text-xs font-bold">BINANCE:</span>
+                        <span id="debugBinance" class="text-gray-200">...</span>
                     </div>
-                    <div class="p-1.5 bg-black bg-opacity-30 rounded border border-gray-700">
-                        <span class="text-gray-500 block text-xxs">ENGINE:</span>
-                        <span id="engineStatus" class="font-semibold truncate block">...</span>
+                    <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
+                        <span class="text-gray-500 block text-xs font-bold">ENGINE:</span>
+                        <span id="engineStatus" class="text-green-400 font-bold truncate block">...</span>
                     </div>
                 </div>
-                <div id="errorConsole" class="mt-2 text-xxs font-mono text-red-400 hidden bg-red-950 bg-opacity-40 p-1.5 rounded border border-red-900"></div>
+                <div id="errorConsole" class="mt-2 text-xs font-mono text-red-400 hidden bg-red-950 bg-opacity-40 p-2 rounded border border-red-900"></div>
             </div>
 
-            <div class="grid grid-cols-1 gap-2 pt-1">
-                <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="w-full bg-gray-600 hover:bg-gray-500 text-white font-mono font-bold py-2 px-4 rounded text-xs uppercase tracking-wider transition duration-150">
+            <div class="grid grid-cols-1 gap-2.5 pt-1">
+                <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="w-full bg-gray-600 hover:bg-gray-500 text-white font-mono font-bold py-3 px-4 rounded text-sm uppercase tracking-wider transition duration-150">
                     SYNCHRONIZING...
                 </button>
-                <div class="grid grid-cols-2 gap-2">
-                    <button onclick="manualSetPosition()" class="bg-gray-700 hover:bg-gray-600 text-gray-200 font-mono py-1.5 px-2 rounded text-xxs uppercase transition">
+                <div class="grid grid-cols-2 gap-2.5">
+                    <button onclick="manualSetPosition()" class="bg-gray-700 hover:bg-gray-600 text-gray-200 font-mono py-2 px-3 rounded text-xs uppercase font-bold tracking-wide transition">
                         Manual Position
                     </button>
-                    <button onclick="liquidateStack()" class="bg-gray-700 hover:bg-gray-600 text-gray-200 font-mono py-1.5 px-2 rounded text-xxs uppercase transition">
+                    <button onclick="liquidateStack()" class="bg-gray-700 hover:bg-gray-600 text-gray-200 font-mono py-2 px-3 rounded text-xs uppercase font-bold tracking-wide transition">
                         Convert to USDT
                     </button>
                 </div>
@@ -136,10 +138,10 @@
 
         </div>
 
-        <div class="log-container card p-2 rounded mt-3 md:mt-0">
-            <p class="text-xxs text-gray-400 font-bold uppercase tracking-wider mb-1 font-mono px-1">Real-Time Execution Terminal Log</p>
-            <div id="logBox" class="bg-black bg-opacity-40 p-2 rounded font-mono text-xs text-gray-300 h-64 overflow-y-auto space-y-1 border border-gray-800">
-                <p class="text-gray-500 text-xxs">[Awaiting backend handshake update metrics...]</p>
+        <div class="log-container card p-3 rounded mt-4 md:mt-0">
+            <p class="text-xs text-gray-400 font-bold uppercase tracking-wider mb-2 font-mono px-1">Real-Time Execution Terminal Log</p>
+            <div id="logBox" class="bg-black bg-opacity-40 p-3 rounded font-mono text-sm text-gray-200 h-96 overflow-y-auto space-y-1.5 border border-gray-800">
+                <p class="text-gray-500">[Awaiting backend handshake update metrics...]</p>
             </div>
         </div>
 
@@ -165,37 +167,37 @@
                 const engStatus = document.getElementById('engineStatus');
                 engStatus.innerText = data.engine_status;
                 if (data.engine_status.includes('Connected')) {
-                    engStatus.className = "text-green-400 font-semibold truncate block animate-pulse";
+                    engStatus.className = "text-green-400 font-black truncate block animate-pulse";
                 } else if (data.engine_status.includes('LOCKOUT') || data.engine_status.includes('Error')) {
-                    engStatus.className = "text-red-400 font-bold truncate block";
+                    engStatus.className = "text-red-400 font-black truncate block";
                 } else {
-                    engStatus.className = "text-yellow-400 font-semibold truncate block";
+                    engStatus.className = "text-yellow-400 font-black truncate block";
                 }
 
                 const toggleBtn = document.getElementById('toggleTradeBtn');
                 currentBotRunningState = data.bot_running;
                 if (data.bot_running) {
                     toggleBtn.innerText = "PAUSE TRADING";
-                    toggleBtn.className = "w-full bg-gray-700 hover:bg-red-900 border border-red-700 text-red-200 font-mono font-bold py-2 px-4 rounded text-xs uppercase tracking-wider transition";
+                    toggleBtn.className = "w-full bg-gray-700 hover:bg-red-900 border border-red-700 text-red-200 font-mono font-bold py-3 px-4 rounded text-sm uppercase tracking-wider transition";
                     
                     const badge = document.getElementById('engineBadge');
                     badge.innerText = "LIVE ACTIVE";
-                    badge.className = "px-2 py-0.5 rounded text-xs font-mono font-bold bg-green-900 text-green-300";
+                    badge.className = "px-2.5 py-1 rounded text-xs font-mono font-bold bg-green-900 text-green-300";
                 } else {
                     toggleBtn.innerText = "START TRADING";
-                    toggleBtn.className = "w-full bg-gray-100 hover:bg-white text-gray-900 font-mono font-bold py-2 px-4 rounded text-xs uppercase tracking-wider transition shadow";
+                    toggleBtn.className = "w-full bg-gray-100 hover:bg-white text-gray-900 font-mono font-bold py-3 px-4 rounded text-sm uppercase tracking-wider transition shadow";
                     
                     const badge = document.getElementById('engineBadge');
                     badge.innerText = "PAUSED";
-                    badge.className = "px-2 py-0.5 rounded text-xs font-mono font-bold bg-yellow-900 text-yellow-300";
+                    badge.className = "px-2.5 py-1 rounded text-xs font-mono font-bold bg-yellow-900 text-yellow-300";
                 }
 
                 const usdtSide = document.getElementById('usdtSide');
                 const solSide = document.getElementById('solSide');
 
                 if (data.position_active) {
-                    usdtSide.className = "card p-3 rounded space-y-2 border-t-2 border-green-400 mode-dim";
-                    solSide.className = "card p-3 rounded space-y-2 border-t-2 border-blue-400 mode-active";
+                    usdtSide.className = "card p-4 rounded space-y-3 border-t-4 border-green-400 mode-dim";
+                    solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-active";
 
                     const buyPrice = parseFloat(data.purchase_price);
                     const targetExit = buyPrice * 1.0121;
@@ -204,13 +206,13 @@
                     document.getElementById('openingPurchasePrice').innerText = `$${buyPrice.toFixed(2)}`;
                     document.getElementById('targetSellPrice').innerText = `$${targetExit.toFixed(2)}`;
                     document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +1.21%`;
-                    document.getElementById('marginDeltaGap').className = profitPct >= 0 ? "text-green-400 block font-bold" : "text-red-400 block font-bold";
+                    document.getElementById('marginDeltaGap').className = profitPct >= 0 ? "text-green-400 font-black" : "text-red-400 font-black";
 
                     document.getElementById('flashTargetPrice').innerText = "N/A";
                     document.getElementById('cascadeTracker').innerText = "N/A";
                 } else {
-                    usdtSide.className = "card p-3 rounded space-y-2 border-t-2 border-green-400 mode-active";
-                    solSide.className = "card p-3 rounded space-y-2 border-t-2 border-blue-400 mode-dim";
+                    usdtSide.className = "card p-4 rounded space-y-3 border-t-4 border-green-400 mode-active";
+                    solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-dim";
 
                     const staticCalculatedFlashTarget = currentSpot * 0.99;
                     document.getElementById('flashTargetPrice').innerText = `$${staticCalculatedFlashTarget.toFixed(2)}`;
@@ -219,14 +221,14 @@
                     document.getElementById('openingPurchasePrice').innerText = "N/A";
                     document.getElementById('targetSellPrice').innerText = "N/A";
                     document.getElementById('marginDeltaGap').innerText = "N/A";
-                    document.getElementById('marginDeltaGap').className = "text-gray-500 block font-bold";
+                    document.getElementById('marginDeltaGap').className = "text-gray-500 font-bold";
                 }
 
                 const logBox = document.getElementById('logBox');
                 logBox.innerHTML = '';
                 data.logs.forEach(log => {
                     const p = document.createElement('p');
-                    p.className = "leading-tight text-xxs md:text-xs";
+                    p.className = "leading-relaxed text-sm";
                     p.innerText = log;
                     logBox.appendChild(p);
                 });
@@ -309,10 +311,6 @@
                 console.error("Failed executing manual liquidation:", err);
             }
         }
-
-        const style = document.createElement('style');
-        style.innerHTML = '.text-xxs { font-size: 0.65rem; } .text-xs { font-size: 0.75rem; }';
-        document.head.appendChild(style);
 
         setInterval(fetchState, 3000);
         setInterval(fetchDiagnostics, 5000);
