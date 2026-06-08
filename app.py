@@ -3,6 +3,7 @@ import time
 import uuid
 import math
 import requests
+import queue
 from threading import Thread
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from binance.client import Client
@@ -19,6 +20,9 @@ BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
 # Initialize Upstash Redis Client synchronously from environment variables
 redis = Redis.from_env()
 
+# Async Non-Blocking Logging Queue
+log_queue = queue.Queue()
+
 # Trading Target Setup
 SYMBOL = 'SOLUSDT'
 INTERVAL = 10  # strict 10-second ticker execution
@@ -30,16 +34,28 @@ def require_login():
     if request.endpoint not in allowed_routes and not session.get('logged_in'):
         return redirect(url_for('login'))
 
-# --- System Logging Utility ---
-def log_activity(msg):
+# --- Non-Blocking System Logging Utility ---
+def log_activity(msg, skip_db=False):
     timestamp = time.strftime('%H:%M:%S')
     log_line = f"[{timestamp}] {msg}"
     print(log_line)
-    try:
-        redis.lpush('bot_logs', log_line)
-        redis.ltrim('bot_logs', 0, 99)
-    except Exception as e:
-        print(f"Logging fail to Redis: {e}")
+    if not skip_db:
+        log_queue.put(log_line)
+
+# --- Isolated Background Thread Worker for Upstash Network Submissions ---
+def redis_log_worker():
+    while True:
+        log_line = log_queue.get()
+        try:
+            redis.lpush('bot_logs', log_line)
+            redis.ltrim('bot_logs', 0, 99)
+        except Exception as e:
+            print(f"Background Upstash sync dropped a line: {e}")
+        finally:
+            log_queue.task_done()
+
+# Launch the network logger worker thread
+Thread(target=redis_log_worker, daemon=True).start()
 
 # --- Autonomous Strategy Background Loop ---
 def run_trading_bot():
@@ -48,24 +64,18 @@ def run_trading_bot():
         return
 
     proxy_url = os.environ.get("BINANCE_PROXY")
-    
     requests_params = {}
     if proxy_url:
         if proxy_url.startswith("socks5://"):
             proxy_url = proxy_url.replace("socks5://", "socks5h://")
         elif proxy_url.startswith("http://"):
             proxy_url = proxy_url.replace("http://", "socks5h://")
-
-        requests_params['proxies'] = {
-            'http': proxy_url,
-            'https': proxy_url
-        }
-        print(f"SOCKS5 Configuration loaded. Tunneling traffic through: {proxy_url}")
-    else:
-        print("WARNING: No BINANCE_PROXY environment variable set.")
+        requests_params['proxies'] = {'http': proxy_url, 'https': proxy_url}
 
     client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
     log_activity("Core engine initiated with SOCKS5 configuration. Monitoring SOL/USDT at 10s intervals.")
+
+    last_logged_thought = ""
 
     while True:
         try:
@@ -84,7 +94,7 @@ def run_trading_bot():
                 continue
 
             if not bot_running:
-                log_activity("Trading paused. Loop idling.")
+                log_activity("Trading paused. Loop idling.", skip_db=True)
                 time.sleep(INTERVAL)
                 continue
 
@@ -103,7 +113,6 @@ def run_trading_bot():
                 buy_triggered = False
                 thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
 
-                # Trigger Route 1: 1% Flash Drop
                 if len(price_history) >= 1:
                     last_price = price_history[0]
                     drop_pct = ((last_price - current_price) / last_price) * 100
@@ -113,11 +122,10 @@ def run_trading_bot():
                         buy_triggered = True
                         log_activity(f"BUY ALERT: Flash 1% drop detected ({last_price} -> {current_price})")
 
-                # Trigger Route 2: 3-Step Cascade Shield (Strict >= 0.20% per step)
                 if len(price_history) >= 3 and not buy_triggered:
-                    step1 = price_history[0]  # T-10s
-                    step2 = price_history[1]  # T-20s
-                    step3 = price_history[2]  # T-30s
+                    step1 = price_history[0]
+                    step2 = price_history[1]
+                    step3 = price_history[2]
                     
                     d1 = ((step3 - step2) / step3) * 100
                     d2 = ((step2 - step1) / step2) * 100
@@ -132,7 +140,10 @@ def run_trading_bot():
                 if not buy_triggered:
                     thought_msg += " | Conditions split. Holding."
                 
-                log_activity(thought_msg)
+                # Only write to the DB log if the content has changed to save network requests
+                skip_write = (thought_msg == last_logged_thought)
+                log_activity(thought_msg, skip_db=skip_write)
+                last_logged_thought = thought_msg
 
                 if buy_triggered:
                     usdt_alloc = float(usdt_bal) * 0.95
@@ -151,8 +162,11 @@ def run_trading_bot():
             else:
                 target_price = purchase_price * 1.0121
                 profit_pct = ((current_price - purchase_price) / purchase_price) * 100
+                thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +1.21%) | Holding."
                 
-                log_activity(f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +1.21%) | Holding.")
+                skip_write = (thought_msg == last_logged_thought)
+                log_activity(thought_msg, skip_db=skip_write)
+                last_logged_thought = thought_msg
 
                 if current_price >= target_price:
                     sol_to_liquidate = math.floor(float(sol_bal) * 100) / 100.0
