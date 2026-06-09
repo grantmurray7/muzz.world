@@ -4,60 +4,118 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gateway Login</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&display=swap" rel="stylesheet">
     <style>
-        :root { --accent-pink: rgb(237, 125, 175); }
+        :root {
+            --accent-pink: rgb(237, 125, 175);
+            --panel: #161922;
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --page: #0b0d14;
+        }
+        * { box-sizing: border-box; }
         body {
-            background-color: #0d1117;
-            color: #c9d1d9;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
             margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at top, #121521 0%, var(--page) 52%, #090b10 100%);
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            padding: 24px;
         }
         .login-card {
-            background-color: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 24px;
-            width: min(380px, calc(100vw - 32px));
-            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-            box-sizing: border-box;
+            width: min(760px, calc(100vw - 32px));
+            padding: 28px;
+            border-radius: 14px;
+            border: 1px solid var(--panel-border);
+            background: linear-gradient(180deg, #1a1e28 0%, #151922 100%);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
         }
         .login-logo {
             display: block;
-            width: 100%;
-            max-width: 320px;
+            width: min(88%, 560px);
             height: auto;
-            margin: 0 auto 22px;
+            margin: 0 auto 24px;
+        }
+        .password-wrap {
+            margin: 0 auto 16px;
+            width: min(100%, 640px);
         }
         input[type="password"] {
             width: 100%;
-            padding: 8px;
-            background-color: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            color: #c9d1d9;
-            box-sizing: border-box;
-            margin-bottom: 12px;
-        }
-        input[type="password"]:focus {
-            border-color: var(--accent-pink);
+            padding: 18px 18px;
+            background-color: #eef3ff;
+            border: 0;
+            border-radius: 10px;
+            color: #0c0f16;
+            font-size: 18px;
+            letter-spacing: 0;
             outline: none;
+            box-shadow: inset 0 0 0 1px rgba(10, 14, 24, 0.08);
+        }
+        input[type="password"]::placeholder { color: #7a8297; }
+        input[type="password"]:focus { box-shadow: inset 0 0 0 2px var(--accent-pink); }
+        .cta {
+            width: min(100%, 640px);
+            margin: 0 auto;
         }
         button {
+            position: relative;
             width: 100%;
-            padding: 8px;
-            background-color: var(--accent-pink);
+            min-height: 176px;
+            border: 0;
+            border-radius: 10px;
+            background: var(--accent-pink);
             color: #ffffff;
-            border: 1px solid rgba(240,246,252,0.1);
-            border-radius: 6px;
-            font-weight: 700;
             cursor: pointer;
+            overflow: hidden;
+            padding: 28px 240px 28px 28px;
+            text-align: left;
+            box-shadow: 0 14px 26px rgba(0, 0, 0, 0.22);
         }
-        button:hover { filter: brightness(1.08); }
-        .error { color: #f85149; font-size: 13px; margin-bottom: 12px; text-align: center; }
+        button:hover { filter: brightness(1.04); }
+        .cta-text {
+            position: relative;
+            z-index: 2;
+            display: block;
+            font-family: 'Luckiest Guy', cursive;
+            font-size: clamp(44px, 7vw, 74px);
+            line-height: 0.92;
+            letter-spacing: 0;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.96);
+            text-shadow: 0 2px 0 rgba(255,255,255,0.08);
+        }
+        .cta-text span { display: block; }
+        .cta-figure {
+            position: absolute;
+            right: 18px;
+            bottom: 0;
+            z-index: 1;
+            width: min(42%, 220px);
+            height: auto;
+            pointer-events: none;
+            user-select: none;
+            filter: brightness(1.15) contrast(1.02);
+        }
+        .error {
+            color: #f85149;
+            font-size: 13px;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+        @media (max-width: 700px) {
+            .login-card { padding: 20px; }
+            button {
+                min-height: 150px;
+                padding: 22px 160px 22px 22px;
+            }
+            .cta-figure { width: min(45%, 180px); right: 10px; }
+            .login-logo { width: 96%; }
+        }
     </style>
 </head>
 <body>
@@ -65,8 +123,15 @@
         <img class="login-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world">
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
         <form method="POST">
-            <input type="password" name="password" placeholder="Enter ADMIN_PASSWORD" required autofocus>
-            <button type="submit">Let's fuck</button>
+            <div class="password-wrap">
+                <input type="password" name="password" placeholder="Enter ADMIN_PASSWORD" required autofocus>
+            </div>
+            <div class="cta">
+                <button type="submit">
+                    <span class="cta-text"><span>LET'S</span><span>FUCK</span></span>
+                    <img class="cta-figure" src="{{ url_for('static', filename='hanna.png') }}" alt="figure">
+                </button>
+            </div>
         </form>
     </div>
 </body>
