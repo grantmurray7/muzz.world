@@ -7,9 +7,9 @@ import requests
 import queue
 from email.utils import formatdate
 from html import escape
-from threading import Thread
+from threading import Thread, Lock
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
-from binance.client import Client
+from binance import Client, ThreadedWebsocketManager
 from upstash_redis import Redis
 
 app = Flask(__name__)
@@ -23,6 +23,7 @@ BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
 # Initialize Upstash Redis Client
 redis = Redis.from_env()
 log_queue = queue.Queue()
+price_state_lock = Lock()
 
 # --- Hard Safety Bounds ---
 SYMBOL = 'SOLUSDT'
@@ -33,11 +34,12 @@ BUY_DIP_FROM_ANCHOR_USD = 0.10
 BUY_REBOUND_STEP_USD = 0.01
 AUTO_BUY_ALLOCATION = 0.95
 SELL_TARGET_MULTIPLIER = 1.0035
-PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 5
+PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 24
 MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
 TRADE_HISTORY_LIMIT = 200
 LOG_HISTORY_LIMIT = 250
 RSS_STATUS_INTERVAL = 30
+WEBSOCKET_STALE_AFTER = 20
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
 # --- Authentication Guard ---
@@ -99,32 +101,91 @@ def load_trade_history(limit=50):
             continue
     return trades
 
-def get_binance_proxy_url():
-    proxy_url = os.environ.get("BINANCE_PROXY")
-    if not proxy_url:
-        return None
-
-    if proxy_url.startswith("socks5://"):
-        proxy_url = proxy_url.replace("socks5://", "socks5h://")
-    elif proxy_url.startswith("http://"):
-        proxy_url = proxy_url.replace("http://", "socks5h://")
-
-    return proxy_url
-
-def get_binance_requests_params():
-    proxy_url = get_binance_proxy_url()
-    if not proxy_url:
-        return {}
-
-    return {'proxies': {'http': proxy_url, 'https': proxy_url}}
-
 def get_binance_client():
-    return Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=get_binance_requests_params())
+    return Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
-def record_price_sample(price):
-    sample = json.dumps({'ts': time.time(), 'price': price})
+def record_price_sample(price, sample_ts=None):
+    sample_ts = sample_ts or time.time()
+    sample = json.dumps({'ts': sample_ts, 'price': price})
     redis.lpush('price_history', sample)
     redis.ltrim('price_history', 0, PRICE_HISTORY_LIMIT - 1)
+
+def update_live_price(price, sample_ts=None):
+    sample_ts = sample_ts or time.time()
+    with price_state_lock:
+        redis.set('current_sol_price', str(price))
+        redis.set('websocket_last_seen', str(sample_ts))
+        redis.set('websocket_status', 'LIVE')
+        record_price_sample(price, sample_ts=sample_ts)
+
+def handle_price_socket_message(msg):
+    try:
+        if not isinstance(msg, dict):
+            return
+
+        if msg.get('e') == 'error':
+            error_type = msg.get('type', 'socket_error')
+            error_msg = msg.get('m', 'unknown websocket error')
+            redis.set('websocket_status', f'ERROR: {error_type}')
+            log_activity(f"Price websocket error: {error_type} | {error_msg}")
+            return
+
+        raw_price = msg.get('c') or msg.get('p')
+        if raw_price is None:
+            return
+
+        price = float(raw_price)
+        event_ts = time.time()
+        if msg.get('E'):
+            event_ts = float(msg['E']) / 1000.0
+
+        update_live_price(price, sample_ts=event_ts)
+    except Exception as e:
+        redis.set('websocket_status', 'ERROR: callback')
+        log_activity(f"Price websocket callback failure: {e}")
+
+def run_price_stream():
+    while True:
+        twm = None
+        try:
+            redis.set('websocket_status', 'CONNECTING')
+            twm = ThreadedWebsocketManager()
+            twm.start()
+            twm.start_symbol_ticker_socket(callback=handle_price_socket_message, symbol=SYMBOL)
+            log_activity(f"Live price websocket started for {SYMBOL}.")
+            twm.join()
+            redis.set('websocket_status', 'STOPPED')
+            log_activity("Price websocket manager stopped. Rebooting stream...")
+        except Exception as e:
+            redis.set('websocket_status', 'ERROR: bootstrap')
+            log_activity(f"Price websocket bootstrap failed: {e}")
+        finally:
+            try:
+                if twm:
+                    twm.stop()
+            except Exception:
+                pass
+        time.sleep(5)
+
+def get_live_price(max_age=WEBSOCKET_STALE_AFTER):
+    try:
+        current_price = float(redis.get('current_sol_price') or 0.0)
+    except Exception:
+        current_price = 0.0
+
+    try:
+        last_seen = float(redis.get('websocket_last_seen') or 0.0)
+    except Exception:
+        last_seen = 0.0
+
+    if current_price <= 0 or last_seen <= 0:
+        raise RuntimeError('websocket price not ready yet')
+
+    age = time.time() - last_seen
+    if age > max_age:
+        raise RuntimeError(f'websocket price stale ({age:.1f}s old)')
+
+    return current_price
 
 def load_price_samples():
     raw_samples = redis.lrange('price_history', 0, PRICE_HISTORY_LIMIT - 1)
@@ -192,7 +253,6 @@ def build_status_feed_item(now=None):
     sol_bal = read_float_state('balance_sol')
     purchase_price = read_float_state('purchase_price')
     buy_step = read_int_state('buy_sequence_step')
-    mode = 'SELL' if position_active else 'BUY'
     running_label = 'RUNNING' if bot_running else 'PAUSED'
 
     if position_active and purchase_price > 0:
@@ -244,13 +304,13 @@ def reconcile_state_against_binance(client):
     try:
         redis.delete('price_history')
         reset_buy_sequence()
-        
+
         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-        
+
         redis.set('balance_usdt', str(usdt_bal))
         redis.set('balance_sol', str(sol_bal))
-        
+
         open_orders = client.get_open_orders(symbol=SYMBOL)
         if open_orders:
             log_activity("CRITICAL: Open working orders found on exchange! Forcing lockout.")
@@ -258,22 +318,22 @@ def reconcile_state_against_binance(client):
             return False
 
         my_trades = client.get_my_trades(symbol=SYMBOL, limit=20)
-        
-        if sol_bal >= 0.05:  
+
+        if sol_bal >= 0.05:
             accumulated_qty = 0.0
             weighted_cost = 0.0
-            
+
             for trade in reversed(my_trades):
                 if trade['isBuyer']:
                     qty = float(trade['qty'])
                     price = float(trade['price'])
-                    
+
                     accumulated_qty += qty
                     weighted_cost += (price * qty)
-                    
+
                     if accumulated_qty >= (sol_bal * 0.99):
                         break
-            
+
             if accumulated_qty > 0:
                 avg_entry_price = weighted_cost / accumulated_qty
                 log_activity(f"Reconciliation: Active position verified. Reconstructed Cost Basis: ${avg_entry_price:.2f}, Size: {sol_bal}")
@@ -281,13 +341,13 @@ def reconcile_state_against_binance(client):
                 redis.set('purchase_price', str(avg_entry_price))
                 redis.set('bot_tracked_qty', str(sol_bal))
                 return True
-                
+
         log_activity("Reconciliation: No active bot holdings detected. Set to Cash Mode.")
         redis.set('position_active', 'false')
         redis.delete('purchase_price')
         redis.delete('bot_tracked_qty')
         return True
-        
+
     except Exception as e:
         log_activity(f"Reconciliation Engine Failure: {e}")
         redis.set('engine_status', "Reconcile Error")
@@ -300,7 +360,7 @@ def run_trading_bot():
         return
 
     client = get_binance_client()
-    
+
     if not reconcile_state_against_binance(client):
         log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
         return
@@ -318,12 +378,17 @@ def run_trading_bot():
             if not lock_acquired and redis.get('trading_execution_lock') != INSTANCE_ID:
                 time.sleep(SAMPLE_INTERVAL)
                 continue
-                
+
             redis.set('trading_execution_lock', INSTANCE_ID, ex=15)
-            ticker = client.get_symbol_ticker(symbol=SYMBOL)
-            current_price = float(ticker['price'])
-            redis.set('current_sol_price', str(current_price))
-            record_price_sample(current_price)
+
+            try:
+                current_price = get_live_price()
+                redis.set('current_sol_price', str(current_price))
+            except Exception as price_error:
+                redis.set('engine_status', 'WAITING_FOR_LIVE_PRICE')
+                log_activity(f"Market data waiting: {price_error}")
+                time.sleep(SAMPLE_INTERVAL)
+                continue
 
             if redis.get('bot_running') != 'true':
                 redis.set('engine_status', 'PAUSED')
@@ -419,21 +484,21 @@ def run_trading_bot():
                     log_activity("BUY ALERT: $0.10 anchor dip followed by two consecutive +$0.01 rebounds.")
                 else:
                     thought_msg += " | Waiting for buy sequence."
-                
+
                 log_activity(thought_msg)
-                redis.set('engine_status', 'MONITORING_DOLLAR_DIP_REBOUND_REST_10S')
+                redis.set('engine_status', 'MONITORING_DOLLAR_DIP_REBOUND_WS')
 
                 if buy_triggered:
                     usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
                     usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
-                    
+
                     if usdt_alloc >= 5.0:
                         sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
                         log_activity(f"EXECUTION: Dispatching Market BUY for {sol_quantity} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
                         record_trade('BUY', sol_quantity, current_price, 'AUTO', 'Dollar dip rebound sequence')
                         reset_buy_sequence()
-                        time.sleep(1) 
+                        time.sleep(1)
                         reconcile_state_against_binance(client)
                     else:
                         log_activity("Transaction aborted: Available balance under operational thresholds.")
@@ -442,14 +507,14 @@ def run_trading_bot():
                 target_price = purchase_price * SELL_TARGET_MULTIPLIER
                 profit_pct = ((current_price - purchase_price) / purchase_price) * 100
                 thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +0.35%) | Holding."
-                
+
                 log_activity(thought_msg)
-                redis.set('engine_status', 'HOLDING_FOR_+0.35%_EXIT_REST_10S')
+                redis.set('engine_status', 'HOLDING_FOR_+0.35%_EXIT_WS')
 
                 if current_price >= target_price:
                     sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
                     sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
-                    
+
                     if sol_to_liquidate > 0.01:
                         log_activity(f"EXECUTION: Target Hit. Market Selling bot-tracked size of {sol_to_liquidate} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
@@ -465,6 +530,7 @@ def run_trading_bot():
 
         time.sleep(SAMPLE_INTERVAL)
 
+Thread(target=run_price_stream, daemon=True).start()
 Thread(target=run_trading_bot, daemon=True).start()
 
 # --- INSTANT INTERVENTION ENDPOINTS ---
@@ -477,11 +543,9 @@ def execute_manual_buy():
         usdt_amount = min(float(data.get('usdt_amount', 0)), MAX_TRADE_USDT)
 
         client = get_binance_client()
-        ticker = client.get_symbol_ticker(symbol=SYMBOL)
-        current_price = float(ticker['price'])
-        
+        current_price = get_live_price()
         sol_quantity = math.floor((usdt_amount / current_price) * 100) / 100.0
-        
+
         if sol_quantity > 0.01:
             log_activity(f"MANUAL INTERVENTION: Executing forced Market BUY for {sol_quantity} SOL...")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
@@ -495,36 +559,33 @@ def execute_manual_buy():
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    health = {'upstash_redis': 'FAIL', 'proxy_server': 'FAIL', 'binance_api': 'FAIL', 'market_data': 'FAIL', 'errors': []}
+    health = {'upstash_redis': 'FAIL', 'proxy_server': 'DIRECT (NO PROXY)', 'binance_api': 'FAIL', 'market_data': 'FAIL', 'errors': []}
     try:
         redis.ping()
         health['upstash_redis'] = 'OK'
     except Exception as e:
         health['errors'].append(f"Redis Error: {str(e)}")
 
-    proxy_url = os.environ.get("BINANCE_PROXY")
-    requests_params = get_binance_requests_params()
-    proxies = requests_params.get('proxies')
-    if proxy_url:
-        try:
-            res = requests.get('https://api.ipify.org?format=json', proxies=proxies, timeout=5)
-            if res.status_code == 200:
-                health['proxy_server'] = f"OK ({res.json().get('ip')})"
-        except Exception as e:
-            health['errors'].append(f"SOCKS5 Routing Failure: {str(e)}")
+    websocket_status = redis.get('websocket_status') or 'DISCONNECTED'
+    websocket_last_seen = read_float_state('websocket_last_seen')
+    if websocket_last_seen > 0:
+        age = max(0.0, time.time() - websocket_last_seen)
+        if age <= WEBSOCKET_STALE_AFTER:
+            health['market_data'] = f"OK (WS {age:.1f}s)"
+        else:
+            health['market_data'] = f"STALE (WS {age:.1f}s)"
     else:
-        health['proxy_server'] = 'NOT SET'
+        health['market_data'] = f"WAITING ({websocket_status})"
 
     if BINANCE_API_KEY and BINANCE_API_SECRET:
         try:
-            test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, requests_params=requests_params)
+            test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
             if test_client.get_server_time():
                 health['binance_api'] = 'OK'
         except Exception as e:
             health['errors'].append(f"Binance API Handshake Failure: {str(e)}")
     else:
         health['binance_api'] = 'KEYS MISSING'
-    health['market_data'] = f"OK (REST {SAMPLE_INTERVAL}s)"
 
     return jsonify(health)
 
@@ -605,9 +666,9 @@ def get_state():
         sol_bal = float(redis.get('balance_sol') or 0.0)
         current_price = float(redis.get('current_sol_price') or 0.0)
         trade_count = int(redis.get('trade_count') or 0)
-        
+
         total_usd = usdt_bal + (sol_bal * current_price)
-        total_gbp = total_usd * 0.78  
+        total_gbp = total_usd * 0.78
         try:
             fiat_res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=2)
             if fiat_res.status_code == 200:
@@ -676,18 +737,17 @@ def clear_logs():
 def liquidate_to_usdt():
     try:
         client = get_binance_client()
-        ticker = client.get_symbol_ticker(symbol=SYMBOL)
-        current_price = float(ticker['price'])
+        current_price = get_live_price()
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
         bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 
         sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty if bot_tracked_qty > 0 else sol_bal) * 100) / 100.0
-        
+
         if sol_to_liquidate > 0.01:
             log_activity(f"MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
             record_trade('SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
-            
+
             redis.set('position_active', 'false')
             redis.delete('purchase_price')
             redis.delete('bot_tracked_qty')
@@ -695,7 +755,7 @@ def liquidate_to_usdt():
             return jsonify({'status': 'success', 'message': f'Liquidated {sol_to_liquidate} SOL.'})
         else:
             return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
-            
+
     except Exception as e:
         log_activity(f"Manual Liquidation Error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
