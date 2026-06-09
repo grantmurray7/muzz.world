@@ -199,14 +199,14 @@
                 const toggleBtn = document.getElementById('toggleTradeBtn');
                 currentBotRunningState = data.bot_running;
                 if (data.bot_running) {
-                    toggleBtn.innerText = "PAUSE TRADING AUTOMATION";
+                    toggleBtn.innerText = "PAUSE TRADING";
                     toggleBtn.className = "bg-gray-700 hover:bg-red-900 border border-red-700 text-red-200 font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition whitespace-nowrap";
                     
                     const badge = document.getElementById('engineBadge');
                     badge.innerText = "LIVE ACTIVE";
                     badge.className = "px-2.5 py-1 rounded text-xs font-mono font-bold bg-green-900 text-green-300";
                 } else {
-                    toggleBtn.innerText = "START TRADING AUTOMATION";
+                    toggleBtn.innerText = "START TRADING";
                     toggleBtn.className = "bg-gray-100 hover:bg-white text-gray-900 font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition shadow whitespace-nowrap";
                     
                     const badge = document.getElementById('engineBadge');
