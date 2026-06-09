@@ -149,6 +149,40 @@ def read_text_state(namespace, key, default=''):
         return default
 
 
+def set_if_missing(namespace, key, value):
+    if ns_get(namespace, key) is None:
+        ns_set(namespace, key, value)
+
+
+def init_live_state():
+    set_if_missing(LIVE_NS, 'bot_running', 'false')
+    set_if_missing(LIVE_NS, 'position_active', 'false')
+    set_if_missing(LIVE_NS, 'balance_usdt', 0)
+    set_if_missing(LIVE_NS, 'balance_sol', 0)
+    set_if_missing(LIVE_NS, 'engine_status', 'BOOTING')
+    set_if_missing(LIVE_NS, 'strategy_mode', 'BOOTING')
+    set_if_missing(LIVE_NS, 'strategy_setup', 'Connecting live services')
+
+
+def bootstrap_sandbox():
+    if ns_get(SANDBOX_NS, 'initialized') == 'true':
+        set_if_missing(SANDBOX_NS, 'bot_running', 'false')
+        set_if_missing(SANDBOX_NS, 'position_active', 'false')
+        set_if_missing(SANDBOX_NS, 'balance_usdt', SANDBOX_START_USDT)
+        set_if_missing(SANDBOX_NS, 'balance_sol', 0)
+        set_if_missing(SANDBOX_NS, 'engine_status', 'PAUSED')
+        set_if_missing(SANDBOX_NS, 'strategy_mode', 'PAUSED')
+        set_if_missing(SANDBOX_NS, 'strategy_setup', 'Sandbox paused by default')
+        return
+    ns_set(SANDBOX_NS, 'initialized', 'true')
+    ns_set(SANDBOX_NS, 'bot_running', 'false')
+    ns_set(SANDBOX_NS, 'position_active', 'false')
+    ns_set(SANDBOX_NS, 'balance_usdt', SANDBOX_START_USDT)
+    ns_set(SANDBOX_NS, 'balance_sol', 0)
+    ns_set(SANDBOX_NS, 'engine_status', 'PAUSED')
+    set_strategy_snapshot(SANDBOX_NS, mode='PAUSED', setup='Sandbox paused by default')
+
+
 def record_trade(namespace, side, quantity, price, source, note=''):
     try:
         trade_number = ns_incr(namespace, 'trade_count')
@@ -303,18 +337,6 @@ def clear_position_tracking(namespace):
     ns_delete(namespace, 'position_opened_at')
 
 
-def bootstrap_sandbox():
-    if ns_get(SANDBOX_NS, 'initialized') == 'true':
-        return
-    ns_set(SANDBOX_NS, 'initialized', 'true')
-    ns_set(SANDBOX_NS, 'bot_running', 'false')
-    ns_set(SANDBOX_NS, 'position_active', 'false')
-    ns_set(SANDBOX_NS, 'balance_usdt', SANDBOX_START_USDT)
-    ns_set(SANDBOX_NS, 'balance_sol', 0)
-    ns_set(SANDBOX_NS, 'engine_status', 'PAUSED')
-    set_strategy_snapshot(SANDBOX_NS, mode='PAUSED', setup='Sandbox paused by default')
-
-
 def build_status_feed_item(namespace, now=None):
     now = now or time.time()
     bucket_ts = int(now // RSS_STATUS_INTERVAL) * RSS_STATUS_INTERVAL
@@ -366,7 +388,6 @@ def build_status_feed_item(namespace, now=None):
 
 
 def reconcile_live_state(client):
-    log_activity('Running core truth reconciliation step...', namespace=LIVE_NS)
     try:
         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
@@ -374,7 +395,7 @@ def reconcile_live_state(client):
         ns_set(LIVE_NS, 'balance_sol', sol_bal)
         open_orders = client.get_open_orders(symbol=SYMBOL)
         if open_orders:
-            log_activity('CRITICAL: Open working orders found on exchange! Forcing lockout.', namespace=LIVE_NS)
+            log_activity('CRITICAL: Open working orders found on exchange. Forcing lockout.', namespace=LIVE_NS)
             ns_set(LIVE_NS, 'engine_status', 'ERROR_LOCKOUT_OPEN_ORDERS')
             return False
         my_trades = client.get_my_trades(symbol=SYMBOL, limit=20)
@@ -391,21 +412,19 @@ def reconcile_live_state(client):
                         break
             if accumulated_qty > 0:
                 avg_entry_price = weighted_cost / accumulated_qty
-                log_activity(f'Reconciliation: Active position verified. Reconstructed Cost Basis: ${avg_entry_price:.2f}, Size: {sol_bal}', namespace=LIVE_NS)
                 ns_set(LIVE_NS, 'position_active', 'true')
                 ns_set(LIVE_NS, 'purchase_price', avg_entry_price)
                 ns_set(LIVE_NS, 'bot_tracked_qty', sol_bal)
                 if not ns_get(LIVE_NS, 'position_opened_at'):
                     ns_set(LIVE_NS, 'position_opened_at', time.time())
                 return True
-        log_activity('Reconciliation: No active bot holdings detected. Set to Cash Mode.', namespace=LIVE_NS)
         ns_set(LIVE_NS, 'position_active', 'false')
         ns_delete(LIVE_NS, 'purchase_price', 'bot_tracked_qty')
         clear_position_tracking(LIVE_NS)
         return True
     except Exception as e:
         log_activity(f'Reconciliation Engine Failure: {e}', namespace=LIVE_NS)
-        ns_set(LIVE_NS, 'engine_status', 'Reconcile Error')
+        ns_set(LIVE_NS, 'engine_status', 'RECONCILE_ERROR')
         return False
 
 
@@ -413,7 +432,7 @@ def execute_paper_buy(namespace, price, note='90s flush bounce scalp'):
     usdt_bal = read_float_state(namespace, 'balance_usdt')
     usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
     if usdt_alloc < 5.0:
-        log_activity('Paper transaction aborted: available balance under operational thresholds.', namespace=namespace)
+        log_activity('Paper buy aborted: available balance under operational thresholds.', namespace=namespace)
         return
     sol_quantity = math.floor((usdt_alloc / price) * 100) / 100.0
     if sol_quantity <= 0.01:
@@ -426,7 +445,7 @@ def execute_paper_buy(namespace, price, note='90s flush bounce scalp'):
     ns_set(namespace, 'bot_tracked_qty', sol_quantity)
     ns_set(namespace, 'position_opened_at', time.time())
     record_trade(namespace, 'BUY', sol_quantity, price, 'PAPER', note)
-    log_activity(f'PAPER EXECUTION: Bought {sol_quantity} SOL at ${price:.2f}.', namespace=namespace)
+    log_activity(f'PAPER BUY: {sol_quantity} SOL at ${price:.2f} | {note}', namespace=namespace)
 
 
 def execute_paper_sell(namespace, price, note):
@@ -442,7 +461,7 @@ def execute_paper_sell(namespace, price, note):
     ns_set(namespace, 'position_active', 'false')
     ns_delete(namespace, 'purchase_price', 'bot_tracked_qty')
     clear_position_tracking(namespace)
-    log_activity(f'PAPER EXECUTION: Sold {sol_to_liquidate} SOL at ${price:.2f}.', namespace=namespace)
+    log_activity(f'PAPER SELL: {sol_to_liquidate} SOL at ${price:.2f} | {note}', namespace=namespace)
 
 
 def run_namespaced_trader(namespace, paper=False):
@@ -450,11 +469,27 @@ def run_namespaced_trader(namespace, paper=False):
     if paper:
         bootstrap_sandbox()
     else:
-        if not reconcile_live_state(client):
-            log_activity('Initial truth sync failed. Thread loop aborted for account safety.', namespace=namespace)
-            return
+        init_live_state()
+
+    reconciled = paper
+
     while True:
         try:
+            if not paper and not reconciled:
+                if reconcile_live_state(client):
+                    reconciled = True
+                    if ns_get(namespace, 'position_active') == 'true':
+                        ns_set(namespace, 'engine_status', 'READY_WITH_POSITION')
+                        set_strategy_snapshot(namespace, mode='SELL', setup='Live position synced from exchange')
+                    else:
+                        ns_set(namespace, 'engine_status', 'READY_IN_CASH')
+                        set_strategy_snapshot(namespace, mode='BUY', setup='Live account synced and scanning')
+                else:
+                    ns_set(namespace, 'engine_status', 'RETRYING_LIVE_SYNC')
+                    set_strategy_snapshot(namespace, mode='WAITING', setup='Retrying live account sync')
+                    time.sleep(5)
+                    continue
+
             current_status = read_text_state(namespace, 'engine_status')
             if 'LOCKOUT' in current_status:
                 time.sleep(SAMPLE_INTERVAL)
@@ -471,17 +506,15 @@ def run_namespaced_trader(namespace, paper=False):
             try:
                 current_price = get_live_price()
                 ns_set(namespace, 'current_sol_price', current_price)
-            except Exception as price_error:
+            except Exception:
                 ns_set(namespace, 'engine_status', 'WAITING_FOR_LIVE_PRICE')
                 set_strategy_snapshot(namespace, mode='WAITING', setup='Waiting for live websocket price')
-                log_activity(f'Market data waiting: {price_error}', namespace=namespace)
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
             if ns_get(namespace, 'bot_running') != 'true':
                 ns_set(namespace, 'engine_status', 'PAUSED')
                 set_strategy_snapshot(namespace, mode='PAUSED', setup='Trading paused by operator')
-                log_activity('Trading paused. Loop idling.', namespace=namespace)
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
@@ -494,8 +527,15 @@ def run_namespaced_trader(namespace, paper=False):
                 samples = get_recent_samples(load_price_samples(), SCALP_WINDOW_SECONDS, now=now)
                 if len(samples) < 10:
                     ns_set(namespace, 'engine_status', 'WARMING_SCALP_WINDOW')
-                    set_strategy_snapshot(namespace, mode='BUY', setup='Warming scalp window', recent_high='0', local_low='0', drop_pct='0', bounce_pct='0')
-                    log_activity(f'BUY mode | Spot: ${current_price:.2f} | Warming scalp window: {len(samples)} samples / {SCALP_WINDOW_SECONDS}s', namespace=namespace)
+                    set_strategy_snapshot(
+                        namespace,
+                        mode='BUY',
+                        setup='Warming scalp window',
+                        recent_high='0',
+                        local_low='0',
+                        drop_pct='0',
+                        bounce_pct='0'
+                    )
                     time.sleep(SAMPLE_INTERVAL)
                     continue
 
@@ -511,34 +551,48 @@ def run_namespaced_trader(namespace, paper=False):
                 if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
                     setup = 'Bounce confirmed'
 
-                set_strategy_snapshot(namespace, mode='BUY', setup=setup, recent_high=f'{recent_high:.6f}', local_low=f'{local_low:.6f}', drop_pct=f'{drop_pct:.4f}', bounce_pct=f'{bounce_pct:.4f}')
-                thought_msg = (
-                    f'BUY mode | Spot: ${current_price:.2f}'
-                    f' | 90s High: ${recent_high:.2f}'
-                    f' | Local Low: ${local_low:.2f}'
-                    f' | Drop: {drop_pct:+.2f}% / {DROP_TRIGGER_PCT:.2f}%'
-                    f' | Bounce: {bounce_pct:+.2f}% / +{BOUNCE_TRIGGER_PCT:.2f}%'
+                set_strategy_snapshot(
+                    namespace,
+                    mode='BUY',
+                    setup=setup,
+                    recent_high=f'{recent_high:.6f}',
+                    local_low=f'{local_low:.6f}',
+                    drop_pct=f'{drop_pct:.4f}',
+                    bounce_pct=f'{bounce_pct:.4f}'
                 )
+                ns_set(namespace, 'engine_status', 'SCALP_DROP_ARMED' if armed else 'SCANNING_FOR_SCALP_ENTRY')
+
                 if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
-                    log_activity(thought_msg + ' | Bounce confirmed. Buying.', namespace=namespace)
+                    buy_reason = (
+                        f'Drop {drop_pct:+.2f}% from 90s high ${recent_high:.2f}; '
+                        f'bounce {bounce_pct:+.2f}% from local low ${local_low:.2f}'
+                    )
                     if paper:
-                        execute_paper_buy(namespace, current_price)
+                        execute_paper_buy(namespace, current_price, buy_reason)
                     else:
                         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
                         usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
                         if usdt_alloc >= 5.0:
                             sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
-                            log_activity(f'EXECUTION: Dispatching scalp Market BUY for {sol_quantity} SOL...', namespace=namespace)
-                            client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
-                            record_trade(namespace, 'BUY', sol_quantity, current_price, 'AUTO', '90s flush bounce scalp')
-                            ns_set(namespace, 'position_opened_at', time.time())
-                            time.sleep(1)
-                            reconcile_live_state(client)
+                            if sol_quantity > 0.01:
+                                log_activity(
+                                    f'AUTO BUY: {sol_quantity} SOL at ${current_price:.2f} | {buy_reason}',
+                                    namespace=namespace
+                                )
+                                client.create_order(
+                                    symbol=SYMBOL,
+                                    side=Client.SIDE_BUY,
+                                    type=Client.ORDER_TYPE_MARKET,
+                                    quantity=sol_quantity
+                                )
+                                record_trade(namespace, 'BUY', sol_quantity, current_price, 'AUTO', buy_reason)
+                                ns_set(namespace, 'position_opened_at', time.time())
+                                time.sleep(1)
+                                reconciled = reconcile_live_state(client)
+                            else:
+                                log_activity('Auto buy aborted: calculated order size too low.', namespace=namespace)
                         else:
-                            log_activity('Transaction aborted: Available balance under operational thresholds.', namespace=namespace)
-                else:
-                    log_activity(thought_msg + f' | {setup.upper()}', namespace=namespace)
-                    ns_set(namespace, 'engine_status', 'SCALP_DROP_ARMED' if armed else 'SCANNING_FOR_SCALP_ENTRY')
+                            log_activity('Auto buy aborted: available balance under operational thresholds.', namespace=namespace)
             else:
                 target_price = purchase_price * SELL_TARGET_MULTIPLIER
                 stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100))
@@ -546,44 +600,48 @@ def run_namespaced_trader(namespace, paper=False):
                 opened_at = read_float_state(namespace, 'position_opened_at', time.time())
                 seconds_open = max(0, int(time.time() - opened_at))
                 countdown = max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open)
-                set_strategy_snapshot(namespace, mode='SELL', setup='Managing open scalp', target_price=f'{target_price:.6f}', stop_price=f'{stop_price:.6f}', profit_pct=f'{profit_pct:.4f}', seconds_open=str(seconds_open), fail_countdown=str(countdown))
-                thought_msg = (
-                    f'SELL mode | Spot: ${current_price:.2f}'
-                    f' | Entry: ${purchase_price:.2f}'
-                    f' | Target: ${target_price:.2f} (+{SELL_TARGET_PCT:.2f}%)'
-                    f' | Stop: ${stop_price:.2f} ({HARD_STOP_PCT:.2f}%)'
-                    f' | P/L: {profit_pct:+.2f}%'
-                    f' | Open: {seconds_open}s'
+                set_strategy_snapshot(
+                    namespace,
+                    mode='SELL',
+                    setup='Managing open scalp',
+                    target_price=f'{target_price:.6f}',
+                    stop_price=f'{stop_price:.6f}',
+                    profit_pct=f'{profit_pct:.4f}',
+                    seconds_open=str(seconds_open),
+                    fail_countdown=str(countdown)
                 )
-                log_activity(thought_msg, namespace=namespace)
                 ns_set(namespace, 'engine_status', 'MANAGING_SCALP_POSITION')
 
-                sell_reason = None
                 sell_note = None
                 if current_price >= target_price:
-                    sell_reason = 'target hit'
-                    sell_note = f'+{SELL_TARGET_PCT:.2f}% scalp target'
+                    sell_note = f'Target hit at +{SELL_TARGET_PCT:.2f}%'
                 elif current_price <= stop_price:
-                    sell_reason = 'hard stop'
-                    sell_note = f'{HARD_STOP_PCT:.2f}% protective stop'
+                    sell_note = f'Hard stop hit at {HARD_STOP_PCT:.2f}%'
                 elif seconds_open >= FAIL_TO_LAUNCH_SECONDS and profit_pct < FAIL_TO_LAUNCH_MIN_PCT:
-                    sell_reason = 'failed launch'
-                    sell_note = f'Under +{FAIL_TO_LAUNCH_MIN_PCT:.2f}% after {FAIL_TO_LAUNCH_SECONDS}s'
+                    sell_note = f'Failed launch: still under +{FAIL_TO_LAUNCH_MIN_PCT:.2f}% after {FAIL_TO_LAUNCH_SECONDS}s'
 
-                if sell_reason:
+                if sell_note:
                     if paper:
                         execute_paper_sell(namespace, current_price, sell_note)
                     else:
                         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
                         sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
                         if sol_to_liquidate > 0.01:
-                            log_activity(f'EXECUTION: {sell_reason.title()}. Market selling {sol_to_liquidate} SOL...', namespace=namespace)
-                            client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
+                            log_activity(
+                                f'AUTO SELL: {sol_to_liquidate} SOL at ${current_price:.2f} | {sell_note}',
+                                namespace=namespace
+                            )
+                            client.create_order(
+                                symbol=SYMBOL,
+                                side=Client.SIDE_SELL,
+                                type=Client.ORDER_TYPE_MARKET,
+                                quantity=sol_to_liquidate
+                            )
                             record_trade(namespace, 'SELL', sol_to_liquidate, current_price, 'AUTO', sell_note)
                             time.sleep(1)
-                            reconcile_live_state(client)
+                            reconciled = reconcile_live_state(client)
                         else:
-                            log_activity('Sell error: Bot-tracked position parameters empty or invalid.', namespace=namespace)
+                            log_activity('Auto sell aborted: tracked SOL size invalid.', namespace=namespace)
         except Exception as e:
             log_activity(f'Process Loop Error: {e}', namespace=namespace)
             ns_set(namespace, 'engine_status', 'Loop Error')
@@ -591,6 +649,7 @@ def run_namespaced_trader(namespace, paper=False):
         time.sleep(SAMPLE_INTERVAL)
 
 
+init_live_state()
 bootstrap_sandbox()
 Thread(target=run_price_stream, daemon=True).start()
 Thread(target=run_namespaced_trader, args=(LIVE_NS, False), daemon=True).start()
@@ -683,11 +742,21 @@ def build_health_payload(namespace):
 
 
 def render_dashboard(namespace, page_label=''):
-    return render_template('index.html', page_label=page_label, api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api', trades_href='/sandbox/trades' if namespace == SANDBOX_NS else '/trades')
+    return render_template(
+        'index.html',
+        page_label=page_label,
+        api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api',
+        trades_href='/sandbox/trades' if namespace == SANDBOX_NS else '/trades'
+    )
 
 
 def render_trade_history(namespace, page_label=''):
-    return render_template('trade_history.html', page_label=page_label, api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api', dashboard_href='/sandbox' if namespace == SANDBOX_NS else '/')
+    return render_template(
+        'trade_history.html',
+        page_label=page_label,
+        api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api',
+        dashboard_href='/sandbox' if namespace == SANDBOX_NS else '/'
+    )
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -755,7 +824,11 @@ def status_feed():
         response.headers['Pragma'] = 'no-cache'
         return response
     except Exception as e:
-        return app.response_class(f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>muzz.world bot status</title><item><title>Feed error</title><description>{escape(str(e))}</description></item></channel></rss>', mimetype='application/rss+xml', status=500)
+        return app.response_class(
+            f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>muzz.world bot status</title><item><title>Feed error</title><description>{escape(str(e))}</description></item></channel></rss>',
+            mimetype='application/rss+xml',
+            status=500
+        )
 
 
 @app.route('/api/health', methods=['GET'])
@@ -867,7 +940,7 @@ def execute_manual_buy():
         current_price = get_live_price()
         sol_quantity = math.floor((usdt_amount / current_price) * 100) / 100.0
         if sol_quantity > 0.01:
-            log_activity(f'MANUAL INTERVENTION: Executing forced Market BUY for {sol_quantity} SOL...', namespace=LIVE_NS)
+            log_activity(f'MANUAL BUY: {sol_quantity} SOL at ${current_price:.2f}', namespace=LIVE_NS)
             client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
             record_trade(LIVE_NS, 'BUY', sol_quantity, current_price, 'MANUAL', 'Manual market buy')
             ns_set(LIVE_NS, 'position_opened_at', time.time())
@@ -896,7 +969,7 @@ def sandbox_execute_manual_buy():
             ns_set(SANDBOX_NS, 'bot_tracked_qty', sol_quantity)
             ns_set(SANDBOX_NS, 'position_opened_at', time.time())
             record_trade(SANDBOX_NS, 'BUY', sol_quantity, current_price, 'MANUAL_PAPER', 'Manual paper buy')
-            log_activity(f'SANDBOX MANUAL BUY: Bought {sol_quantity} SOL at ${current_price:.2f}.', namespace=SANDBOX_NS)
+            log_activity(f'SANDBOX MANUAL BUY: {sol_quantity} SOL at ${current_price:.2f}', namespace=SANDBOX_NS)
             return jsonify({'status': 'success', 'message': f'Paper bought {sol_quantity} SOL.'})
         return jsonify({'status': 'error', 'message': 'Calculated order size too low.'}), 400
     except Exception as e:
@@ -912,7 +985,7 @@ def liquidate_to_usdt():
         bot_tracked_qty = read_float_state(LIVE_NS, 'bot_tracked_qty', sol_bal)
         sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
         if sol_to_liquidate > 0.01:
-            log_activity(f'MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.', namespace=LIVE_NS)
+            log_activity(f'MANUAL SELL: {sol_to_liquidate} SOL at ${current_price:.2f} | Manual liquidation', namespace=LIVE_NS)
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
             record_trade(LIVE_NS, 'SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
             ns_set(LIVE_NS, 'position_active', 'false')
