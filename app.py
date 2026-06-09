@@ -209,9 +209,8 @@ def run_trading_bot():
 
             if redis.get('bot_running') != 'true':
                 redis.set('engine_status', 'PAUSED')
-                if last_logged_thought != "Trading paused. Loop idling.":
-                    log_activity("Trading paused. Loop idling.", skip_db=True)
-                    last_logged_thought = "Trading paused. Loop idling."
+                log_activity("Trading paused. Loop idling.")
+                last_logged_thought = "Trading paused. Loop idling."
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
@@ -235,7 +234,7 @@ def run_trading_bot():
                 if len(samples) < 4 or anchor_price is None:
                     warm_seconds = min(len(samples) * SAMPLE_INTERVAL, LOOKBACK_SECONDS)
                     thought_msg += f" | Warming 2m price cache ({warm_seconds}/{LOOKBACK_SECONDS}s via 10s polls)..."
-                    log_activity(thought_msg, skip_db=True)
+                    log_activity(thought_msg)
                     redis.set('engine_status', 'WARMING_2M_CACHE')
                     continue
 
@@ -259,8 +258,7 @@ def run_trading_bot():
                 else:
                     thought_msg += " | Waiting for rebound under anchor."
                 
-                skip_write = (thought_msg == last_logged_thought)
-                log_activity(thought_msg, skip_db=skip_write)
+                log_activity(thought_msg)
                 last_logged_thought = thought_msg
                 redis.set('engine_status', 'MONITORING_RECENT_DIP_REBOUND_REST_10S')
 
@@ -282,8 +280,7 @@ def run_trading_bot():
                 profit_pct = ((current_price - purchase_price) / purchase_price) * 100
                 thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +0.60%) | Holding."
                 
-                skip_write = (thought_msg == last_logged_thought)
-                log_activity(thought_msg, skip_db=skip_write)
+                log_activity(thought_msg)
                 last_logged_thought = thought_msg
                 redis.set('engine_status', 'HOLDING_FOR_+0.60%_EXIT_REST_10S')
 
