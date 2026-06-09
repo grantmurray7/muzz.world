@@ -228,9 +228,18 @@ def read_int_state(key, default=0):
     except Exception:
         return default
 
+def read_text_state(key, default=''):
+    try:
+        return str(redis.get(key) or default)
+    except Exception:
+        return default
+
+def set_strategy_snapshot(**fields):
+    for key, value in fields.items():
+        redis.set(f'strategy_{key}', str(value))
+
 def clear_position_tracking():
     redis.delete('position_opened_at')
-    redis.delete('entry_progress_armed')
 
 def build_status_feed_item(now=None):
     now = now or time.time()
@@ -372,12 +381,14 @@ def run_trading_bot():
                 redis.set('current_sol_price', str(current_price))
             except Exception as price_error:
                 redis.set('engine_status', 'WAITING_FOR_LIVE_PRICE')
+                set_strategy_snapshot(mode='WAITING', setup='Waiting for live websocket price')
                 log_activity(f"Market data waiting: {price_error}")
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
             if redis.get('bot_running') != 'true':
                 redis.set('engine_status', 'PAUSED')
+                set_strategy_snapshot(mode='PAUSED', setup='Trading paused by operator')
                 log_activity("Trading paused. Loop idling.")
                 time.sleep(SAMPLE_INTERVAL)
                 continue
@@ -391,6 +402,14 @@ def run_trading_bot():
                 samples = get_recent_samples(load_price_samples(), SCALP_WINDOW_SECONDS, now=now)
                 if len(samples) < 10:
                     redis.set('engine_status', 'WARMING_SCALP_WINDOW')
+                    set_strategy_snapshot(
+                        mode='BUY',
+                        setup='Warming scalp window',
+                        recent_high='0',
+                        local_low='0',
+                        drop_pct='0',
+                        bounce_pct='0'
+                    )
                     log_activity(f"BUY mode | Spot: ${current_price:.2f} | Warming scalp window: {len(samples)} samples / {SCALP_WINDOW_SECONDS}s")
                     time.sleep(SAMPLE_INTERVAL)
                     continue
@@ -403,6 +422,18 @@ def run_trading_bot():
                 drop_pct = pct_change(recent_high, current_price)
                 bounce_pct = pct_change(local_low, current_price)
                 armed = drop_pct <= DROP_TRIGGER_PCT
+                setup = 'Drop armed' if armed else 'Waiting for flush'
+                if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
+                    setup = 'Bounce confirmed'
+
+                set_strategy_snapshot(
+                    mode='BUY',
+                    setup=setup,
+                    recent_high=f'{recent_high:.6f}',
+                    local_low=f'{local_low:.6f}',
+                    drop_pct=f'{drop_pct:.4f}',
+                    bounce_pct=f'{bounce_pct:.4f}'
+                )
 
                 thought_msg = (
                     f"BUY mode | Spot: ${current_price:.2f}"
@@ -428,8 +459,7 @@ def run_trading_bot():
                     else:
                         log_activity("Transaction aborted: Available balance under operational thresholds.")
                 else:
-                    status_label = 'DROP ARMED' if armed else 'WAITING FOR FLUSH'
-                    log_activity(thought_msg + f" | {status_label}")
+                    log_activity(thought_msg + f" | {setup.upper()}")
                     redis.set('engine_status', 'SCALP_DROP_ARMED' if armed else 'SCANNING_FOR_SCALP_ENTRY')
 
             else:
@@ -438,6 +468,17 @@ def run_trading_bot():
                 profit_pct = pct_change(purchase_price, current_price)
                 opened_at = read_float_state('position_opened_at', time.time())
                 seconds_open = max(0, int(time.time() - opened_at))
+                countdown = max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open)
+
+                set_strategy_snapshot(
+                    mode='SELL',
+                    setup='Managing open scalp',
+                    target_price=f'{target_price:.6f}',
+                    stop_price=f'{stop_price:.6f}',
+                    profit_pct=f'{profit_pct:.4f}',
+                    seconds_open=str(seconds_open),
+                    fail_countdown=str(countdown)
+                )
 
                 thought_msg = (
                     f"SELL mode | Spot: ${current_price:.2f}"
@@ -477,6 +518,7 @@ def run_trading_bot():
         except Exception as e:
             log_activity(f"Process Loop Error: {e}")
             redis.set('engine_status', "Loop Error")
+            set_strategy_snapshot(mode='ERROR', setup=str(e))
 
         time.sleep(SAMPLE_INTERVAL)
 
@@ -617,6 +659,16 @@ def get_state():
         sol_bal = float(redis.get('balance_sol') or 0.0)
         current_price = float(redis.get('current_sol_price') or 0.0)
         trade_count = int(redis.get('trade_count') or 0)
+        purchase_price = read_float_state('purchase_price')
+        target_price = purchase_price * SELL_TARGET_MULTIPLIER if purchase_price > 0 else 0.0
+        stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100)) if purchase_price > 0 else 0.0
+        profit_pct = pct_change(purchase_price, current_price) if purchase_price > 0 else 0.0
+        seconds_open = 0
+        if purchase_price > 0:
+            seconds_open = max(0, int(time.time() - read_float_state('position_opened_at', time.time())))
+
+        websocket_last_seen = read_float_state('websocket_last_seen')
+        market_data_age = max(0.0, time.time() - websocket_last_seen) if websocket_last_seen > 0 else 0.0
 
         total_usd = usdt_bal + (sol_bal * current_price)
         total_gbp = total_usd * 0.78
@@ -631,7 +683,7 @@ def get_state():
         return jsonify({
             'bot_running': redis.get('bot_running') == 'true',
             'position_active': redis.get('position_active') == 'true',
-            'purchase_price': redis.get('purchase_price') or '0.00',
+            'purchase_price': str(purchase_price),
             'current_sol_price': str(current_price),
             'balance_usdt': str(usdt_bal),
             'balance_sol': str(sol_bal),
@@ -639,6 +691,21 @@ def get_state():
             'total_portfolio_gbp': str(round(total_gbp, 2)),
             'trade_count': trade_count,
             'engine_status': redis.get('engine_status') or 'Initializing...',
+            'websocket_status': read_text_state('websocket_status', 'DISCONNECTED'),
+            'market_data_age': round(market_data_age, 1),
+            'strategy': {
+                'mode': read_text_state('strategy_mode'),
+                'setup': read_text_state('strategy_setup'),
+                'recent_high': read_float_state('strategy_recent_high'),
+                'local_low': read_float_state('strategy_local_low'),
+                'drop_pct': read_float_state('strategy_drop_pct'),
+                'bounce_pct': read_float_state('strategy_bounce_pct'),
+                'target_price': target_price,
+                'stop_price': stop_price,
+                'profit_pct': profit_pct,
+                'seconds_open': seconds_open,
+                'fail_countdown': max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open) if purchase_price > 0 else FAIL_TO_LAUNCH_SECONDS
+            },
             'logs': logs
         })
     except Exception as e:
