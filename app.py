@@ -30,7 +30,7 @@ LOOKBACK_SECONDS = 120
 BUY_DIP_FROM_ANCHOR_USD = 0.10
 BUY_REBOUND_STEP_USD = 0.01
 AUTO_BUY_ALLOCATION = 0.95
-SELL_TARGET_MULTIPLIER = 1.006
+SELL_TARGET_MULTIPLIER = 1.0035
 PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 5
 MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
 TRADE_HISTORY_LIMIT = 200
@@ -375,11 +375,11 @@ def run_trading_bot():
             else:
                 target_price = purchase_price * SELL_TARGET_MULTIPLIER
                 profit_pct = ((current_price - purchase_price) / purchase_price) * 100
-                thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +0.60%) | Holding."
+                thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +0.35%) | Holding."
                 
                 log_activity(thought_msg)
                 last_logged_thought = thought_msg
-                redis.set('engine_status', 'HOLDING_FOR_+0.60%_EXIT_REST_10S')
+                redis.set('engine_status', 'HOLDING_FOR_+0.35%_EXIT_REST_10S')
 
                 if current_price >= target_price:
                     sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
@@ -388,7 +388,7 @@ def run_trading_bot():
                     if sol_to_liquidate > 0.01:
                         log_activity(f"EXECUTION: Target Hit. Market Selling bot-tracked size of {sol_to_liquidate} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
-                        record_trade('SELL', sol_to_liquidate, current_price, 'AUTO', '+0.60% target exit')
+                        record_trade('SELL', sol_to_liquidate, current_price, 'AUTO', '+0.35% target exit')
                         time.sleep(1)
                         reconcile_state_against_binance(client)
                     else:
