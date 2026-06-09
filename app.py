@@ -32,8 +32,6 @@ BOUNCE_TRIGGER_PCT = 0.05
 AUTO_BUY_ALLOCATION = 0.95
 SELL_TARGET_PCT = 0.20
 SELL_TARGET_MULTIPLIER = 1 + (SELL_TARGET_PCT / 100)
-FAIL_TO_LAUNCH_SECONDS = 30
-FAIL_TO_LAUNCH_MIN_PCT = 0.05
 HARD_STOP_PCT = -0.12
 PRICE_HISTORY_LIMIT = 1500
 MAX_TRADE_USDT = 50.00
@@ -638,7 +636,6 @@ def run_namespaced_trader(namespace, paper=False):
                 profit_pct = pct_change(purchase_price, current_price)
                 opened_at = read_float_state(namespace, 'position_opened_at', time.time())
                 seconds_open = max(0, int(time.time() - opened_at))
-                countdown = max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open)
                 set_strategy_snapshot(
                     namespace,
                     mode='SELL',
@@ -646,8 +643,7 @@ def run_namespaced_trader(namespace, paper=False):
                     target_price=f'{target_price:.6f}',
                     stop_price=f'{stop_price:.6f}',
                     profit_pct=f'{profit_pct:.4f}',
-                    seconds_open=str(seconds_open),
-                    fail_countdown=str(countdown)
+                    seconds_open=str(seconds_open)
                 )
                 ns_set(namespace, 'engine_status', 'MANAGING_SCALP_POSITION')
 
@@ -656,8 +652,6 @@ def run_namespaced_trader(namespace, paper=False):
                     sell_note = f'Target hit at +{SELL_TARGET_PCT:.2f}%'
                 elif current_price <= stop_price:
                     sell_note = f'Hard stop hit at {HARD_STOP_PCT:.2f}%'
-                elif seconds_open >= FAIL_TO_LAUNCH_SECONDS and profit_pct < FAIL_TO_LAUNCH_MIN_PCT:
-                    sell_note = f'Failed launch: still under +{FAIL_TO_LAUNCH_MIN_PCT:.2f}% after {FAIL_TO_LAUNCH_SECONDS}s'
 
                 if sell_note:
                     if paper:
@@ -743,8 +737,7 @@ def build_state_payload(namespace):
             'target_price': target_price,
             'stop_price': stop_price,
             'profit_pct': profit_pct,
-            'seconds_open': seconds_open,
-            'fail_countdown': max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open) if purchase_price > 0 else FAIL_TO_LAUNCH_SECONDS
+            'seconds_open': seconds_open
         },
         'logs': logs
     }
