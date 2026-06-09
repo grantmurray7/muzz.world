@@ -215,17 +215,16 @@ class PostgresStateStore:
 redis = PostgresStateStore(RENDER_INTERNAL_DATABASE)
 price_state_lock = Lock()
 log_queue = queue.Queue()
+last_price_recorded_second = None
 
 SYMBOL = 'SOLUSDT'
 SAMPLE_INTERVAL = 1
-SCALP_WINDOW_SECONDS = 90
-DROP_TRIGGER_PCT = -0.25
-BOUNCE_TRIGGER_PCT = 0.10
+LOOKBACK_SECONDS = 120
+UPLIFT_THRESHOLD_PCT = 0.02
 AUTO_BUY_ALLOCATION = 0.95
-SELL_TARGET_PCT = 0.35
+SELL_TARGET_PCT = 0.60
 SELL_TARGET_MULTIPLIER = 1 + (SELL_TARGET_PCT / 100)
-HARD_STOP_PCT = -0.15
-PRICE_HISTORY_LIMIT = 1500
+PRICE_HISTORY_LIMIT = LOOKBACK_SECONDS + 30
 MAX_TRADE_USDT = 50.00
 TRADE_HISTORY_LIMIT = 200
 LOG_HISTORY_LIMIT = 250
@@ -421,12 +420,16 @@ def record_price_sample(price, sample_ts=None):
 
 
 def update_live_price(price, sample_ts=None):
+    global last_price_recorded_second
     sample_ts = sample_ts or time.time()
+    sample_second = int(sample_ts)
     with price_state_lock:
         redis.set(ns_key(GLOBAL_NS, 'current_sol_price'), str(price))
         redis.set(ns_key(GLOBAL_NS, 'websocket_last_seen'), str(sample_ts))
         redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'LIVE')
-        record_price_sample(price, sample_ts=sample_ts)
+        if last_price_recorded_second != sample_second:
+            last_price_recorded_second = sample_second
+            record_price_sample(price, sample_ts=float(sample_second))
 
 
 def handle_price_socket_message(msg):
@@ -507,10 +510,14 @@ def load_price_samples():
     return parsed_samples
 
 
-def get_recent_samples(samples, seconds, now=None):
-    now = now or time.time()
-    cutoff = now - seconds
-    return [sample for sample in samples if sample.get('ts', 0.0) >= cutoff]
+def find_anchor_price(samples, anchor_ts):
+    anchor_price = None
+    for sample in samples:
+        if sample.get('ts', 0.0) <= anchor_ts:
+            anchor_price = sample['price']
+        else:
+            break
+    return anchor_price
 
 
 def pct_change(from_price, to_price):
@@ -585,10 +592,15 @@ def build_status_feed_item(namespace, now=None):
             f'To go: {remaining_pct:.2f}% / ${remaining_usd:.2f} | Trades: {trade_count}'
         ])
     else:
+        anchor_price = read_float_state(namespace, 'strategy_anchor_price')
+        anchor_delta = read_float_state(namespace, 'strategy_anchor_delta')
+        uplift_1 = read_float_state(namespace, 'strategy_uplift_1')
+        uplift_2 = read_float_state(namespace, 'strategy_uplift_2')
+        uplift_3 = read_float_state(namespace, 'strategy_uplift_3')
         title = '\n'.join([
             f'{running_label} | BUY | SOL ${current_price:.2f}',
-            'Scalp setup: 90s flush then bounce',
-            f'Arm {DROP_TRIGGER_PCT:.2f}% | Buy bounce +{BOUNCE_TRIGGER_PCT:.2f}% | Trades: {trade_count}',
+            'Rebound setup: 3 x +0.02% while below 2m anchor',
+            f'Anchor ${anchor_price:.2f} ({anchor_delta:+.2f}%) | Uplifts {uplift_1:+.2f}/{uplift_2:+.2f}/{uplift_3:+.2f}',
             f'USDT ${usdt_bal:.2f}'
         ])
     description_parts = [
@@ -648,7 +660,7 @@ def reconcile_live_state(client):
         return False
 
 
-def execute_paper_buy(namespace, price, note='90s flush bounce scalp'):
+def execute_paper_buy(namespace, price, note='2m anchor rebound'):
     usdt_bal = read_float_state(namespace, 'balance_usdt')
     usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
     if usdt_alloc < 5.0:
@@ -752,48 +764,60 @@ def run_namespaced_trader(namespace, paper=False):
 
             if not position_active:
                 now = time.time()
-                samples = get_recent_samples(load_price_samples(), SCALP_WINDOW_SECONDS, now=now)
-                if len(samples) < 10:
-                    ns_set(namespace, 'engine_status', 'WARMING_SCALP_WINDOW')
+                samples = load_price_samples()
+                anchor_price = find_anchor_price(samples, now - LOOKBACK_SECONDS)
+                if len(samples) < 4 or anchor_price is None:
+                    warm_seconds = min(len(samples), LOOKBACK_SECONDS)
+                    ns_set(namespace, 'engine_status', 'WARMING_2M_ANCHOR')
                     set_strategy_snapshot(
                         namespace,
                         mode='BUY',
-                        setup='Warming scalp window',
-                        recent_high='0',
-                        local_low='0',
-                        drop_pct='0',
-                        bounce_pct='0'
+                        setup=f'Warming 2m anchor cache ({warm_seconds}/{LOOKBACK_SECONDS}s)',
+                        anchor_price='0',
+                        anchor_delta='0',
+                        uplift_1='0',
+                        uplift_2='0',
+                        uplift_3='0',
+                        position_status=''
                     )
                     time.sleep(SAMPLE_INTERVAL)
                     continue
 
-                recent_high = max(sample['price'] for sample in samples)
-                high_indexes = [idx for idx, sample in enumerate(samples) if sample['price'] == recent_high]
-                high_index = high_indexes[-1] if high_indexes else 0
-                post_high_samples = samples[high_index:]
-                local_low = min(sample['price'] for sample in post_high_samples)
-                drop_pct = pct_change(recent_high, current_price)
-                bounce_pct = pct_change(local_low, current_price)
-                armed = drop_pct <= DROP_TRIGGER_PCT
-                setup = 'Drop armed' if armed else 'Waiting for flush'
-                if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
-                    setup = 'Bounce confirmed'
+                latest_prices = [sample['price'] for sample in samples[-4:]]
+                uplift_1 = pct_change(latest_prices[0], latest_prices[1])
+                uplift_2 = pct_change(latest_prices[1], latest_prices[2])
+                uplift_3 = pct_change(latest_prices[2], latest_prices[3])
+                anchor_delta = pct_change(anchor_price, current_price)
+                below_anchor = current_price < anchor_price
+                uplift_confirmed = all(step >= UPLIFT_THRESHOLD_PCT for step in (uplift_1, uplift_2, uplift_3))
+
+                if below_anchor and uplift_confirmed:
+                    setup = 'Rebound confirmed below 2m anchor'
+                    engine_status = 'REBOUND_CONFIRMED'
+                elif below_anchor:
+                    setup = 'Below 2m anchor, waiting for 3 uplifts'
+                    engine_status = 'BELOW_2M_ANCHOR'
+                else:
+                    setup = 'Waiting for price to move back below 2m anchor'
+                    engine_status = 'WAITING_BELOW_2M_ANCHOR'
 
                 set_strategy_snapshot(
                     namespace,
                     mode='BUY',
                     setup=setup,
-                    recent_high=f'{recent_high:.6f}',
-                    local_low=f'{local_low:.6f}',
-                    drop_pct=f'{drop_pct:.4f}',
-                    bounce_pct=f'{bounce_pct:.4f}'
+                    anchor_price=f'{anchor_price:.6f}',
+                    anchor_delta=f'{anchor_delta:.4f}',
+                    uplift_1=f'{uplift_1:.4f}',
+                    uplift_2=f'{uplift_2:.4f}',
+                    uplift_3=f'{uplift_3:.4f}',
+                    position_status=''
                 )
-                ns_set(namespace, 'engine_status', 'SCALP_DROP_ARMED' if armed else 'SCANNING_FOR_SCALP_ENTRY')
+                ns_set(namespace, 'engine_status', engine_status)
 
-                if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
+                if below_anchor and uplift_confirmed:
                     buy_reason = (
-                        f'Drop {drop_pct:+.2f}% from 90s high ${recent_high:.2f}; '
-                        f'bounce {bounce_pct:+.2f}% from local low ${local_low:.2f}'
+                        f'3 x +{UPLIFT_THRESHOLD_PCT:.2f}% uplifts while '
+                        f'price remains {anchor_delta:+.2f}% vs 2m anchor ${anchor_price:.2f}'
                     )
                     if paper:
                         execute_paper_buy(namespace, current_price, buy_reason)
@@ -824,26 +848,23 @@ def run_namespaced_trader(namespace, paper=False):
                             log_activity('Auto buy aborted: available balance under operational thresholds.', namespace=namespace)
             else:
                 target_price = purchase_price * SELL_TARGET_MULTIPLIER
-                stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100))
                 profit_pct = pct_change(purchase_price, current_price)
                 opened_at = read_float_state(namespace, 'position_opened_at', time.time())
                 seconds_open = max(0, int(time.time() - opened_at))
                 set_strategy_snapshot(
                     namespace,
                     mode='SELL',
-                    setup='Managing open scalp',
+                    setup='Holding for +0.60% exit',
                     target_price=f'{target_price:.6f}',
-                    stop_price=f'{stop_price:.6f}',
                     profit_pct=f'{profit_pct:.4f}',
-                    seconds_open=str(seconds_open)
+                    seconds_open=str(seconds_open),
+                    position_status='Holding until target is hit'
                 )
-                ns_set(namespace, 'engine_status', 'MANAGING_SCALP_POSITION')
+                ns_set(namespace, 'engine_status', 'HOLDING_FOR_+0.60%_EXIT')
 
                 sell_note = None
                 if current_price >= target_price:
                     sell_note = f'Target hit at +{SELL_TARGET_PCT:.2f}%'
-                elif current_price <= stop_price:
-                    sell_note = f'Hard stop hit at {HARD_STOP_PCT:.2f}%'
 
                 if sell_note:
                     if paper:
@@ -890,7 +911,6 @@ def build_state_payload(namespace):
     trade_count = read_int_state(namespace, 'trade_count')
     purchase_price = read_float_state(namespace, 'purchase_price')
     target_price = purchase_price * SELL_TARGET_MULTIPLIER if purchase_price > 0 else 0.0
-    stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100)) if purchase_price > 0 else 0.0
     profit_pct = pct_change(purchase_price, current_price) if purchase_price > 0 else 0.0
     seconds_open = 0
     if purchase_price > 0:
@@ -922,14 +942,15 @@ def build_state_payload(namespace):
         'strategy': {
             'mode': read_text_state(namespace, 'strategy_mode'),
             'setup': read_text_state(namespace, 'strategy_setup'),
-            'recent_high': read_float_state(namespace, 'strategy_recent_high'),
-            'local_low': read_float_state(namespace, 'strategy_local_low'),
-            'drop_pct': read_float_state(namespace, 'strategy_drop_pct'),
-            'bounce_pct': read_float_state(namespace, 'strategy_bounce_pct'),
+            'anchor_price': read_float_state(namespace, 'strategy_anchor_price'),
+            'anchor_delta': read_float_state(namespace, 'strategy_anchor_delta'),
+            'uplift_1': read_float_state(namespace, 'strategy_uplift_1'),
+            'uplift_2': read_float_state(namespace, 'strategy_uplift_2'),
+            'uplift_3': read_float_state(namespace, 'strategy_uplift_3'),
             'target_price': target_price,
-            'stop_price': stop_price,
             'profit_pct': profit_pct,
-            'seconds_open': seconds_open
+            'seconds_open': seconds_open,
+            'position_status': read_text_state(namespace, 'strategy_position_status')
         },
         'logs': logs
     }
