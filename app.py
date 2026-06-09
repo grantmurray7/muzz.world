@@ -195,33 +195,36 @@ def build_status_feed_item(now=None):
     mode = 'SELL' if position_active else 'BUY'
     running_label = 'RUNNING' if bot_running else 'PAUSED'
 
-    title_parts = [running_label, mode, engine_status, f'Trades: {trade_count}']
-    if current_price > 0:
-        title_parts.insert(2, f'SOL ${current_price:.2f}')
-
-    description_parts = [
-        f'Status: {engine_status}',
-        f'Mode: {mode}',
-        f'Running: {running_label}',
-        f'Total trades: {trade_count}',
-        f'SOL spot: ${current_price:.2f}',
-        f'USDT: ${usdt_bal:.2f}',
-        f'SOL held: {sol_bal:.4f}'
-    ]
-
     if position_active and purchase_price > 0:
         target_price = purchase_price * SELL_TARGET_MULTIPLIER
         profit_pct = pct_change(purchase_price, current_price)
-        description_parts.extend([
-            f'Entry: ${purchase_price:.2f}',
-            f'Sell target: ${target_price:.2f} (+0.35%)',
-            f'Current move: {profit_pct:+.2f}%'
+        progress_pct = max(0.0, min(100.0, (profit_pct / 0.35) * 100))
+        remaining_pct = max(0.0, 0.35 - profit_pct)
+        remaining_usd = max(0.0, target_price - current_price)
+        title = '\n'.join([
+            f'{running_label} | SELL | SOL ${current_price:.2f}',
+            f'Progress: {profit_pct:+.2f}% / +0.35% ({progress_pct:.0f}%)',
+            f'Entry ${purchase_price:.2f} -> Target ${target_price:.2f}',
+            f'To go: {remaining_pct:.2f}% / ${remaining_usd:.2f} | Trades: {trade_count}'
         ])
+        description_parts = [
+            title,
+            f'Status: {engine_status}',
+            f'SOL held: {sol_bal:.4f}',
+            f'USDT: ${usdt_bal:.2f}'
+        ]
     else:
-        description_parts.extend([
+        title = '\n'.join([
+            f'{running_label} | BUY | SOL ${current_price:.2f}',
             f'Buy steps: {min(buy_step, 3)}/3',
-            'Buy rule: $0.10 below 2m anchor, then two +$0.01 rebounds'
+            'Need: $0.10 dip, then 2 x +$0.01 rebounds',
+            f'USDT ${usdt_bal:.2f} | Trades: {trade_count}'
         ])
+        description_parts = [
+            title,
+            f'Status: {engine_status}',
+            f'SOL held: {sol_bal:.4f}'
+        ]
 
     latest_logs = redis.lrange('bot_logs', 0, 0)
     if latest_logs:
@@ -230,7 +233,7 @@ def build_status_feed_item(now=None):
     return {
         'bucket_ts': bucket_ts,
         'pub_date': formatdate(bucket_ts, usegmt=True),
-        'title': ' | '.join(title_parts),
+        'title': title,
         'description': '\n'.join(description_parts),
         'guid': f'muzz-world-status-{bucket_ts}'
     }
@@ -302,7 +305,6 @@ def run_trading_bot():
         log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
         return
 
-    last_logged_thought = ""
     last_signal_check = 0.0
 
     while True:
@@ -326,7 +328,6 @@ def run_trading_bot():
             if redis.get('bot_running') != 'true':
                 redis.set('engine_status', 'PAUSED')
                 log_activity("Trading paused. Loop idling.")
-                last_logged_thought = "Trading paused. Loop idling."
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
@@ -396,9 +397,7 @@ def run_trading_bot():
                         redis.set('buy_sequence_last_price', str(current_price))
                     elif dip_gap >= BUY_DIP_FROM_ANCHOR_USD:
                         buy_steps = 1
-                        sequence_note = (
-                            f"Rebound miss; Step 1 re-armed at ${dip_gap:.2f} below anchor"
-                        )
+                        sequence_note = f"Rebound miss; Step 1 re-armed at ${dip_gap:.2f} below anchor"
                         redis.set('buy_sequence_step', '1')
                         redis.set('buy_sequence_last_price', str(current_price))
                     else:
@@ -417,14 +416,11 @@ def run_trading_bot():
 
                 if buy_steps >= 3:
                     buy_triggered = True
-                    log_activity(
-                        "BUY ALERT: $0.10 anchor dip followed by two consecutive +$0.01 rebounds."
-                    )
+                    log_activity("BUY ALERT: $0.10 anchor dip followed by two consecutive +$0.01 rebounds.")
                 else:
                     thought_msg += " | Waiting for buy sequence."
                 
                 log_activity(thought_msg)
-                last_logged_thought = thought_msg
                 redis.set('engine_status', 'MONITORING_DOLLAR_DIP_REBOUND_REST_10S')
 
                 if buy_triggered:
@@ -448,7 +444,6 @@ def run_trading_bot():
                 thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +0.35%) | Holding."
                 
                 log_activity(thought_msg)
-                last_logged_thought = thought_msg
                 redis.set('engine_status', 'HOLDING_FOR_+0.35%_EXIT_REST_10S')
 
                 if current_price >= target_price:
