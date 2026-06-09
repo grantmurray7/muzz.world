@@ -34,6 +34,7 @@ SELL_TARGET_MULTIPLIER = 1.006
 PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 5
 MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
 TRADE_HISTORY_LIMIT = 200
+LOG_HISTORY_LIMIT = 250
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
 # --- Authentication Guard ---
@@ -55,7 +56,7 @@ def redis_log_worker():
         log_line = log_queue.get()
         try:
             redis.lpush('bot_logs', log_line)
-            redis.ltrim('bot_logs', 0, 99)
+            redis.ltrim('bot_logs', 0, LOG_HISTORY_LIMIT - 1)
         except Exception as e:
             print(f"Logging fail to Redis: {e}")
         finally:
@@ -495,7 +496,7 @@ def get_trades():
 @app.route('/api/state', methods=['GET'])
 def get_state():
     try:
-        logs = redis.lrange('bot_logs', 0, 20)
+        logs = redis.lrange('bot_logs', 0, LOG_HISTORY_LIMIT - 1)
         usdt_bal = float(redis.get('balance_usdt') or 0.0)
         sol_bal = float(redis.get('balance_sol') or 0.0)
         current_price = float(redis.get('current_sol_price') or 0.0)
