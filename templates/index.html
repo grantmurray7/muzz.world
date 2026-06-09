@@ -16,6 +16,7 @@
         .mode-active { opacity: 1; transition: opacity 0.3s ease; }
         .left-panel .muted { color: #ffffff; }
         .left-panel .soft { color: #ffffff; }
+        .dashboard-logo { display: block; width: 210px; max-width: 30vw; height: auto; }
         #logBox { height: 60vh; overflow-y: auto; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1f2226; }
@@ -33,7 +34,7 @@
 
     <div class="flex justify-between items-end mb-4 px-1 gap-4">
         <div class="flex flex-col flex-shrink-0">
-            <h1 class="text-4xl font-black tracking-tight leading-none">muzz.world</h1>
+            <img class="dashboard-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world">
         </div>
         <div class="flex-1 flex justify-center items-center gap-2 font-mono">
             <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="bg-gray-600 hover:bg-gray-500 text-white font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition duration-150 whitespace-nowrap">
