@@ -80,7 +80,7 @@
         
         <div class="left-panel space-y-4 overflow-y-auto pr-0 md:pr-1">
             
-            <div class="card p-4 rounded flex justify-between items-center font-mono">
+            <div class="card py-2 px-4 rounded flex justify-between items-center font-mono">
                 <span class="muted uppercase font-bold tracking-wider text-sm">Spot Benchmark:</span>
                 <div>
                     <span class="muted mr-1.5 text-sm">SOL/USDT:</span>
@@ -91,10 +91,12 @@
             <div class="space-y-4">
                 
                 <div id="usdtSide" class="card p-4 rounded space-y-3 border-t-4 border-green-400">
-                    <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👉 USDT Cash Mode</p>
-                    <div>
-                        <span class="text-sm soft block font-mono font-bold">AVAILABLE LIQUIDITY</span>
-                        <p id="balUsdt" class="text-3xl font-black text-white">$0.00</p>
+                    <div class="flex items-start justify-between gap-4">
+                        <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👉 USDT Cash Mode</p>
+                        <div class="text-right leading-tight">
+                            <span class="text-sm soft block font-mono font-bold">AVAILABLE LIQUIDITY</span>
+                            <p id="balUsdt" class="text-3xl font-black text-white">$0.00</p>
+                        </div>
                     </div>
                     <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-base">
                         <div class="flex justify-between">
@@ -118,10 +120,12 @@
                 </div>
 
                 <div id="solSide" class="card p-4 rounded space-y-3 border-t-4 border-blue-400">
-                    <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👉 SOL Asset Mode</p>
-                    <div>
-                        <span class="text-sm soft block font-mono font-bold">HELD TOKENS</span>
-                        <p id="balSol" class="text-3xl font-black text-white">0.0000</p>
+                    <div class="flex items-start justify-between gap-4">
+                        <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👉 SOL Asset Mode</p>
+                        <div class="text-right leading-tight">
+                            <span class="text-sm soft block font-mono font-bold">HELD TOKENS</span>
+                            <p id="balSol" class="text-3xl font-black text-white">0.0000</p>
+                        </div>
                     </div>
                     <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-base">
                         <div class="flex justify-between">
