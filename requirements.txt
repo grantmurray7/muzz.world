@@ -1,5 +1,5 @@
 Flask
 python-binance
-upstash-redis
+psycopg2-binary
 requests
 gunicorn

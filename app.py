@@ -5,12 +5,15 @@ import math
 import json
 import requests
 import queue
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from email.utils import formatdate
 from html import escape
 from threading import Thread, Lock
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from binance import Client, ThreadedWebsocketManager
-from upstash_redis import Redis
+from psycopg2.extras import Json
+from psycopg2.pool import ThreadedConnectionPool
 
 app = Flask(__name__)
 
@@ -19,8 +22,197 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", str(uuid.uuid4()))
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "DefaultPassword123!")
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
+RENDER_INTERNAL_DATABASE = os.environ.get("RENDER_INTERNAL_DATABASE") or os.environ.get("DATABASE_URL")
 
-redis = Redis.from_env()
+
+class PostgresStateStore:
+    def __init__(self, dsn, minconn=1, maxconn=8):
+        if not dsn:
+            raise RuntimeError('RENDER_INTERNAL_DATABASE is required.')
+        self.pool = ThreadedConnectionPool(minconn, maxconn, dsn=dsn)
+        self._bootstrap()
+
+    @contextmanager
+    def connection(self):
+        conn = self.pool.getconn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self.pool.putconn(conn)
+
+    def _bootstrap(self):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS state_kv (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        expires_at TIMESTAMPTZ NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    '''
+                )
+                cur.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS state_lists (
+                        key TEXT PRIMARY KEY,
+                        items JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    '''
+                )
+
+    def ping(self):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT 1')
+                return cur.fetchone()[0] == 1
+
+    def _purge_expired_key(self, cur, key):
+        cur.execute(
+            'DELETE FROM state_kv WHERE key = %s AND expires_at IS NOT NULL AND expires_at <= NOW()',
+            (key,)
+        )
+
+    @staticmethod
+    def _expires_at(ex_seconds):
+        if ex_seconds is None:
+            return None
+        return datetime.now(timezone.utc) + timedelta(seconds=int(ex_seconds))
+
+    @staticmethod
+    def _slice_redis_range(items, start, end):
+        if not items:
+            return []
+        length = len(items)
+        if start < 0:
+            start += length
+        if end < 0:
+            end += length
+        start = max(start, 0)
+        if start >= length or end < 0:
+            return []
+        end = min(end, length - 1)
+        if end < start:
+            return []
+        return items[start:end + 1]
+
+    def get(self, key):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                self._purge_expired_key(cur, key)
+                cur.execute('SELECT value FROM state_kv WHERE key = %s', (key,))
+                row = cur.fetchone()
+                return None if row is None else row[0]
+
+    def set(self, key, value, nx=False, ex=None):
+        expires_at = self._expires_at(ex)
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                self._purge_expired_key(cur, key)
+                if nx:
+                    cur.execute(
+                        '''
+                        INSERT INTO state_kv (key, value, expires_at, updated_at)
+                        VALUES (%s, %s, %s, NOW())
+                        ON CONFLICT (key) DO NOTHING
+                        RETURNING key
+                        ''',
+                        (key, str(value), expires_at)
+                    )
+                    return cur.fetchone() is not None
+                cur.execute(
+                    '''
+                    INSERT INTO state_kv (key, value, expires_at, updated_at)
+                    VALUES (%s, %s, %s, NOW())
+                    ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value,
+                        expires_at = EXCLUDED.expires_at,
+                        updated_at = NOW()
+                    ''',
+                    (key, str(value), expires_at)
+                )
+                return True
+
+    def delete(self, *keys):
+        if not keys:
+            return 0
+        key_list = list(keys)
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('DELETE FROM state_kv WHERE key = ANY(%s)', (key_list,))
+                deleted = cur.rowcount
+                cur.execute('DELETE FROM state_lists WHERE key = ANY(%s)', (key_list,))
+                return deleted + cur.rowcount
+
+    def incr(self, key):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                self._purge_expired_key(cur, key)
+                cur.execute(
+                    '''
+                    INSERT INTO state_kv (key, value, expires_at, updated_at)
+                    VALUES (%s, '1', NULL, NOW())
+                    ON CONFLICT (key) DO UPDATE
+                    SET value = ((state_kv.value)::BIGINT + 1)::TEXT,
+                        expires_at = NULL,
+                        updated_at = NOW()
+                    RETURNING value
+                    ''',
+                    (key,)
+                )
+                return int(cur.fetchone()[0])
+
+    def _get_list(self, cur, key, for_update=False):
+        query = 'SELECT items FROM state_lists WHERE key = %s'
+        if for_update:
+            query += ' FOR UPDATE'
+        cur.execute(query, (key,))
+        row = cur.fetchone()
+        return [] if row is None else list(row[0])
+
+    def _write_list(self, cur, key, items):
+        cur.execute(
+            '''
+            INSERT INTO state_lists (key, items, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET items = EXCLUDED.items,
+                updated_at = NOW()
+            ''',
+            (key, Json(items))
+        )
+
+    def lpush(self, key, value):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                items = self._get_list(cur, key, for_update=True)
+                items.insert(0, str(value))
+                self._write_list(cur, key, items)
+                return len(items)
+
+    def ltrim(self, key, start, end):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                items = self._slice_redis_range(self._get_list(cur, key, for_update=True), start, end)
+                if items:
+                    self._write_list(cur, key, items)
+                else:
+                    cur.execute('DELETE FROM state_lists WHERE key = %s', (key,))
+                return True
+
+    def lrange(self, key, start, end):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                return self._slice_redis_range(self._get_list(cur, key), start, end)
+
+
+redis = PostgresStateStore(RENDER_INTERNAL_DATABASE)
 price_state_lock = Lock()
 log_queue = queue.Queue()
 
@@ -86,7 +278,7 @@ def redis_log_worker():
             redis.lpush(ns_key(namespace, 'bot_logs'), log_line)
             redis.ltrim(ns_key(namespace, 'bot_logs'), 0, LOG_HISTORY_LIMIT - 1)
         except Exception as e:
-            print(f'Logging fail to Redis: {e}')
+            print(f'Logging fail to database: {e}')
         finally:
             log_queue.task_done()
 
@@ -744,12 +936,12 @@ def build_state_payload(namespace):
 
 
 def build_health_payload(namespace):
-    health = {'upstash_redis': 'FAIL', 'proxy_server': 'DIRECT (NO PROXY)', 'binance_api': 'FAIL', 'market_data': 'FAIL', 'errors': []}
+    health = {'database': 'FAIL', 'proxy_server': 'DIRECT (NO PROXY)', 'binance_api': 'FAIL', 'market_data': 'FAIL', 'errors': []}
     try:
         redis.ping()
-        health['upstash_redis'] = 'OK'
+        health['database'] = 'OK'
     except Exception as e:
-        health['errors'].append(f'Redis Error: {str(e)}')
+        health['errors'].append(f'Database Error: {str(e)}')
     websocket_status = read_text_state(GLOBAL_NS, 'websocket_status', 'DISCONNECTED')
     websocket_last_seen = read_float_state(GLOBAL_NS, 'websocket_last_seen')
     if websocket_last_seen > 0:
