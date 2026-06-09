@@ -16,10 +16,10 @@
         .status-ok { color: #52e5a4; font-weight: bold; }
         .status-fail { color: #ff6b6b; font-weight: bold; }
         .status-warn { color: #fbbf24; font-weight: bold; }
-        .mode-dim { opacity: 0.20; transition: opacity 0.3s ease; pointer-events: none; }
+        .mode-dim { opacity: 0.22; transition: opacity 0.3s ease; pointer-events: none; }
         .mode-active { opacity: 1; transition: opacity 0.3s ease; }
         .left-panel .muted { color: #ffffff; }
-        .left-panel .soft { color: #ffffff; }
+        .left-panel .soft { color: #cfd5df; }
         .dashboard-logo { display: block; width: 155px; max-width: 30vw; height: auto; }
         #logBox { height: 52vh; overflow-y: auto; }
         .accent-btn {
@@ -37,13 +37,17 @@
         }
         .spot-pink { color: var(--accent-pink); }
         .metric-pink { color: var(--accent-pink) !important; }
+        .data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+        .data-tile { background: rgba(0,0,0,0.22); border: 1px solid #343a44; border-radius: 0.5rem; padding: 0.65rem 0.8rem; }
+        .data-label { font-size: 0.72rem; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.08em; font-family: monospace; font-weight: 700; }
+        .data-value { margin-top: 0.15rem; font-size: 1rem; color: #ffffff; font-family: monospace; font-weight: 700; line-height: 1.2; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1f2226; }
         ::-webkit-scrollbar-thumb { background: #434954; border-radius: 4px; }
-        
+
         @media (min-width: 768px) {
             body { padding: 1.5rem; }
-            .desktop-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; height: calc(100vh - 6rem); }
+            .desktop-grid { display: grid; grid-template-columns: minmax(360px, 1fr) 2fr; gap: 1.5rem; height: calc(100vh - 6rem); }
             .log-container { height: calc(100vh - 6rem) !important; display: flex; flex-direction: column; }
             #logBox { flex: 0 0 auto; height: calc(100vh - 12rem) !important; font-size: 0.82rem !important; line-height: 1.15 !important; }
         }
@@ -77,78 +81,96 @@
     </div>
 
     <div class="desktop-grid">
-        
         <div class="left-panel space-y-4 overflow-y-auto pr-0 md:pr-1">
-            
             <div class="card py-2 px-4 rounded flex justify-between items-center font-mono">
-                <span class="muted uppercase font-bold tracking-wider text-sm">Spot Benchmark:</span>
+                <span class="muted uppercase font-bold tracking-wider text-sm">Spot Benchmark</span>
                 <div>
-                    <span class="muted mr-1.5 text-sm">SOL/USDT:</span>
+                    <span class="muted mr-1.5 text-sm">SOL/USDT</span>
                     <span id="solPrice" class="font-black text-2xl spot-pink">$0.00</span>
                 </div>
             </div>
 
-            <div class="space-y-4">
-                
-                <div id="usdtSide" class="card p-4 rounded space-y-3 border-t-4 border-green-400">
-                    <div class="flex items-start justify-between gap-4">
-                        <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👉 USDT Cash Mode</p>
-                        <div class="text-right leading-tight">
-                            <span class="text-sm soft block font-mono font-bold">AVAILABLE LIQUIDITY</span>
-                            <p id="balUsdt" class="text-3xl font-black text-white">$0.00</p>
-                        </div>
+            <div class="card p-4 rounded border-t-4 border-pink-400">
+                <div class="flex items-start justify-between gap-4 mb-3">
+                    <div>
+                        <p class="text-base text-white font-bold uppercase font-mono tracking-wider">Live Setup</p>
+                        <p id="setupText" class="text-sm soft font-mono mt-1">Waiting for state...</p>
                     </div>
-                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-base">
-                        <div class="flex justify-between">
-                            <span class="muted">90s Flush Check:</span>
-                            <span id="flashTargetPrice" class="text-white font-bold">Waiting...</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="muted">Bounce Trigger:</span>
-                            <span id="cascadeTracker" class="text-white font-bold">-0.15%, then +0.05%</span>
-                        </div>
-                    </div>
-                    
-                    <div class="grid grid-cols-2 gap-2 pt-2 border-t border-gray-800">
-                        <button onclick="manualSetPosition()" class="accent-btn font-mono py-2 px-2 rounded text-sm uppercase font-bold tracking-wide transition">
-                            Track Entry Price
-                        </button>
-                        <button onclick="executeManualBuy()" class="accent-btn font-mono py-2 px-2 rounded text-sm uppercase font-black tracking-wide transition shadow">
-                            Market Buy SOL
-                        </button>
+                    <div class="text-right leading-tight">
+                        <span class="text-sm soft block font-mono font-bold">AVAILABLE LIQUIDITY</span>
+                        <p id="balUsdt" class="text-3xl font-black text-white">$0.00</p>
                     </div>
                 </div>
-
-                <div id="solSide" class="card p-4 rounded space-y-3 border-t-4 border-blue-400">
-                    <div class="flex items-start justify-between gap-4">
-                        <p class="text-base text-white font-bold uppercase font-mono tracking-wider">👉 SOL Asset Mode</p>
-                        <div class="text-right leading-tight">
-                            <span class="text-sm soft block font-mono font-bold">HELD TOKENS</span>
-                            <p id="balSol" class="text-3xl font-black text-white">0.0000</p>
-                        </div>
+                <div class="data-grid">
+                    <div class="data-tile">
+                        <div class="data-label">90s High</div>
+                        <div id="recentHigh" class="data-value">$0.00</div>
                     </div>
-                    <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-base">
-                        <div class="flex justify-between">
-                            <span class="muted">Purchase Basis:</span>
-                            <span id="openingPurchasePrice" class="text-yellow-500 font-bold">N/A</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="muted">Target Exit (+0.20%):</span>
-                            <span id="targetSellPrice" class="text-red-400 font-bold">N/A</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="muted">Margin Delta Gap:</span>
-                            <span id="marginDeltaGap" class="text-white font-bold">N/A</span>
-                        </div>
+                    <div class="data-tile">
+                        <div class="data-label">Local Low</div>
+                        <div id="localLow" class="data-value">$0.00</div>
                     </div>
-
-                    <div class="pt-2 border-t border-gray-700">
-                        <button onclick="liquidateStack()" class="accent-btn w-full border border-transparent text-white font-mono py-2.5 px-3 rounded text-sm uppercase font-bold tracking-wide transition">
-                            Convert Stack to USDT
-                        </button>
+                    <div class="data-tile">
+                        <div class="data-label">Drop From High</div>
+                        <div id="dropPct" class="data-value">0.00%</div>
+                    </div>
+                    <div class="data-tile">
+                        <div class="data-label">Bounce From Low</div>
+                        <div id="bouncePct" class="data-value">0.00%</div>
                     </div>
                 </div>
+                <div class="grid grid-cols-2 gap-2 pt-3 mt-3 border-t border-gray-800">
+                    <button onclick="manualSetPosition()" class="accent-btn font-mono py-2 px-2 rounded text-sm uppercase font-bold tracking-wide transition">
+                        Track Entry Price
+                    </button>
+                    <button onclick="executeManualBuy()" class="accent-btn font-mono py-2 px-2 rounded text-sm uppercase font-black tracking-wide transition shadow">
+                        Market Buy SOL
+                    </button>
+                </div>
+            </div>
 
+            <div class="card p-4 rounded border-t-4 border-blue-400">
+                <div class="flex items-start justify-between gap-4 mb-3">
+                    <div>
+                        <p class="text-base text-white font-bold uppercase font-mono tracking-wider">Open Position</p>
+                        <p class="text-sm soft font-mono mt-1">Fast scalp management with quick target, stop, and exit timer.</p>
+                    </div>
+                    <div class="text-right leading-tight">
+                        <span class="text-sm soft block font-mono font-bold">HELD TOKENS</span>
+                        <p id="balSol" class="text-3xl font-black text-white">0.0000</p>
+                    </div>
+                </div>
+                <div class="data-grid">
+                    <div class="data-tile">
+                        <div class="data-label">Entry</div>
+                        <div id="openingPurchasePrice" class="data-value">N/A</div>
+                    </div>
+                    <div class="data-tile">
+                        <div class="data-label">Target</div>
+                        <div id="targetSellPrice" class="data-value">N/A</div>
+                    </div>
+                    <div class="data-tile">
+                        <div class="data-label">Hard Stop</div>
+                        <div id="stopPrice" class="data-value">N/A</div>
+                    </div>
+                    <div class="data-tile">
+                        <div class="data-label">P/L</div>
+                        <div id="marginDeltaGap" class="data-value">N/A</div>
+                    </div>
+                    <div class="data-tile">
+                        <div class="data-label">Seconds Open</div>
+                        <div id="secondsOpen" class="data-value">0</div>
+                    </div>
+                    <div class="data-tile">
+                        <div class="data-label">Fail Timer</div>
+                        <div id="failCountdown" class="data-value">30s</div>
+                    </div>
+                </div>
+                <div class="pt-3 mt-3 border-t border-gray-700">
+                    <button onclick="liquidateStack()" class="accent-btn w-full border border-transparent text-white font-mono py-2.5 px-3 rounded text-sm uppercase font-bold tracking-wide transition">
+                        Convert Stack to USDT
+                    </button>
+                </div>
             </div>
 
             <div class="card p-3 rounded">
@@ -171,13 +193,16 @@
                         <span id="debugMarketData" class="text-white truncate block">...</span>
                     </div>
                     <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
+                        <span class="text-white block text-sm font-bold">WEBSOCKET:</span>
+                        <span id="websocketStatus" class="text-white truncate block">...</span>
+                    </div>
+                    <div class="p-2 bg-black bg-opacity-30 rounded border border-gray-700">
                         <span class="text-white block text-sm font-bold">ENGINE:</span>
                         <span id="engineStatus" class="font-semibold truncate block">...</span>
                     </div>
                 </div>
                 <div id="errorConsole" class="mt-2 text-xs font-mono text-red-400 hidden bg-red-950 bg-opacity-40 p-2 rounded border border-red-900"></div>
             </div>
-
         </div>
 
         <div class="log-container card p-3 rounded mt-4 md:mt-0">
@@ -191,97 +216,98 @@
                 <p class="text-gray-500 text-xs leading-tight">[Awaiting backend handshake update metrics...]</p>
             </div>
         </div>
-
     </div>
 
     <script>
         let currentBotRunningState = null;
 
+        function money(value) {
+            return `$${Number(value || 0).toFixed(2)}`;
+        }
+
+        function pct(value) {
+            return `${Number(value || 0).toFixed(2)}%`;
+        }
+
         async function fetchState() {
             try {
                 const response = await fetch('/api/state');
                 const data = await response.json();
+                const currentSpot = parseFloat(data.current_sol_price || 0);
+                const strategy = data.strategy || {};
 
-                const currentSpot = parseFloat(data.current_sol_price);
-
-                document.getElementById('balUsdt').innerText = `$${parseFloat(data.balance_usdt).toFixed(2)}`;
-                document.getElementById('balSol').innerText = parseFloat(data.balance_sol).toFixed(4);
-                document.getElementById('solPrice').innerText = `$${currentSpot.toFixed(2)}`;
+                document.getElementById('balUsdt').innerText = money(data.balance_usdt);
+                document.getElementById('balSol').innerText = Number(data.balance_sol || 0).toFixed(4);
+                document.getElementById('solPrice').innerText = money(currentSpot);
                 document.getElementById('tradeCount').innerText = data.trade_count || 0;
-                
-                document.getElementById('totalNetUsd').innerText = `$${parseFloat(data.total_portfolio_usd).toFixed(2)}`;
-                document.getElementById('totalNetGbp').innerText = `£${parseFloat(data.total_portfolio_gbp).toFixed(2)}`;
-                
+                document.getElementById('totalNetUsd').innerText = money(data.total_portfolio_usd);
+                document.getElementById('totalNetGbp').innerText = `£${Number(data.total_portfolio_gbp || 0).toFixed(2)}`;
+                document.getElementById('setupText').innerText = strategy.setup || 'Waiting for state...';
+                document.getElementById('recentHigh').innerText = strategy.recent_high > 0 ? money(strategy.recent_high) : 'N/A';
+                document.getElementById('localLow').innerText = strategy.local_low > 0 ? money(strategy.local_low) : 'N/A';
+                document.getElementById('dropPct').innerText = pct(strategy.drop_pct);
+                document.getElementById('bouncePct').innerText = pct(strategy.bounce_pct);
+                document.getElementById('openingPurchasePrice').innerText = Number(data.purchase_price || 0) > 0 ? money(data.purchase_price) : 'N/A';
+                document.getElementById('targetSellPrice').innerText = strategy.target_price > 0 ? money(strategy.target_price) : 'N/A';
+                document.getElementById('stopPrice').innerText = strategy.stop_price > 0 ? money(strategy.stop_price) : 'N/A';
+                document.getElementById('secondsOpen').innerText = `${strategy.seconds_open || 0}s`;
+                document.getElementById('failCountdown').innerText = `${strategy.fail_countdown || 0}s`;
+                document.getElementById('websocketStatus').innerText = `${data.websocket_status || 'UNKNOWN'} | ${Number(data.market_data_age || 0).toFixed(1)}s`;
+
                 const engStatus = document.getElementById('engineStatus');
                 engStatus.innerText = data.engine_status;
-                if (data.engine_status.includes('Connected')) {
-                    engStatus.className = "text-green-400 font-black truncate block animate-pulse";
-                } else if (data.engine_status.includes('LOCKOUT') || data.engine_status.includes('Error')) {
-                    engStatus.className = "text-red-400 font-black truncate block";
+                if (String(data.engine_status).includes('ERROR') || String(data.engine_status).includes('LOCKOUT')) {
+                    engStatus.className = 'text-red-400 font-black truncate block';
+                } else if (String(data.engine_status).includes('PAUSED') || String(data.engine_status).includes('WAITING')) {
+                    engStatus.className = 'text-yellow-400 font-black truncate block';
                 } else {
-                    engStatus.className = "text-yellow-400 font-black truncate block";
+                    engStatus.className = 'text-green-400 font-black truncate block';
                 }
 
                 const toggleBtn = document.getElementById('toggleTradeBtn');
                 currentBotRunningState = data.bot_running;
                 if (data.bot_running) {
-                    toggleBtn.innerText = "PAUSE TRADING";
-                    toggleBtn.className = "accent-btn font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition whitespace-nowrap";
-                    
+                    toggleBtn.innerText = 'PAUSE TRADING';
                     const badge = document.getElementById('engineBadge');
-                    badge.innerText = "LIVE ACTIVE";
-                    badge.className = "px-2.5 py-1 rounded text-xs font-mono font-bold bg-green-900 text-green-300";
+                    badge.innerText = 'LIVE ACTIVE';
+                    badge.className = 'px-2.5 py-1 rounded text-xs font-mono font-bold bg-green-900 text-green-300';
                 } else {
-                    toggleBtn.innerText = "START TRADING";
-                    toggleBtn.className = "accent-btn font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition whitespace-nowrap";
-                    
+                    toggleBtn.innerText = 'START TRADING';
                     const badge = document.getElementById('engineBadge');
-                    badge.innerText = "PAUSED";
-                    badge.className = "px-2.5 py-1 rounded text-xs font-mono font-bold bg-yellow-900 text-yellow-300";
+                    badge.innerText = 'PAUSED';
+                    badge.className = 'px-2.5 py-1 rounded text-xs font-mono font-bold bg-yellow-900 text-yellow-300';
                 }
 
                 const usdtSide = document.getElementById('usdtSide');
                 const solSide = document.getElementById('solSide');
-
                 if (data.position_active) {
-                    usdtSide.className = "card p-4 rounded space-y-3 border-t-4 border-green-400 mode-dim";
-                    solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-active";
-
-                    const buyPrice = parseFloat(data.purchase_price);
-                    const targetExit = buyPrice * 1.002;
-                    const profitPct = ((currentSpot - buyPrice) / buyPrice) * 100;
-
-                    document.getElementById('openingPurchasePrice').innerText = `$${buyPrice.toFixed(2)}`;
-                    document.getElementById('targetSellPrice').innerText = `$${targetExit.toFixed(2)}`;
-                    document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +0.20%`;
-                    document.getElementById('marginDeltaGap').className = profitPct >= 0 ? "text-green-400 font-black" : "text-red-400 font-black";
-
-                    document.getElementById('flashTargetPrice').innerText = "N/A";
-                    document.getElementById('cascadeTracker').innerText = "N/A";
+                    usdtSide.className = 'card p-4 rounded border-t-4 border-pink-400 mode-dim';
+                    solSide.className = 'card p-4 rounded border-t-4 border-blue-400 mode-active';
                 } else {
-                    usdtSide.className = "card p-4 rounded space-y-3 border-t-4 border-green-400 mode-active";
-                    solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-dim";
+                    usdtSide.className = 'card p-4 rounded border-t-4 border-pink-400 mode-active';
+                    solSide.className = 'card p-4 rounded border-t-4 border-blue-400 mode-dim';
+                }
 
-                    document.getElementById('flashTargetPrice').innerText = "Need -0.15% flush";
-                    document.getElementById('cascadeTracker').innerText = "Buy on +0.05% bounce";
-
-                    document.getElementById('openingPurchasePrice').innerText = "N/A";
-                    document.getElementById('targetSellPrice').innerText = "N/A";
-                    document.getElementById('marginDeltaGap').innerText = "N/A";
-                    document.getElementById('marginDeltaGap').className = "text-gray-500 font-bold";
+                const profitPct = Number(strategy.profit_pct || 0);
+                const plEl = document.getElementById('marginDeltaGap');
+                if (data.position_active) {
+                    plEl.innerText = `${profitPct.toFixed(2)}% / +0.20%`;
+                    plEl.className = `data-value ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`;
+                } else {
+                    plEl.innerText = 'N/A';
+                    plEl.className = 'data-value text-white';
                 }
 
                 const logBox = document.getElementById('logBox');
                 logBox.innerHTML = '';
                 data.logs.forEach(log => {
                     const p = document.createElement('p');
-                    p.className = "text-xs leading-tight";
+                    p.className = 'text-xs leading-tight';
                     p.innerText = log;
                     logBox.appendChild(p);
                 });
-
             } catch (err) {
-                console.error("Dashboard out of sync:", err);
+                console.error('Dashboard out of sync:', err);
             }
         }
 
@@ -299,7 +325,7 @@
                 });
                 fetchState();
             } catch (err) {
-                console.error("Failed toggling state:", err);
+                console.error('Failed toggling state:', err);
             }
         }
 
@@ -314,11 +340,11 @@
                     el.innerText = displayValue;
 
                     if (displayValue.includes('OK')) {
-                        el.className = "status-ok truncate block";
-                    } else if (displayValue.includes('NOT SET')) {
-                        el.className = "status-warn truncate block";
+                        el.className = 'status-ok truncate block';
+                    } else if (displayValue.includes('NOT SET') || displayValue.includes('WAITING') || displayValue.includes('STALE')) {
+                        el.className = 'status-warn truncate block';
                     } else {
-                        el.className = "status-fail truncate block";
+                        el.className = 'status-fail truncate block';
                     }
                 };
 
@@ -335,12 +361,12 @@
                     errConsole.classList.add('hidden');
                 }
             } catch (err) {
-                console.error("Failed executing diagnostics:", err);
+                console.error('Failed executing diagnostics:', err);
             }
         }
 
         async function manualSetPosition() {
-            const price = prompt("Enter your SOL purchase price to activate tracking (or leave blank/type 0 to clear):");
+            const price = prompt('Enter your SOL purchase price to activate tracking (or leave blank/type 0 to clear):');
             if (price === null) return;
             
             try {
@@ -351,14 +377,14 @@
                 });
                 fetchState();
             } catch (err) {
-                console.error("Failed setting manual position:", err);
+                console.error('Failed setting manual position:', err);
             }
         }
 
         async function executeManualBuy() {
-            const size = prompt("Enter the precise amount of USDT to deploy for an immediate Market BUY order (e.g. 25.00):");
+            const size = prompt('Enter the precise amount of USDT to deploy for an immediate Market BUY order (e.g. 25.00):');
             if (!size || parseFloat(size) < 5.0) {
-                if (size) alert("Order aborted. Minimum Binance transaction size is 5 USDT.");
+                if (size) alert('Order aborted. Minimum Binance transaction size is 5 USDT.');
                 return;
             }
             try {
@@ -371,12 +397,12 @@
                 alert(res.message);
                 fetchState();
             } catch (err) {
-                console.error("Manual market buy error:", err);
+                console.error('Manual market buy error:', err);
             }
         }
 
         async function liquidateStack() {
-            if (!confirm("Confirm immediate market liquidation of full SOL balance to USDT?")) return;
+            if (!confirm('Confirm immediate market liquidation of full SOL balance to USDT?')) return;
             
             try {
                 const response = await fetch('/api/liquidate', { method: 'POST' });
@@ -384,18 +410,18 @@
                 alert(result.message);
                 fetchState();
             } catch (err) {
-                console.error("Failed executing manual liquidation:", err);
+                console.error('Failed executing manual liquidation:', err);
             }
         }
 
         async function clearLogs() {
-            if (!confirm("Wipe the terminal log history?")) return;
+            if (!confirm('Wipe the terminal log history?')) return;
 
             try {
                 await fetch('/api/logs/clear', { method: 'POST' });
                 fetchState();
             } catch (err) {
-                console.error("Failed wiping logs:", err);
+                console.error('Failed wiping logs:', err);
             }
         }
 
