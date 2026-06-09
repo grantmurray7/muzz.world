@@ -151,6 +151,7 @@
                         <span class="signal-label">2m Anchor</span>
                         <span id="anchorPrice" class="signal-value">N/A</span>
                     </div>
+                    {% if strategy_profile == 'dollar' %}
                     <div class="signal-box">
                         <span class="signal-label">Anchor Gap</span>
                         <span id="anchorGap" class="signal-value">$0.00</span>
@@ -159,21 +160,45 @@
                         <span class="signal-label">Armed Low</span>
                         <span id="armedLow" class="signal-value">N/A</span>
                     </div>
+                    {% else %}
+                    <div class="signal-box">
+                        <span class="signal-label">Anchor Gap</span>
+                        <span id="anchorDelta" class="signal-value">0.00%</span>
+                    </div>
+                    <div class="signal-box">
+                        <span class="signal-label">Uplift 1</span>
+                        <span id="upliftOne" class="signal-value">0.00%</span>
+                    </div>
+                    <div class="signal-box">
+                        <span class="signal-label">Uplift 2</span>
+                        <span id="upliftTwo" class="signal-value">0.00%</span>
+                    </div>
+                    <div class="signal-box">
+                        <span class="signal-label">Uplift 3</span>
+                        <span id="upliftThree" class="signal-value">0.00%</span>
+                    </div>
+                    {% endif %}
                 </div>
 
                 <div class="meter-shell mono">
                     <div class="flex items-center justify-between text-xs uppercase tracking-wider mb-1">
-                        <span class="soft">Buy Meter</span>
-                        <span id="buyMeterHeadline" class="text-white font-bold">Waiting for arm</span>
+                        <span class="soft">{% if strategy_profile == 'dollar' %}Buy Meter{% else %}Signal Meter{% endif %}</span>
+                        <span id="buyMeterHeadline" class="text-white font-bold">{% if strategy_profile == 'dollar' %}Waiting for arm{% else %}Watching uplifts{% endif %}</span>
                     </div>
                     <div class="meter-track">
                         <div id="buyMeterFill" class="meter-fill"></div>
                         <div id="buyMeterMarker" class="meter-marker" style="left: 0%;"></div>
                     </div>
                     <div class="meter-legend">
+                        {% if strategy_profile == 'dollar' %}
                         <span>Arm $0.25</span>
                         <span id="buyMeterMidLabel">Rebound flat</span>
                         <span>Buy +$0.05</span>
+                        {% else %}
+                        <span>Uplift 1</span>
+                        <span id="buyMeterMidLabel">0 of 3 ready</span>
+                        <span>Uplift 3</span>
+                        {% endif %}
                     </div>
                 </div>
 
@@ -191,7 +216,7 @@
                 <div class="summary-head">
                     <div class="summary-copy">
                         <p class="section-title mono text-white">Open Position</p>
-                        <p class="section-copy mono">Hold for +$0.35 target or -$0.08 stop.</p>
+                        <p class="section-copy mono">{% if strategy_profile == 'dollar' %}Hold for +$0.35 target or -$0.08 stop.{% else %}Hold until +0.60%. No hard stop.{% endif %}</p>
                     </div>
                     <div class="summary-stat">
                         <span class="summary-stat-label mono">Held Tokens</span>
@@ -208,10 +233,12 @@
                         <span class="signal-label">Target Exit</span>
                         <span id="targetSellPrice" class="signal-value">N/A</span>
                     </div>
+                    {% if strategy_profile == 'dollar' %}
                     <div class="signal-box">
                         <span class="signal-label">Stop Exit</span>
                         <span id="stopPrice" class="signal-value">N/A</span>
                     </div>
+                    {% endif %}
                     <div class="signal-box">
                         <span class="signal-label">P/L</span>
                         <span id="marginDeltaGap" class="signal-value">N/A</span>
@@ -238,7 +265,7 @@
                     <div class="meter-legend">
                         <span>Entry</span>
                         <span id="meterMidLabel">Current Flat</span>
-                        <span>Target +$0.35</span>
+                        <span>{% if strategy_profile == 'dollar' %}Target +$0.35{% else %}Target +0.60%{% endif %}</span>
                     </div>
                 </div>
 
@@ -294,8 +321,11 @@
     <script>
         let currentBotRunningState = null;
         const apiBase = '{{ api_base or "/api" }}';
+        const strategyProfile = '{{ strategy_profile or "percent" }}';
+        const upliftThresholdPct = 0.02;
         const buyArmUsd = 0.25;
         const buyReboundUsd = 0.05;
+        const sellTargetPct = 0.60;
         const sellTargetUsd = 0.35;
         const stopLossUsd = 0.08;
 
@@ -322,12 +352,29 @@
             return `${Number(value || 0).toFixed(2)}%`;
         }
 
-        function updateBuyMeter(anchorGapUsd, reboundProgressUsd, buyProgressPct) {
+        function updateBuyMeter(strategy) {
             const marker = document.getElementById('buyMeterMarker');
             const fill = document.getElementById('buyMeterFill');
             const headline = document.getElementById('buyMeterHeadline');
             const midLabel = document.getElementById('buyMeterMidLabel');
-            const progress = Math.max(0, Math.min(100, Number(buyProgressPct || 0)));
+            if (strategyProfile !== 'dollar') {
+                const uplifts = [
+                    Number(strategy.uplift_1 || 0),
+                    Number(strategy.uplift_2 || 0),
+                    Number(strategy.uplift_3 || 0)
+                ];
+                const completed = uplifts.filter(value => value >= upliftThresholdPct).length;
+                const progress = Math.max(0, Math.min(100, (completed / 3) * 100));
+                marker.style.left = `${progress}%`;
+                fill.style.width = `${progress}%`;
+                headline.innerText = `Uplifts ${completed}/3 above +${upliftThresholdPct.toFixed(2)}%`;
+                midLabel.innerText = completed === 3 ? 'Ready to buy' : `${3 - completed} uplift${completed === 2 ? '' : 's'} to go`;
+                return;
+            }
+
+            const anchorGapUsd = Number(strategy.anchor_gap_usd || 0);
+            const reboundProgressUsd = Number(strategy.rebound_progress_usd || 0);
+            const progress = Math.max(0, Math.min(100, Number(strategy.buy_progress_pct || 0)));
             marker.style.left = `${progress}%`;
             fill.style.width = `${progress}%`;
 
@@ -343,7 +390,7 @@
             }
         }
 
-        function updateHoldMeter(positionActive, profitUsd) {
+        function updateHoldMeter(positionActive, profitUsd, profitPct) {
             const marker = document.getElementById('holdMeterMarker');
             const fill = document.getElementById('holdMeterFill');
             const headline = document.getElementById('meterHeadline');
@@ -354,6 +401,15 @@
                 fill.style.width = '0%';
                 headline.innerText = 'Awaiting position';
                 midLabel.innerText = 'Current Flat';
+                return;
+            }
+
+            if (strategyProfile !== 'dollar') {
+                const progress = Math.max(0, Math.min(100, (profitPct / sellTargetPct) * 100));
+                marker.style.left = `${progress}%`;
+                fill.style.width = `${progress}%`;
+                headline.innerText = `${profitPct >= 0 ? '+' : ''}${pct(profitPct).replace('%', '')}% live`;
+                midLabel.innerText = profitPct >= sellTargetPct ? 'Cash-out zone' : `${progress.toFixed(0)}% of target`;
                 return;
             }
 
@@ -381,9 +437,7 @@
                 const currentSpot = parseFloat(currentSpotRaw || 0);
                 const strategy = data.strategy || {};
                 const profitUsd = Number(strategy.profit_usd || 0);
-                const anchorGapUsd = Number(strategy.anchor_gap_usd || 0);
-                const reboundProgressUsd = Number(strategy.rebound_progress_usd || 0);
-                const buyProgressPct = Number(strategy.buy_progress_pct || 0);
+                const profitPct = Number(strategy.profit_pct || 0);
 
                 document.getElementById('balUsdt').innerText = money(data.balance_usdt);
                 document.getElementById('balSol').innerText = Number(data.balance_sol || 0).toFixed(4);
@@ -393,11 +447,20 @@
                 document.getElementById('totalNetGbp').innerText = `£${Number(data.total_portfolio_gbp || 0).toFixed(2)}`;
                 document.getElementById('setupText').innerText = strategy.setup || 'Waiting for state...';
                 document.getElementById('anchorPrice').innerText = strategy.anchor_price > 0 ? money(strategy.anchor_price) : 'N/A';
-                document.getElementById('anchorGap').innerText = money(anchorGapUsd);
-                document.getElementById('armedLow').innerText = strategy.armed_low > 0 ? money(strategy.armed_low) : 'N/A';
+                if (strategyProfile === 'dollar') {
+                    document.getElementById('anchorGap').innerText = money(strategy.anchor_gap_usd);
+                    document.getElementById('armedLow').innerText = strategy.armed_low > 0 ? money(strategy.armed_low) : 'N/A';
+                } else {
+                    document.getElementById('anchorDelta').innerText = pct(strategy.anchor_delta);
+                    document.getElementById('upliftOne').innerText = pct(strategy.uplift_1);
+                    document.getElementById('upliftTwo').innerText = pct(strategy.uplift_2);
+                    document.getElementById('upliftThree').innerText = pct(strategy.uplift_3);
+                }
                 document.getElementById('openingPurchasePrice').innerText = Number(data.purchase_price || 0) > 0 ? money(data.purchase_price) : 'N/A';
                 document.getElementById('targetSellPrice').innerText = strategy.target_price > 0 ? money(strategy.target_price) : 'N/A';
-                document.getElementById('stopPrice').innerText = strategy.stop_price > 0 ? money(strategy.stop_price) : 'N/A';
+                if (strategyProfile === 'dollar') {
+                    document.getElementById('stopPrice').innerText = strategy.stop_price > 0 ? money(strategy.stop_price) : 'N/A';
+                }
                 document.getElementById('positionStatus').innerText = strategy.position_status || 'Waiting';
                 document.getElementById('secondsOpen').innerText = `${strategy.seconds_open || 0}s`;
                 document.getElementById('websocketStatus').innerText = `${data.websocket_status || 'UNKNOWN'} | ${Number(data.market_data_age || 0).toFixed(1)}s`;
@@ -437,15 +500,20 @@
 
                 const plEl = document.getElementById('marginDeltaGap');
                 if (data.position_active) {
-                    plEl.innerText = `${profitUsd >= 0 ? '+' : '-'}${money(Math.abs(profitUsd)).replace('$', '$')} / +$0.35`;
-                    plEl.className = `signal-value ${profitUsd >= 0 ? 'text-green-400' : 'text-red-400'}`;
+                    if (strategyProfile === 'dollar') {
+                        plEl.innerText = `${profitUsd >= 0 ? '+' : '-'}${money(Math.abs(profitUsd)).replace('$', '$')} / +$0.35`;
+                        plEl.className = `signal-value ${profitUsd >= 0 ? 'text-green-400' : 'text-red-400'}`;
+                    } else {
+                        plEl.innerText = `${profitPct >= 0 ? '+' : ''}${pct(profitPct)} / +0.60%`;
+                        plEl.className = `signal-value ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`;
+                    }
                 } else {
                     plEl.innerText = 'N/A';
                     plEl.className = 'signal-value';
                 }
 
-                updateBuyMeter(anchorGapUsd, reboundProgressUsd, buyProgressPct);
-                updateHoldMeter(data.position_active, profitUsd);
+                updateBuyMeter(strategy);
+                updateHoldMeter(data.position_active, profitUsd, profitPct);
 
                 const logBox = document.getElementById('logBox');
                 logBox.innerHTML = '';
@@ -578,7 +646,7 @@
         }
 
         setInterval(fetchState, 3000);
-        setInterval(fetchDiagnostics, 5000);
+        setInterval(fetchDiagnostics, 15000);
         fetchState();
         fetchDiagnostics();
     </script>
