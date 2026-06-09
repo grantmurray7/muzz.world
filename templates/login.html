@@ -70,7 +70,7 @@
             color: #ffffff;
             cursor: pointer;
             overflow: hidden;
-            padding: 18px 136px 18px 16px;
+            padding: 18px 122px 18px 24px;
             text-align: left;
             box-shadow: 0 14px 26px rgba(0, 0, 0, 0.22);
         }
@@ -86,11 +86,12 @@
             text-transform: uppercase;
             color: rgba(255, 255, 255, 0.96);
             text-shadow: 0 2px 0 rgba(255,255,255,0.08);
+            transform: translateX(8px);
         }
         .cta-text span { display: block; }
         .cta-figure {
             position: absolute;
-            right: 8px;
+            right: 18px;
             bottom: -1px;
             z-index: 1;
             width: min(36%, 158px);
@@ -98,6 +99,7 @@
             pointer-events: none;
             user-select: none;
             filter: brightness(1.15) contrast(1.02);
+            transform: translateX(-8px);
         }
         .error {
             color: #f85149;
@@ -110,9 +112,10 @@
             .password-wrap, .cta { width: min(100%, 280px); }
             button {
                 min-height: 120px;
-                padding: 16px 114px 16px 14px;
+                padding: 16px 106px 16px 18px;
             }
-            .cta-figure { width: min(38%, 138px); right: 6px; bottom: -1px; }
+            .cta-text { transform: translateX(6px); }
+            .cta-figure { width: min(38%, 138px); right: 14px; bottom: -1px; transform: translateX(-8px); }
         }
     </style>
 </head>
