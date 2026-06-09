@@ -16,6 +16,7 @@
         .mode-active { opacity: 1; transition: opacity 0.3s ease; }
         .left-panel .muted { color: #ffffff; }
         .left-panel .soft { color: #ffffff; }
+        #logBox { height: 60vh; overflow-y: auto; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1f2226; }
         ::-webkit-scrollbar-thumb { background: #434954; border-radius: 4px; }
@@ -23,8 +24,8 @@
         @media (min-width: 768px) {
             body { padding: 1.5rem; }
             .desktop-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; height: calc(100vh - 6rem); }
-            .log-container { height: 100% !important; display: flex; flex-direction: column; }
-            #logBox { flex-grow: 1; height: 100% !important; font-size: 0.95rem !important; }
+            .log-container { height: calc(100vh - 6rem) !important; display: flex; flex-direction: column; }
+            #logBox { flex: 0 0 auto; height: calc(100vh - 10rem) !important; font-size: 0.95rem !important; }
         }
     </style>
 </head>
@@ -34,10 +35,13 @@
         <div class="flex flex-col flex-shrink-0">
             <h1 class="text-4xl font-black tracking-tight leading-none">muzz.world</h1>
         </div>
-        <div class="flex-1 flex justify-center">
+        <div class="flex-1 flex justify-center items-center gap-2 font-mono">
             <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="bg-gray-600 hover:bg-gray-500 text-white font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition duration-150 whitespace-nowrap">
                 SYNCHRONIZING...
             </button>
+            <a href="/trades" class="bg-gray-700 hover:bg-gray-600 text-white font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition whitespace-nowrap">
+                TRADES: <span id="tradeCount">0</span>
+            </a>
         </div>
         <div class="flex items-center space-x-4 text-sm font-mono flex-shrink-0">
             <div class="text-right leading-tight text-base">
@@ -102,7 +106,7 @@
                             <span id="openingPurchasePrice" class="text-yellow-500 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="muted">Target Exit (+0.60%):</span>
+                            <span class="muted">Target Exit (+0.35%):</span>
                             <span id="targetSellPrice" class="text-red-400 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
@@ -156,7 +160,7 @@
                     Wipe Logs
                 </button>
             </div>
-            <div id="logBox" class="bg-black bg-opacity-40 p-3 rounded font-mono text-sm text-gray-200 h-96 overflow-y-auto space-y-1.5 border border-gray-800">
+            <div id="logBox" class="bg-black bg-opacity-40 p-3 rounded font-mono text-sm text-gray-200 overflow-y-auto space-y-1.5 border border-gray-800">
                 <p class="text-gray-500">[Awaiting backend handshake update metrics...]</p>
             </div>
         </div>
@@ -176,6 +180,7 @@
                 document.getElementById('balUsdt').innerText = `$${parseFloat(data.balance_usdt).toFixed(2)}`;
                 document.getElementById('balSol').innerText = parseFloat(data.balance_sol).toFixed(4);
                 document.getElementById('solPrice').innerText = `$${currentSpot.toFixed(2)}`;
+                document.getElementById('tradeCount').innerText = data.trade_count || 0;
                 
                 document.getElementById('totalNetUsd').innerText = `$${parseFloat(data.total_portfolio_usd).toFixed(2)}`;
                 document.getElementById('totalNetGbp').innerText = `£${parseFloat(data.total_portfolio_gbp).toFixed(2)}`;
@@ -216,12 +221,12 @@
                     solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-active";
 
                     const buyPrice = parseFloat(data.purchase_price);
-                    const targetExit = buyPrice * 1.006;
+                    const targetExit = buyPrice * 1.0035;
                     const profitPct = ((currentSpot - buyPrice) / buyPrice) * 100;
 
                     document.getElementById('openingPurchasePrice').innerText = `$${buyPrice.toFixed(2)}`;
                     document.getElementById('targetSellPrice').innerText = `$${targetExit.toFixed(2)}`;
-                    document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +0.60%`;
+                    document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +0.35%`;
                     document.getElementById('marginDeltaGap').className = profitPct >= 0 ? "text-green-400 font-black" : "text-red-400 font-black";
 
                     document.getElementById('flashTargetPrice').innerText = "N/A";
@@ -231,7 +236,7 @@
                     solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-dim";
 
                     document.getElementById('flashTargetPrice').innerText = "Below anchor required";
-                    document.getElementById('cascadeTracker').innerText = "3 x +0.02% / 10s required";
+                    document.getElementById('cascadeTracker').innerText = "3 x +$0.01 after $0.10 dip";
 
                     document.getElementById('openingPurchasePrice').innerText = "N/A";
                     document.getElementById('targetSellPrice').innerText = "N/A";
