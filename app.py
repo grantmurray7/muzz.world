@@ -42,6 +42,7 @@ LOG_HISTORY_LIMIT = 250
 RSS_STATUS_INTERVAL = 30
 WEBSOCKET_STALE_AFTER = 20
 SANDBOX_START_USDT = 14000.0
+MIN_POSITION_SOL = 0.01
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
 GLOBAL_NS = 'global'
@@ -337,6 +338,37 @@ def clear_position_tracking(namespace):
     ns_delete(namespace, 'position_opened_at')
 
 
+def reset_position_state(namespace, setup='Position reset to cash mode'):
+    ns_set(namespace, 'position_active', 'false')
+    ns_delete(namespace, 'purchase_price', 'bot_tracked_qty')
+    clear_position_tracking(namespace)
+    set_strategy_snapshot(namespace, mode='BUY', setup=setup)
+
+
+def sanitize_position_state(namespace, actual_sol_balance, source_label):
+    position_active = ns_get(namespace, 'position_active') == 'true'
+    purchase_price = read_float_state(namespace, 'purchase_price')
+    tracked_qty = read_float_state(namespace, 'bot_tracked_qty')
+
+    if actual_sol_balance <= MIN_POSITION_SOL:
+        if position_active or tracked_qty > 0 or purchase_price > 0:
+            reset_position_state(namespace, setup='No sellable SOL detected')
+            log_activity(f'{source_label}: cleared stale position state because sellable SOL is below minimum.', namespace=namespace)
+        return 0.0, False
+
+    repaired = False
+    if not position_active:
+        ns_set(namespace, 'position_active', 'true')
+        repaired = True
+    if tracked_qty <= MIN_POSITION_SOL or tracked_qty > actual_sol_balance:
+        ns_set(namespace, 'bot_tracked_qty', round(actual_sol_balance, 4))
+        repaired = True
+    if repaired:
+        log_activity(f'{source_label}: repaired tracked position size to {actual_sol_balance:.4f} SOL.', namespace=namespace)
+
+    return math.floor(actual_sol_balance * 100) / 100.0, True
+
+
 def build_status_feed_item(namespace, now=None):
     now = now or time.time()
     bucket_ts = int(now // RSS_STATUS_INTERVAL) * RSS_STATUS_INTERVAL
@@ -418,9 +450,7 @@ def reconcile_live_state(client):
                 if not ns_get(LIVE_NS, 'position_opened_at'):
                     ns_set(LIVE_NS, 'position_opened_at', time.time())
                 return True
-        ns_set(LIVE_NS, 'position_active', 'false')
-        ns_delete(LIVE_NS, 'purchase_price', 'bot_tracked_qty')
-        clear_position_tracking(LIVE_NS)
+        reset_position_state(LIVE_NS, setup='Live account synced and scanning')
         return True
     except Exception as e:
         log_activity(f'Reconciliation Engine Failure: {e}', namespace=LIVE_NS)
@@ -435,7 +465,7 @@ def execute_paper_buy(namespace, price, note='90s flush bounce scalp'):
         log_activity('Paper buy aborted: available balance under operational thresholds.', namespace=namespace)
         return
     sol_quantity = math.floor((usdt_alloc / price) * 100) / 100.0
-    if sol_quantity <= 0.01:
+    if sol_quantity <= MIN_POSITION_SOL:
         log_activity('Paper buy aborted: calculated order size too low.', namespace=namespace)
         return
     ns_set(namespace, 'balance_usdt', round(usdt_bal - (sol_quantity * price), 4))
@@ -450,17 +480,14 @@ def execute_paper_buy(namespace, price, note='90s flush bounce scalp'):
 
 def execute_paper_sell(namespace, price, note):
     sol_bal = read_float_state(namespace, 'balance_sol')
-    tracked_qty = read_float_state(namespace, 'bot_tracked_qty', sol_bal)
-    sol_to_liquidate = math.floor(min(sol_bal, tracked_qty) * 100) / 100.0
-    if sol_to_liquidate <= 0.01:
-        log_activity('Paper sell aborted: insufficient SOL balance.', namespace=namespace)
+    sol_to_liquidate, valid_position = sanitize_position_state(namespace, sol_bal, 'Paper sell path')
+    if not valid_position or sol_to_liquidate <= MIN_POSITION_SOL:
+        log_activity('Paper sell aborted: no valid sellable SOL remained after repair.', namespace=namespace)
         return
     ns_set(namespace, 'balance_sol', round(sol_bal - sol_to_liquidate, 4))
     ns_set(namespace, 'balance_usdt', round(read_float_state(namespace, 'balance_usdt') + (sol_to_liquidate * price), 4))
     record_trade(namespace, 'SELL', sol_to_liquidate, price, 'PAPER', note)
-    ns_set(namespace, 'position_active', 'false')
-    ns_delete(namespace, 'purchase_price', 'bot_tracked_qty')
-    clear_position_tracking(namespace)
+    reset_position_state(namespace, setup='Watching for next paper entry')
     log_activity(f'PAPER SELL: {sol_to_liquidate} SOL at ${price:.2f} | {note}', namespace=namespace)
 
 
@@ -520,7 +547,18 @@ def run_namespaced_trader(namespace, paper=False):
 
             position_active = ns_get(namespace, 'position_active') == 'true'
             purchase_price = read_float_state(namespace, 'purchase_price')
-            bot_tracked_qty = read_float_state(namespace, 'bot_tracked_qty')
+
+            if not paper:
+                live_sol_balance = float(client.get_asset_balance(asset='SOL')['free'])
+                ns_set(namespace, 'balance_sol', live_sol_balance)
+                sanitize_position_state(namespace, live_sol_balance, 'Live sync guard')
+                position_active = ns_get(namespace, 'position_active') == 'true'
+                purchase_price = read_float_state(namespace, 'purchase_price')
+            else:
+                sandbox_sol_balance = read_float_state(namespace, 'balance_sol')
+                sanitize_position_state(namespace, sandbox_sol_balance, 'Sandbox sync guard')
+                position_active = ns_get(namespace, 'position_active') == 'true'
+                purchase_price = read_float_state(namespace, 'purchase_price')
 
             if not position_active:
                 now = time.time()
@@ -571,10 +609,11 @@ def run_namespaced_trader(namespace, paper=False):
                         execute_paper_buy(namespace, current_price, buy_reason)
                     else:
                         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
+                        ns_set(namespace, 'balance_usdt', usdt_bal)
                         usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
                         if usdt_alloc >= 5.0:
                             sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
-                            if sol_quantity > 0.01:
+                            if sol_quantity > MIN_POSITION_SOL:
                                 log_activity(
                                     f'AUTO BUY: {sol_quantity} SOL at ${current_price:.2f} | {buy_reason}',
                                     namespace=namespace
@@ -625,8 +664,9 @@ def run_namespaced_trader(namespace, paper=False):
                         execute_paper_sell(namespace, current_price, sell_note)
                     else:
                         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-                        sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
-                        if sol_to_liquidate > 0.01:
+                        ns_set(namespace, 'balance_sol', sol_bal)
+                        sol_to_liquidate, valid_position = sanitize_position_state(namespace, sol_bal, 'Live sell path')
+                        if valid_position and sol_to_liquidate > MIN_POSITION_SOL:
                             log_activity(
                                 f'AUTO SELL: {sol_to_liquidate} SOL at ${current_price:.2f} | {sell_note}',
                                 namespace=namespace
@@ -641,7 +681,7 @@ def run_namespaced_trader(namespace, paper=False):
                             time.sleep(1)
                             reconciled = reconcile_live_state(client)
                         else:
-                            log_activity('Auto sell aborted: tracked SOL size invalid.', namespace=namespace)
+                            log_activity('Auto sell aborted: no valid sellable SOL remained after repair.', namespace=namespace)
         except Exception as e:
             log_activity(f'Process Loop Error: {e}', namespace=namespace)
             ns_set(namespace, 'engine_status', 'Loop Error')
@@ -888,9 +928,7 @@ def manual_set_position():
             ns_set(LIVE_NS, 'position_opened_at', time.time())
             log_activity(f'Manual Track Override: Position set ACTIVE at Entry ${price}', namespace=LIVE_NS)
         else:
-            ns_set(LIVE_NS, 'position_active', 'false')
-            ns_delete(LIVE_NS, 'purchase_price', 'bot_tracked_qty')
-            clear_position_tracking(LIVE_NS)
+            reset_position_state(LIVE_NS, setup='Manual reset to cash mode')
             log_activity('Manual Track Override: Position cleared to INACTIVE', namespace=LIVE_NS)
         return jsonify({'status': 'success'})
     except Exception as e:
@@ -908,9 +946,7 @@ def sandbox_manual_set_position():
             ns_set(SANDBOX_NS, 'position_opened_at', time.time())
             log_activity(f'Sandbox manual track: position set ACTIVE at Entry ${price}', namespace=SANDBOX_NS)
         else:
-            ns_set(SANDBOX_NS, 'position_active', 'false')
-            ns_delete(SANDBOX_NS, 'purchase_price', 'bot_tracked_qty')
-            clear_position_tracking(SANDBOX_NS)
+            reset_position_state(SANDBOX_NS, setup='Sandbox manual reset to cash mode')
             log_activity('Sandbox manual track: position cleared to INACTIVE', namespace=SANDBOX_NS)
         return jsonify({'status': 'success'})
     except Exception as e:
@@ -939,7 +975,7 @@ def execute_manual_buy():
         client = get_binance_client()
         current_price = get_live_price()
         sol_quantity = math.floor((usdt_amount / current_price) * 100) / 100.0
-        if sol_quantity > 0.01:
+        if sol_quantity > MIN_POSITION_SOL:
             log_activity(f'MANUAL BUY: {sol_quantity} SOL at ${current_price:.2f}', namespace=LIVE_NS)
             client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
             record_trade(LIVE_NS, 'BUY', sol_quantity, current_price, 'MANUAL', 'Manual market buy')
@@ -961,7 +997,7 @@ def sandbox_execute_manual_buy():
         usdt_bal = read_float_state(SANDBOX_NS, 'balance_usdt')
         deploy = min(usdt_amount, usdt_bal)
         sol_quantity = math.floor((deploy / current_price) * 100) / 100.0
-        if sol_quantity > 0.01:
+        if sol_quantity > MIN_POSITION_SOL:
             ns_set(SANDBOX_NS, 'balance_usdt', round(usdt_bal - (sol_quantity * current_price), 4))
             ns_set(SANDBOX_NS, 'balance_sol', round(read_float_state(SANDBOX_NS, 'balance_sol') + sol_quantity, 4))
             ns_set(SANDBOX_NS, 'position_active', 'true')
@@ -982,15 +1018,13 @@ def liquidate_to_usdt():
         client = get_binance_client()
         current_price = get_live_price()
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-        bot_tracked_qty = read_float_state(LIVE_NS, 'bot_tracked_qty', sol_bal)
-        sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
-        if sol_to_liquidate > 0.01:
+        ns_set(LIVE_NS, 'balance_sol', sol_bal)
+        sol_to_liquidate, valid_position = sanitize_position_state(LIVE_NS, sol_bal, 'Manual live liquidation')
+        if valid_position and sol_to_liquidate > MIN_POSITION_SOL:
             log_activity(f'MANUAL SELL: {sol_to_liquidate} SOL at ${current_price:.2f} | Manual liquidation', namespace=LIVE_NS)
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
             record_trade(LIVE_NS, 'SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
-            ns_set(LIVE_NS, 'position_active', 'false')
-            ns_delete(LIVE_NS, 'purchase_price', 'bot_tracked_qty')
-            clear_position_tracking(LIVE_NS)
+            reset_position_state(LIVE_NS, setup='Manual liquidation complete')
             return jsonify({'status': 'success', 'message': f'Liquidated {sol_to_liquidate} SOL.'})
         return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
     except Exception as e:
