@@ -7,15 +7,24 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
+        :root {
+            --accent-pink: rgb(237, 125, 175);
+        }
         body { background-color: #2d3139; color: #ffffff; padding: 1.5rem; }
         .card { background-color: #1f2226; border: 1px solid #434954; }
         .table-row { border-bottom: 1px solid #343a44; }
+        .accent-btn { background: var(--accent-pink); color: #fff; }
     </style>
 </head>
 <body class="font-sans antialiased">
     <div class="flex items-end justify-between mb-5 gap-4">
         <div>
-            <h1 class="text-4xl font-black tracking-tight leading-none">trade history</h1>
+            <div class="flex items-center gap-3 mb-1">
+                <h1 class="text-4xl font-black tracking-tight leading-none">trade history</h1>
+                {% if page_label %}
+                <span class="font-mono text-sm font-black uppercase tracking-widest text-pink-300">{{ page_label }}</span>
+                {% endif %}
+            </div>
             <p class="text-sm text-gray-400 font-mono mt-1">muzz.world execution ledger</p>
         </div>
         <div class="flex items-center gap-3 font-mono">
@@ -23,7 +32,7 @@
                 <span class="text-xs text-gray-400 block uppercase font-bold">Total Trades</span>
                 <span id="tradeCount" class="text-2xl font-black text-green-400">0</span>
             </div>
-            <a href="/" class="bg-gray-100 hover:bg-white text-gray-900 font-mono font-bold py-2.5 px-5 rounded text-sm uppercase tracking-wider transition shadow whitespace-nowrap">Dashboard</a>
+            <a href="{{ dashboard_href or '/' }}" class="accent-btn font-mono font-bold py-2.5 px-5 rounded text-sm uppercase tracking-wider transition shadow whitespace-nowrap">Dashboard</a>
         </div>
     </div>
 
@@ -39,20 +48,23 @@
                         <th class="pb-3 pr-4 text-right">Price</th>
                         <th class="pb-3 pr-4 text-right">USDT</th>
                         <th class="pb-3 pr-4">Source</th>
+                        <th class="pb-3 pr-4">Env</th>
                         <th class="pb-3">Note</th>
                     </tr>
                 </thead>
                 <tbody id="tradeRows">
-                    <tr><td colspan="8" class="py-5 text-gray-500">Loading trade history...</td></tr>
+                    <tr><td colspan="9" class="py-5 text-gray-500">Loading trade history...</td></tr>
                 </tbody>
             </table>
         </div>
     </div>
 
     <script>
+        const apiBase = '{{ api_base or "/api" }}';
+
         async function fetchTrades() {
             try {
-                const response = await fetch('/api/trades');
+                const response = await fetch(`${apiBase}/trades`);
                 const data = await response.json();
                 document.getElementById('tradeCount').innerText = data.trade_count || 0;
 
@@ -60,7 +72,7 @@
                 tradeRows.innerHTML = '';
 
                 if (!data.trades || data.trades.length === 0) {
-                    tradeRows.innerHTML = '<tr><td colspan="8" class="py-5 text-gray-500">No trades recorded yet.</td></tr>';
+                    tradeRows.innerHTML = '<tr><td colspan="9" class="py-5 text-gray-500">No trades recorded yet.</td></tr>';
                     return;
                 }
 
@@ -76,12 +88,13 @@
                         <td class="py-3 pr-4 text-right">$${Number(trade.price || 0).toFixed(2)}</td>
                         <td class="py-3 pr-4 text-right">$${Number(trade.notional_usdt || 0).toFixed(2)}</td>
                         <td class="py-3 pr-4">${trade.source || ''}</td>
+                        <td class="py-3 pr-4 text-gray-400">${trade.environment || ''}</td>
                         <td class="py-3 text-gray-300">${trade.note || ''}</td>
                     `;
                     tradeRows.appendChild(row);
                 });
             } catch (err) {
-                document.getElementById('tradeRows').innerHTML = '<tr><td colspan="8" class="py-5 text-red-400">Failed loading trade history.</td></tr>';
+                document.getElementById('tradeRows').innerHTML = '<tr><td colspan="9" class="py-5 text-red-400">Failed loading trade history.</td></tr>';
             }
         }
 
