@@ -33,6 +33,7 @@ AUTO_BUY_ALLOCATION = 0.95
 SELL_TARGET_MULTIPLIER = 1.006
 PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 5
 MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
+TRADE_HISTORY_LIMIT = 200
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
 # --- Authentication Guard ---
@@ -61,6 +62,38 @@ def redis_log_worker():
             log_queue.task_done()
 
 Thread(target=redis_log_worker, daemon=True).start()
+
+def record_trade(side, quantity, price, source, note=''):
+    try:
+        trade_number = int(redis.incr('trade_count'))
+        trade = {
+            'id': trade_number,
+            'ts': time.time(),
+            'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': SYMBOL,
+            'side': side,
+            'quantity': round(float(quantity), 4),
+            'price': round(float(price), 4),
+            'notional_usdt': round(float(quantity) * float(price), 2),
+            'source': source,
+            'note': note
+        }
+        redis.lpush('trade_history', json.dumps(trade))
+        redis.ltrim('trade_history', 0, TRADE_HISTORY_LIMIT - 1)
+        return trade
+    except Exception as e:
+        log_activity(f"Trade history write failed: {e}")
+        return None
+
+def load_trade_history(limit=50):
+    raw_trades = redis.lrange('trade_history', 0, max(0, limit - 1))
+    trades = []
+    for raw_trade in raw_trades:
+        try:
+            trades.append(json.loads(raw_trade))
+        except Exception:
+            continue
+    return trades
 
 def get_binance_proxy_url():
     proxy_url = os.environ.get("BINANCE_PROXY")
@@ -331,6 +364,8 @@ def run_trading_bot():
                         sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
                         log_activity(f"EXECUTION: Dispatching Market BUY for {sol_quantity} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
+                        record_trade('BUY', sol_quantity, current_price, 'AUTO', 'Dollar dip rebound sequence')
+                        reset_buy_sequence()
                         time.sleep(1) 
                         reconcile_state_against_binance(client)
                     else:
@@ -352,6 +387,7 @@ def run_trading_bot():
                     if sol_to_liquidate > 0.01:
                         log_activity(f"EXECUTION: Target Hit. Market Selling bot-tracked size of {sol_to_liquidate} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
+                        record_trade('SELL', sol_to_liquidate, current_price, 'AUTO', '+0.60% target exit')
                         time.sleep(1)
                         reconcile_state_against_binance(client)
                     else:
@@ -383,6 +419,7 @@ def execute_manual_buy():
         if sol_quantity > 0.01:
             log_activity(f"MANUAL INTERVENTION: Executing forced Market BUY for {sol_quantity} SOL...")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
+            record_trade('BUY', sol_quantity, current_price, 'MANUAL', 'Manual market buy')
             time.sleep(1)
             reconcile_state_against_binance(client)
             return jsonify({'status': 'success', 'message': f'Successfully purchased {sol_quantity} SOL.'})
@@ -440,6 +477,21 @@ def login():
 def index():
     return render_template('index.html')
 
+@app.route('/trades')
+def trade_history_page():
+    return render_template('trade_history.html')
+
+@app.route('/api/trades', methods=['GET'])
+def get_trades():
+    try:
+        trade_count = int(redis.get('trade_count') or 0)
+        return jsonify({
+            'trade_count': trade_count,
+            'trades': load_trade_history(100)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/state', methods=['GET'])
 def get_state():
     try:
@@ -447,6 +499,7 @@ def get_state():
         usdt_bal = float(redis.get('balance_usdt') or 0.0)
         sol_bal = float(redis.get('balance_sol') or 0.0)
         current_price = float(redis.get('current_sol_price') or 0.0)
+        trade_count = int(redis.get('trade_count') or 0)
         
         total_usd = usdt_bal + (sol_bal * current_price)
         total_gbp = total_usd * 0.78  
@@ -467,6 +520,7 @@ def get_state():
             'balance_sol': str(sol_bal),
             'total_portfolio_usd': str(round(total_usd, 2)),
             'total_portfolio_gbp': str(round(total_gbp, 2)),
+            'trade_count': trade_count,
             'engine_status': redis.get('engine_status') or 'Initializing...',
             'logs': logs
         })
@@ -517,6 +571,8 @@ def clear_logs():
 def liquidate_to_usdt():
     try:
         client = get_binance_client()
+        ticker = client.get_symbol_ticker(symbol=SYMBOL)
+        current_price = float(ticker['price'])
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
         bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 
@@ -525,6 +581,7 @@ def liquidate_to_usdt():
         if sol_to_liquidate > 0.01:
             log_activity(f"MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
+            record_trade('SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
             
             redis.set('position_active', 'false')
             redis.delete('purchase_price')
