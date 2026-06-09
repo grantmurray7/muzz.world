@@ -20,12 +20,10 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "DefaultPassword123!")
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
-# Initialize Upstash Redis Client
 redis = Redis.from_env()
-log_queue = queue.Queue()
 price_state_lock = Lock()
+log_queue = queue.Queue()
 
-# --- Strategy Bounds ---
 SYMBOL = 'SOLUSDT'
 SAMPLE_INTERVAL = 1
 SCALP_WINDOW_SECONDS = 90
@@ -43,38 +41,117 @@ TRADE_HISTORY_LIMIT = 200
 LOG_HISTORY_LIMIT = 250
 RSS_STATUS_INTERVAL = 30
 WEBSOCKET_STALE_AFTER = 20
+SANDBOX_START_USDT = 14000.0
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
-# --- Authentication Guard ---
+GLOBAL_NS = 'global'
+LIVE_NS = 'live'
+SANDBOX_NS = 'sandbox'
+
+
 @app.before_request
 def require_login():
-    allowed_routes = ['login', 'logout', 'static', 'api/health', 'api/manual_buy', 'status_feed']
+    allowed_routes = {
+        'login', 'logout', 'static',
+        'index', 'sandbox_index', 'trade_history_page', 'sandbox_trade_history_page',
+        'health_check', 'sandbox_health_check', 'status_feed',
+        'execute_manual_buy', 'sandbox_execute_manual_buy',
+        'get_trades', 'sandbox_get_trades',
+        'get_state', 'sandbox_get_state',
+        'toggle_bot', 'sandbox_toggle_bot',
+        'manual_set_position', 'sandbox_manual_set_position',
+        'clear_logs', 'sandbox_clear_logs',
+        'liquidate_to_usdt', 'sandbox_liquidate_to_usdt',
+    }
     if request.endpoint not in allowed_routes and not session.get('logged_in'):
         return redirect(url_for('login'))
 
-def log_activity(msg, skip_db=False):
+
+def ns_key(namespace, key):
+    return f'{namespace}:{key}'
+
+
+def log_activity(msg, namespace=LIVE_NS, skip_db=False):
     timestamp = time.strftime('%H:%M:%S')
-    log_line = f"[{timestamp}] [{INSTANCE_ID}] {msg}"
+    tag = 'SANDBOX' if namespace == SANDBOX_NS else INSTANCE_ID
+    log_line = f'[{timestamp}] [{tag}] {msg}'
     print(log_line)
     if not skip_db:
-        log_queue.put(log_line)
+        log_queue.put((namespace, log_line))
+
 
 def redis_log_worker():
     while True:
-        log_line = log_queue.get()
+        namespace, log_line = log_queue.get()
         try:
-            redis.lpush('bot_logs', log_line)
-            redis.ltrim('bot_logs', 0, LOG_HISTORY_LIMIT - 1)
+            redis.lpush(ns_key(namespace, 'bot_logs'), log_line)
+            redis.ltrim(ns_key(namespace, 'bot_logs'), 0, LOG_HISTORY_LIMIT - 1)
         except Exception as e:
-            print(f"Logging fail to Redis: {e}")
+            print(f'Logging fail to Redis: {e}')
         finally:
             log_queue.task_done()
 
+
 Thread(target=redis_log_worker, daemon=True).start()
 
-def record_trade(side, quantity, price, source, note=''):
+
+def ns_get(namespace, key, default=None):
     try:
-        trade_number = int(redis.incr('trade_count'))
+        value = redis.get(ns_key(namespace, key))
+        return default if value is None else value
+    except Exception:
+        return default
+
+
+def ns_set(namespace, key, value):
+    redis.set(ns_key(namespace, key), str(value))
+
+
+def ns_delete(namespace, *keys):
+    for key in keys:
+        redis.delete(ns_key(namespace, key))
+
+
+def ns_incr(namespace, key):
+    return int(redis.incr(ns_key(namespace, key)))
+
+
+def ns_lpush(namespace, key, value):
+    redis.lpush(ns_key(namespace, key), value)
+
+
+def ns_ltrim(namespace, key, start, end):
+    redis.ltrim(ns_key(namespace, key), start, end)
+
+
+def ns_lrange(namespace, key, start, end):
+    return redis.lrange(ns_key(namespace, key), start, end)
+
+
+def read_float_state(namespace, key, default=0.0):
+    try:
+        return float(ns_get(namespace, key, default) or default)
+    except Exception:
+        return default
+
+
+def read_int_state(namespace, key, default=0):
+    try:
+        return int(ns_get(namespace, key, default) or default)
+    except Exception:
+        return default
+
+
+def read_text_state(namespace, key, default=''):
+    try:
+        return str(ns_get(namespace, key, default) or default)
+    except Exception:
+        return default
+
+
+def record_trade(namespace, side, quantity, price, source, note=''):
+    try:
+        trade_number = ns_incr(namespace, 'trade_count')
         trade = {
             'id': trade_number,
             'ts': time.time(),
@@ -85,17 +162,19 @@ def record_trade(side, quantity, price, source, note=''):
             'price': round(float(price), 4),
             'notional_usdt': round(float(quantity) * float(price), 2),
             'source': source,
-            'note': note
+            'note': note,
+            'environment': namespace.upper()
         }
-        redis.lpush('trade_history', json.dumps(trade))
-        redis.ltrim('trade_history', 0, TRADE_HISTORY_LIMIT - 1)
+        ns_lpush(namespace, 'trade_history', json.dumps(trade))
+        ns_ltrim(namespace, 'trade_history', 0, TRADE_HISTORY_LIMIT - 1)
         return trade
     except Exception as e:
-        log_activity(f"Trade history write failed: {e}")
+        log_activity(f'Trade history write failed: {e}', namespace=namespace)
         return None
 
-def load_trade_history(limit=50):
-    raw_trades = redis.lrange('trade_history', 0, max(0, limit - 1))
+
+def load_trade_history(namespace, limit=50):
+    raw_trades = ns_lrange(namespace, 'trade_history', 0, max(0, limit - 1))
     trades = []
     for raw_trade in raw_trades:
         try:
@@ -104,64 +183,67 @@ def load_trade_history(limit=50):
             continue
     return trades
 
+
 def get_binance_client():
     return Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+
 
 def record_price_sample(price, sample_ts=None):
     sample_ts = sample_ts or time.time()
     sample = json.dumps({'ts': sample_ts, 'price': price})
-    redis.lpush('price_history', sample)
-    redis.ltrim('price_history', 0, PRICE_HISTORY_LIMIT - 1)
+    redis.lpush(ns_key(GLOBAL_NS, 'price_history'), sample)
+    redis.ltrim(ns_key(GLOBAL_NS, 'price_history'), 0, PRICE_HISTORY_LIMIT - 1)
+
 
 def update_live_price(price, sample_ts=None):
     sample_ts = sample_ts or time.time()
     with price_state_lock:
-        redis.set('current_sol_price', str(price))
-        redis.set('websocket_last_seen', str(sample_ts))
-        redis.set('websocket_status', 'LIVE')
+        redis.set(ns_key(GLOBAL_NS, 'current_sol_price'), str(price))
+        redis.set(ns_key(GLOBAL_NS, 'websocket_last_seen'), str(sample_ts))
+        redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'LIVE')
         record_price_sample(price, sample_ts=sample_ts)
+
 
 def handle_price_socket_message(msg):
     try:
         if not isinstance(msg, dict):
             return
-
         if msg.get('e') == 'error':
             error_type = msg.get('type', 'socket_error')
             error_msg = msg.get('m', 'unknown websocket error')
-            redis.set('websocket_status', f'ERROR: {error_type}')
-            log_activity(f"Price websocket error: {error_type} | {error_msg}")
+            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), f'ERROR: {error_type}')
+            log_activity(f'Price websocket error: {error_type} | {error_msg}', namespace=LIVE_NS)
+            log_activity(f'Price websocket error: {error_type} | {error_msg}', namespace=SANDBOX_NS)
             return
-
         raw_price = msg.get('c') or msg.get('p')
         if raw_price is None:
             return
-
         price = float(raw_price)
         event_ts = time.time()
         if msg.get('E'):
             event_ts = float(msg['E']) / 1000.0
-
         update_live_price(price, sample_ts=event_ts)
     except Exception as e:
-        redis.set('websocket_status', 'ERROR: callback')
-        log_activity(f"Price websocket callback failure: {e}")
+        redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'ERROR: callback')
+        log_activity(f'Price websocket callback failure: {e}', namespace=LIVE_NS)
+
 
 def run_price_stream():
     while True:
         twm = None
         try:
-            redis.set('websocket_status', 'CONNECTING')
+            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'CONNECTING')
             twm = ThreadedWebsocketManager()
             twm.start()
             twm.start_symbol_ticker_socket(callback=handle_price_socket_message, symbol=SYMBOL)
-            log_activity(f"Live price websocket started for {SYMBOL}.")
+            log_activity(f'Live price websocket started for {SYMBOL}.', namespace=LIVE_NS)
+            log_activity(f'Live price websocket started for {SYMBOL}.', namespace=SANDBOX_NS)
             twm.join()
-            redis.set('websocket_status', 'STOPPED')
-            log_activity("Price websocket manager stopped. Rebooting stream...")
+            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'STOPPED')
         except Exception as e:
-            redis.set('websocket_status', 'ERROR: bootstrap')
-            log_activity(f"Price websocket bootstrap failed: {e}")
+            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'ERROR: bootstrap')
+            log_activity(f'Price websocket bootstrap failed: {e}', namespace=LIVE_NS)
+            log_activity(f'Price websocket bootstrap failed: {e}', namespace=SANDBOX_NS)
         finally:
             try:
                 if twm:
@@ -170,88 +252,80 @@ def run_price_stream():
                 pass
         time.sleep(5)
 
+
 def get_live_price(max_age=WEBSOCKET_STALE_AFTER):
     try:
-        current_price = float(redis.get('current_sol_price') or 0.0)
+        current_price = float(redis.get(ns_key(GLOBAL_NS, 'current_sol_price')) or 0.0)
     except Exception:
         current_price = 0.0
-
     try:
-        last_seen = float(redis.get('websocket_last_seen') or 0.0)
+        last_seen = float(redis.get(ns_key(GLOBAL_NS, 'websocket_last_seen')) or 0.0)
     except Exception:
         last_seen = 0.0
-
     if current_price <= 0 or last_seen <= 0:
         raise RuntimeError('websocket price not ready yet')
-
     age = time.time() - last_seen
     if age > max_age:
         raise RuntimeError(f'websocket price stale ({age:.1f}s old)')
-
     return current_price
 
-def load_price_samples():
-    raw_samples = redis.lrange('price_history', 0, PRICE_HISTORY_LIMIT - 1)
-    parsed_samples = []
 
+def load_price_samples():
+    raw_samples = redis.lrange(ns_key(GLOBAL_NS, 'price_history'), 0, PRICE_HISTORY_LIMIT - 1)
+    parsed_samples = []
     for raw_sample in reversed(raw_samples):
         try:
             sample = json.loads(raw_sample)
             parsed_samples.append({'ts': float(sample['ts']), 'price': float(sample['price'])})
         except Exception:
-            try:
-                parsed_samples.append({'ts': 0.0, 'price': float(raw_sample)})
-            except Exception:
-                continue
-
+            continue
     return parsed_samples
+
 
 def get_recent_samples(samples, seconds, now=None):
     now = now or time.time()
     cutoff = now - seconds
     return [sample for sample in samples if sample.get('ts', 0.0) >= cutoff]
 
+
 def pct_change(from_price, to_price):
     if from_price <= 0:
         return 0.0
     return ((to_price - from_price) / from_price) * 100
 
-def read_float_state(key, default=0.0):
-    try:
-        return float(redis.get(key) or default)
-    except Exception:
-        return default
 
-def read_int_state(key, default=0):
-    try:
-        return int(redis.get(key) or default)
-    except Exception:
-        return default
-
-def read_text_state(key, default=''):
-    try:
-        return str(redis.get(key) or default)
-    except Exception:
-        return default
-
-def set_strategy_snapshot(**fields):
+def set_strategy_snapshot(namespace, **fields):
     for key, value in fields.items():
-        redis.set(f'strategy_{key}', str(value))
+        ns_set(namespace, f'strategy_{key}', value)
 
-def clear_position_tracking():
-    redis.delete('position_opened_at')
 
-def build_status_feed_item(now=None):
+def clear_position_tracking(namespace):
+    ns_delete(namespace, 'position_opened_at')
+
+
+def bootstrap_sandbox():
+    if ns_get(SANDBOX_NS, 'initialized') == 'true':
+        return
+    ns_set(SANDBOX_NS, 'initialized', 'true')
+    ns_set(SANDBOX_NS, 'bot_running', 'false')
+    ns_set(SANDBOX_NS, 'position_active', 'false')
+    ns_set(SANDBOX_NS, 'balance_usdt', SANDBOX_START_USDT)
+    ns_set(SANDBOX_NS, 'balance_sol', 0)
+    ns_set(SANDBOX_NS, 'engine_status', 'PAUSED')
+    set_strategy_snapshot(SANDBOX_NS, mode='PAUSED', setup='Sandbox paused by default')
+
+
+def build_status_feed_item(namespace, now=None):
     now = now or time.time()
     bucket_ts = int(now // RSS_STATUS_INTERVAL) * RSS_STATUS_INTERVAL
-    trade_count = read_int_state('trade_count')
-    bot_running = redis.get('bot_running') == 'true'
-    position_active = redis.get('position_active') == 'true'
-    engine_status = redis.get('engine_status') or 'Initializing...'
-    current_price = read_float_state('current_sol_price')
-    usdt_bal = read_float_state('balance_usdt')
-    sol_bal = read_float_state('balance_sol')
-    purchase_price = read_float_state('purchase_price')
+    trade_count = read_int_state(namespace, 'trade_count')
+    bot_running = ns_get(namespace, 'bot_running') == 'true'
+    position_active = ns_get(namespace, 'position_active') == 'true'
+    engine_status = read_text_state(namespace, 'engine_status', 'Initializing...')
+    current_price = read_float_state(namespace, 'current_sol_price')
+    usdt_bal = read_float_state(namespace, 'balance_usdt')
+    sol_bal = read_float_state(namespace, 'balance_sol')
+    purchase_price = read_float_state(namespace, 'purchase_price')
     running_label = 'RUNNING' if bot_running else 'PAUSED'
 
     if position_active and purchase_price > 0:
@@ -266,12 +340,6 @@ def build_status_feed_item(now=None):
             f'Entry ${purchase_price:.2f} -> Target ${target_price:.2f}',
             f'To go: {remaining_pct:.2f}% / ${remaining_usd:.2f} | Trades: {trade_count}'
         ])
-        description_parts = [
-            title,
-            f'Status: {engine_status}',
-            f'SOL held: {sol_bal:.4f}',
-            f'USDT: ${usdt_bal:.2f}'
-        ]
     else:
         title = '\n'.join([
             f'{running_label} | BUY | SOL ${current_price:.2f}',
@@ -279,46 +347,40 @@ def build_status_feed_item(now=None):
             f'Arm {DROP_TRIGGER_PCT:.2f}% | Buy bounce +{BOUNCE_TRIGGER_PCT:.2f}% | Trades: {trade_count}',
             f'USDT ${usdt_bal:.2f}'
         ])
-        description_parts = [
-            title,
-            f'Status: {engine_status}',
-            f'SOL held: {sol_bal:.4f}'
-        ]
-
-    latest_logs = redis.lrange('bot_logs', 0, 0)
+    description_parts = [
+        title,
+        f'Status: {engine_status}',
+        f'SOL held: {sol_bal:.4f}',
+        f'USDT: ${usdt_bal:.2f}'
+    ]
+    latest_logs = ns_lrange(namespace, 'bot_logs', 0, 0)
     if latest_logs:
         description_parts.append(f'Latest log: {latest_logs[0]}')
-
     return {
         'bucket_ts': bucket_ts,
         'pub_date': formatdate(bucket_ts, usegmt=True),
         'title': title,
         'description': '\n'.join(description_parts),
-        'guid': f'muzz-world-status-{bucket_ts}'
+        'guid': f'muzz-world-status-{namespace}-{bucket_ts}'
     }
 
-# --- Truth Reconciliation Engine ---
-def reconcile_state_against_binance(client):
-    log_activity("Running core truth reconciliation step...")
+
+def reconcile_live_state(client):
+    log_activity('Running core truth reconciliation step...', namespace=LIVE_NS)
     try:
         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-
-        redis.set('balance_usdt', str(usdt_bal))
-        redis.set('balance_sol', str(sol_bal))
-
+        ns_set(LIVE_NS, 'balance_usdt', usdt_bal)
+        ns_set(LIVE_NS, 'balance_sol', sol_bal)
         open_orders = client.get_open_orders(symbol=SYMBOL)
         if open_orders:
-            log_activity("CRITICAL: Open working orders found on exchange! Forcing lockout.")
-            redis.set('engine_status', 'ERROR_LOCKOUT_OPEN_ORDERS')
+            log_activity('CRITICAL: Open working orders found on exchange! Forcing lockout.', namespace=LIVE_NS)
+            ns_set(LIVE_NS, 'engine_status', 'ERROR_LOCKOUT_OPEN_ORDERS')
             return False
-
         my_trades = client.get_my_trades(symbol=SYMBOL, limit=20)
-
         if sol_bal >= 0.05:
             accumulated_qty = 0.0
             weighted_cost = 0.0
-
             for trade in reversed(my_trades):
                 if trade['isBuyer']:
                     qty = float(trade['qty'])
@@ -327,90 +389,113 @@ def reconcile_state_against_binance(client):
                     weighted_cost += (price * qty)
                     if accumulated_qty >= (sol_bal * 0.99):
                         break
-
             if accumulated_qty > 0:
                 avg_entry_price = weighted_cost / accumulated_qty
-                log_activity(f"Reconciliation: Active position verified. Reconstructed Cost Basis: ${avg_entry_price:.2f}, Size: {sol_bal}")
-                redis.set('position_active', 'true')
-                redis.set('purchase_price', str(avg_entry_price))
-                redis.set('bot_tracked_qty', str(sol_bal))
-                if not redis.get('position_opened_at'):
-                    redis.set('position_opened_at', str(time.time()))
+                log_activity(f'Reconciliation: Active position verified. Reconstructed Cost Basis: ${avg_entry_price:.2f}, Size: {sol_bal}', namespace=LIVE_NS)
+                ns_set(LIVE_NS, 'position_active', 'true')
+                ns_set(LIVE_NS, 'purchase_price', avg_entry_price)
+                ns_set(LIVE_NS, 'bot_tracked_qty', sol_bal)
+                if not ns_get(LIVE_NS, 'position_opened_at'):
+                    ns_set(LIVE_NS, 'position_opened_at', time.time())
                 return True
-
-        log_activity("Reconciliation: No active bot holdings detected. Set to Cash Mode.")
-        redis.set('position_active', 'false')
-        redis.delete('purchase_price')
-        redis.delete('bot_tracked_qty')
-        clear_position_tracking()
+        log_activity('Reconciliation: No active bot holdings detected. Set to Cash Mode.', namespace=LIVE_NS)
+        ns_set(LIVE_NS, 'position_active', 'false')
+        ns_delete(LIVE_NS, 'purchase_price', 'bot_tracked_qty')
+        clear_position_tracking(LIVE_NS)
         return True
-
     except Exception as e:
-        log_activity(f"Reconciliation Engine Failure: {e}")
-        redis.set('engine_status', "Reconcile Error")
+        log_activity(f'Reconciliation Engine Failure: {e}', namespace=LIVE_NS)
+        ns_set(LIVE_NS, 'engine_status', 'Reconcile Error')
         return False
 
-# --- Autonomous Strategy Background Loop ---
-def run_trading_bot():
-    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
-        print("API keys missing from environment profiles.")
+
+def execute_paper_buy(namespace, price, note='90s flush bounce scalp'):
+    usdt_bal = read_float_state(namespace, 'balance_usdt')
+    usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
+    if usdt_alloc < 5.0:
+        log_activity('Paper transaction aborted: available balance under operational thresholds.', namespace=namespace)
         return
-
-    client = get_binance_client()
-
-    if not reconcile_state_against_binance(client):
-        log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
+    sol_quantity = math.floor((usdt_alloc / price) * 100) / 100.0
+    if sol_quantity <= 0.01:
+        log_activity('Paper buy aborted: calculated order size too low.', namespace=namespace)
         return
+    ns_set(namespace, 'balance_usdt', round(usdt_bal - (sol_quantity * price), 4))
+    ns_set(namespace, 'balance_sol', round(read_float_state(namespace, 'balance_sol') + sol_quantity, 4))
+    ns_set(namespace, 'position_active', 'true')
+    ns_set(namespace, 'purchase_price', price)
+    ns_set(namespace, 'bot_tracked_qty', sol_quantity)
+    ns_set(namespace, 'position_opened_at', time.time())
+    record_trade(namespace, 'BUY', sol_quantity, price, 'PAPER', note)
+    log_activity(f'PAPER EXECUTION: Bought {sol_quantity} SOL at ${price:.2f}.', namespace=namespace)
 
+
+def execute_paper_sell(namespace, price, note):
+    sol_bal = read_float_state(namespace, 'balance_sol')
+    tracked_qty = read_float_state(namespace, 'bot_tracked_qty', sol_bal)
+    sol_to_liquidate = math.floor(min(sol_bal, tracked_qty) * 100) / 100.0
+    if sol_to_liquidate <= 0.01:
+        log_activity('Paper sell aborted: insufficient SOL balance.', namespace=namespace)
+        return
+    ns_set(namespace, 'balance_sol', round(sol_bal - sol_to_liquidate, 4))
+    ns_set(namespace, 'balance_usdt', round(read_float_state(namespace, 'balance_usdt') + (sol_to_liquidate * price), 4))
+    record_trade(namespace, 'SELL', sol_to_liquidate, price, 'PAPER', note)
+    ns_set(namespace, 'position_active', 'false')
+    ns_delete(namespace, 'purchase_price', 'bot_tracked_qty')
+    clear_position_tracking(namespace)
+    log_activity(f'PAPER EXECUTION: Sold {sol_to_liquidate} SOL at ${price:.2f}.', namespace=namespace)
+
+
+def run_namespaced_trader(namespace, paper=False):
+    client = None if paper else get_binance_client()
+    if paper:
+        bootstrap_sandbox()
+    else:
+        if not reconcile_live_state(client):
+            log_activity('Initial truth sync failed. Thread loop aborted for account safety.', namespace=namespace)
+            return
     while True:
         try:
-            current_status = redis.get('engine_status') or ""
-            if "LOCKOUT" in current_status:
+            current_status = read_text_state(namespace, 'engine_status')
+            if 'LOCKOUT' in current_status:
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
-            lock_acquired = redis.set('trading_execution_lock', INSTANCE_ID, nx=True, ex=15)
-            if not lock_acquired and redis.get('trading_execution_lock') != INSTANCE_ID:
+            lock_key = ns_key(namespace, 'trading_execution_lock')
+            lock_acquired = redis.set(lock_key, INSTANCE_ID, nx=True, ex=15)
+            current_lock = redis.get(lock_key)
+            if not lock_acquired and current_lock != INSTANCE_ID:
                 time.sleep(SAMPLE_INTERVAL)
                 continue
-
-            redis.set('trading_execution_lock', INSTANCE_ID, ex=15)
+            redis.set(lock_key, INSTANCE_ID, ex=15)
 
             try:
                 current_price = get_live_price()
-                redis.set('current_sol_price', str(current_price))
+                ns_set(namespace, 'current_sol_price', current_price)
             except Exception as price_error:
-                redis.set('engine_status', 'WAITING_FOR_LIVE_PRICE')
-                set_strategy_snapshot(mode='WAITING', setup='Waiting for live websocket price')
-                log_activity(f"Market data waiting: {price_error}")
+                ns_set(namespace, 'engine_status', 'WAITING_FOR_LIVE_PRICE')
+                set_strategy_snapshot(namespace, mode='WAITING', setup='Waiting for live websocket price')
+                log_activity(f'Market data waiting: {price_error}', namespace=namespace)
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
-            if redis.get('bot_running') != 'true':
-                redis.set('engine_status', 'PAUSED')
-                set_strategy_snapshot(mode='PAUSED', setup='Trading paused by operator')
-                log_activity("Trading paused. Loop idling.")
+            if ns_get(namespace, 'bot_running') != 'true':
+                ns_set(namespace, 'engine_status', 'PAUSED')
+                set_strategy_snapshot(namespace, mode='PAUSED', setup='Trading paused by operator')
+                log_activity('Trading paused. Loop idling.', namespace=namespace)
                 time.sleep(SAMPLE_INTERVAL)
                 continue
 
-            position_active = redis.get('position_active') == 'true'
-            purchase_price = float(redis.get('purchase_price') or 0.0)
-            bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
+            position_active = ns_get(namespace, 'position_active') == 'true'
+            purchase_price = read_float_state(namespace, 'purchase_price')
+            bot_tracked_qty = read_float_state(namespace, 'bot_tracked_qty')
 
             if not position_active:
                 now = time.time()
                 samples = get_recent_samples(load_price_samples(), SCALP_WINDOW_SECONDS, now=now)
                 if len(samples) < 10:
-                    redis.set('engine_status', 'WARMING_SCALP_WINDOW')
-                    set_strategy_snapshot(
-                        mode='BUY',
-                        setup='Warming scalp window',
-                        recent_high='0',
-                        local_low='0',
-                        drop_pct='0',
-                        bounce_pct='0'
-                    )
-                    log_activity(f"BUY mode | Spot: ${current_price:.2f} | Warming scalp window: {len(samples)} samples / {SCALP_WINDOW_SECONDS}s")
+                    ns_set(namespace, 'engine_status', 'WARMING_SCALP_WINDOW')
+                    set_strategy_snapshot(namespace, mode='BUY', setup='Warming scalp window', recent_high='0', local_low='0', drop_pct='0', bounce_pct='0')
+                    log_activity(f'BUY mode | Spot: ${current_price:.2f} | Warming scalp window: {len(samples)} samples / {SCALP_WINDOW_SECONDS}s', namespace=namespace)
                     time.sleep(SAMPLE_INTERVAL)
                     continue
 
@@ -426,70 +511,52 @@ def run_trading_bot():
                 if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
                     setup = 'Bounce confirmed'
 
-                set_strategy_snapshot(
-                    mode='BUY',
-                    setup=setup,
-                    recent_high=f'{recent_high:.6f}',
-                    local_low=f'{local_low:.6f}',
-                    drop_pct=f'{drop_pct:.4f}',
-                    bounce_pct=f'{bounce_pct:.4f}'
-                )
-
+                set_strategy_snapshot(namespace, mode='BUY', setup=setup, recent_high=f'{recent_high:.6f}', local_low=f'{local_low:.6f}', drop_pct=f'{drop_pct:.4f}', bounce_pct=f'{bounce_pct:.4f}')
                 thought_msg = (
-                    f"BUY mode | Spot: ${current_price:.2f}"
-                    f" | 90s High: ${recent_high:.2f}"
-                    f" | Local Low: ${local_low:.2f}"
-                    f" | Drop: {drop_pct:+.2f}% / {DROP_TRIGGER_PCT:.2f}%"
-                    f" | Bounce: {bounce_pct:+.2f}% / +{BOUNCE_TRIGGER_PCT:.2f}%"
+                    f'BUY mode | Spot: ${current_price:.2f}'
+                    f' | 90s High: ${recent_high:.2f}'
+                    f' | Local Low: ${local_low:.2f}'
+                    f' | Drop: {drop_pct:+.2f}% / {DROP_TRIGGER_PCT:.2f}%'
+                    f' | Bounce: {bounce_pct:+.2f}% / +{BOUNCE_TRIGGER_PCT:.2f}%'
                 )
-
                 if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
-                    log_activity(thought_msg + " | Bounce confirmed. Buying.")
-                    usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
-                    usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
-
-                    if usdt_alloc >= 5.0:
-                        sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
-                        log_activity(f"EXECUTION: Dispatching scalp Market BUY for {sol_quantity} SOL...")
-                        client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
-                        record_trade('BUY', sol_quantity, current_price, 'AUTO', '90s flush bounce scalp')
-                        redis.set('position_opened_at', str(time.time()))
-                        time.sleep(1)
-                        reconcile_state_against_binance(client)
+                    log_activity(thought_msg + ' | Bounce confirmed. Buying.', namespace=namespace)
+                    if paper:
+                        execute_paper_buy(namespace, current_price)
                     else:
-                        log_activity("Transaction aborted: Available balance under operational thresholds.")
+                        usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
+                        usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
+                        if usdt_alloc >= 5.0:
+                            sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
+                            log_activity(f'EXECUTION: Dispatching scalp Market BUY for {sol_quantity} SOL...', namespace=namespace)
+                            client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
+                            record_trade(namespace, 'BUY', sol_quantity, current_price, 'AUTO', '90s flush bounce scalp')
+                            ns_set(namespace, 'position_opened_at', time.time())
+                            time.sleep(1)
+                            reconcile_live_state(client)
+                        else:
+                            log_activity('Transaction aborted: Available balance under operational thresholds.', namespace=namespace)
                 else:
-                    log_activity(thought_msg + f" | {setup.upper()}")
-                    redis.set('engine_status', 'SCALP_DROP_ARMED' if armed else 'SCANNING_FOR_SCALP_ENTRY')
-
+                    log_activity(thought_msg + f' | {setup.upper()}', namespace=namespace)
+                    ns_set(namespace, 'engine_status', 'SCALP_DROP_ARMED' if armed else 'SCANNING_FOR_SCALP_ENTRY')
             else:
                 target_price = purchase_price * SELL_TARGET_MULTIPLIER
                 stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100))
                 profit_pct = pct_change(purchase_price, current_price)
-                opened_at = read_float_state('position_opened_at', time.time())
+                opened_at = read_float_state(namespace, 'position_opened_at', time.time())
                 seconds_open = max(0, int(time.time() - opened_at))
                 countdown = max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open)
-
-                set_strategy_snapshot(
-                    mode='SELL',
-                    setup='Managing open scalp',
-                    target_price=f'{target_price:.6f}',
-                    stop_price=f'{stop_price:.6f}',
-                    profit_pct=f'{profit_pct:.4f}',
-                    seconds_open=str(seconds_open),
-                    fail_countdown=str(countdown)
-                )
-
+                set_strategy_snapshot(namespace, mode='SELL', setup='Managing open scalp', target_price=f'{target_price:.6f}', stop_price=f'{stop_price:.6f}', profit_pct=f'{profit_pct:.4f}', seconds_open=str(seconds_open), fail_countdown=str(countdown))
                 thought_msg = (
-                    f"SELL mode | Spot: ${current_price:.2f}"
-                    f" | Entry: ${purchase_price:.2f}"
-                    f" | Target: ${target_price:.2f} (+{SELL_TARGET_PCT:.2f}%)"
-                    f" | Stop: ${stop_price:.2f} ({HARD_STOP_PCT:.2f}%)"
-                    f" | P/L: {profit_pct:+.2f}%"
-                    f" | Open: {seconds_open}s"
+                    f'SELL mode | Spot: ${current_price:.2f}'
+                    f' | Entry: ${purchase_price:.2f}'
+                    f' | Target: ${target_price:.2f} (+{SELL_TARGET_PCT:.2f}%)'
+                    f' | Stop: ${stop_price:.2f} ({HARD_STOP_PCT:.2f}%)'
+                    f' | P/L: {profit_pct:+.2f}%'
+                    f' | Open: {seconds_open}s'
                 )
-                log_activity(thought_msg)
-                redis.set('engine_status', 'MANAGING_SCALP_POSITION')
+                log_activity(thought_msg, namespace=namespace)
+                ns_set(namespace, 'engine_status', 'MANAGING_SCALP_POSITION')
 
                 sell_reason = None
                 sell_note = None
@@ -504,83 +571,124 @@ def run_trading_bot():
                     sell_note = f'Under +{FAIL_TO_LAUNCH_MIN_PCT:.2f}% after {FAIL_TO_LAUNCH_SECONDS}s'
 
                 if sell_reason:
-                    sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-                    sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
-                    if sol_to_liquidate > 0.01:
-                        log_activity(f"EXECUTION: {sell_reason.title()}. Market selling {sol_to_liquidate} SOL...")
-                        client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
-                        record_trade('SELL', sol_to_liquidate, current_price, 'AUTO', sell_note)
-                        time.sleep(1)
-                        reconcile_state_against_binance(client)
+                    if paper:
+                        execute_paper_sell(namespace, current_price, sell_note)
                     else:
-                        log_activity("Sell error: Bot-tracked position parameters empty or invalid.")
-
+                        sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
+                        sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
+                        if sol_to_liquidate > 0.01:
+                            log_activity(f'EXECUTION: {sell_reason.title()}. Market selling {sol_to_liquidate} SOL...', namespace=namespace)
+                            client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
+                            record_trade(namespace, 'SELL', sol_to_liquidate, current_price, 'AUTO', sell_note)
+                            time.sleep(1)
+                            reconcile_live_state(client)
+                        else:
+                            log_activity('Sell error: Bot-tracked position parameters empty or invalid.', namespace=namespace)
         except Exception as e:
-            log_activity(f"Process Loop Error: {e}")
-            redis.set('engine_status', "Loop Error")
-            set_strategy_snapshot(mode='ERROR', setup=str(e))
-
+            log_activity(f'Process Loop Error: {e}', namespace=namespace)
+            ns_set(namespace, 'engine_status', 'Loop Error')
+            set_strategy_snapshot(namespace, mode='ERROR', setup=str(e))
         time.sleep(SAMPLE_INTERVAL)
 
+
+bootstrap_sandbox()
 Thread(target=run_price_stream, daemon=True).start()
-Thread(target=run_trading_bot, daemon=True).start()
+Thread(target=run_namespaced_trader, args=(LIVE_NS, False), daemon=True).start()
+Thread(target=run_namespaced_trader, args=(SANDBOX_NS, True), daemon=True).start()
 
-# --- INSTANT INTERVENTION ENDPOINTS ---
-@app.route('/api/manual_buy', methods=['POST'])
-def execute_manual_buy():
-    if not session.get('logged_in'):
-        return jsonify({'status': 'error', 'message': 'Unauthorized'}), 401
+
+def build_state_payload(namespace):
+    logs = ns_lrange(namespace, 'bot_logs', 0, LOG_HISTORY_LIMIT - 1)
+    usdt_bal = read_float_state(namespace, 'balance_usdt')
+    sol_bal = read_float_state(namespace, 'balance_sol')
+    current_price = read_float_state(namespace, 'current_sol_price')
+    trade_count = read_int_state(namespace, 'trade_count')
+    purchase_price = read_float_state(namespace, 'purchase_price')
+    target_price = purchase_price * SELL_TARGET_MULTIPLIER if purchase_price > 0 else 0.0
+    stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100)) if purchase_price > 0 else 0.0
+    profit_pct = pct_change(purchase_price, current_price) if purchase_price > 0 else 0.0
+    seconds_open = 0
+    if purchase_price > 0:
+        seconds_open = max(0, int(time.time() - read_float_state(namespace, 'position_opened_at', time.time())))
+    websocket_last_seen = read_float_state(GLOBAL_NS, 'websocket_last_seen')
+    market_data_age = max(0.0, time.time() - websocket_last_seen) if websocket_last_seen > 0 else 0.0
+    total_usd = usdt_bal + (sol_bal * current_price)
+    total_gbp = total_usd * 0.78
     try:
-        data = request.json or {}
-        usdt_amount = min(float(data.get('usdt_amount', 0)), MAX_TRADE_USDT)
+        fiat_res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=2)
+        if fiat_res.status_code == 200:
+            rates = fiat_res.json().get('rates', {})
+            total_gbp = total_usd * rates.get('GBP', 0.78)
+    except Exception:
+        pass
+    return {
+        'bot_running': ns_get(namespace, 'bot_running') == 'true',
+        'position_active': ns_get(namespace, 'position_active') == 'true',
+        'purchase_price': str(purchase_price),
+        'current_sol_price': str(current_price),
+        'balance_usdt': str(usdt_bal),
+        'balance_sol': str(sol_bal),
+        'total_portfolio_usd': str(round(total_usd, 2)),
+        'total_portfolio_gbp': str(round(total_gbp, 2)),
+        'trade_count': trade_count,
+        'engine_status': read_text_state(namespace, 'engine_status', 'Initializing...'),
+        'websocket_status': read_text_state(GLOBAL_NS, 'websocket_status', 'DISCONNECTED'),
+        'market_data_age': round(market_data_age, 1),
+        'strategy': {
+            'mode': read_text_state(namespace, 'strategy_mode'),
+            'setup': read_text_state(namespace, 'strategy_setup'),
+            'recent_high': read_float_state(namespace, 'strategy_recent_high'),
+            'local_low': read_float_state(namespace, 'strategy_local_low'),
+            'drop_pct': read_float_state(namespace, 'strategy_drop_pct'),
+            'bounce_pct': read_float_state(namespace, 'strategy_bounce_pct'),
+            'target_price': target_price,
+            'stop_price': stop_price,
+            'profit_pct': profit_pct,
+            'seconds_open': seconds_open,
+            'fail_countdown': max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open) if purchase_price > 0 else FAIL_TO_LAUNCH_SECONDS
+        },
+        'logs': logs
+    }
 
-        client = get_binance_client()
-        current_price = get_live_price()
-        sol_quantity = math.floor((usdt_amount / current_price) * 100) / 100.0
 
-        if sol_quantity > 0.01:
-            log_activity(f"MANUAL INTERVENTION: Executing forced Market BUY for {sol_quantity} SOL...")
-            client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
-            record_trade('BUY', sol_quantity, current_price, 'MANUAL', 'Manual market buy')
-            redis.set('position_opened_at', str(time.time()))
-            time.sleep(1)
-            reconcile_state_against_binance(client)
-            return jsonify({'status': 'success', 'message': f'Successfully purchased {sol_quantity} SOL.'})
-        return jsonify({'status': 'error', 'message': 'Calculated order size too low.'}), 400
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
+def build_health_payload(namespace):
     health = {'upstash_redis': 'FAIL', 'proxy_server': 'DIRECT (NO PROXY)', 'binance_api': 'FAIL', 'market_data': 'FAIL', 'errors': []}
     try:
         redis.ping()
         health['upstash_redis'] = 'OK'
     except Exception as e:
-        health['errors'].append(f"Redis Error: {str(e)}")
-
-    websocket_status = redis.get('websocket_status') or 'DISCONNECTED'
-    websocket_last_seen = read_float_state('websocket_last_seen')
+        health['errors'].append(f'Redis Error: {str(e)}')
+    websocket_status = read_text_state(GLOBAL_NS, 'websocket_status', 'DISCONNECTED')
+    websocket_last_seen = read_float_state(GLOBAL_NS, 'websocket_last_seen')
     if websocket_last_seen > 0:
         age = max(0.0, time.time() - websocket_last_seen)
         if age <= WEBSOCKET_STALE_AFTER:
-            health['market_data'] = f"OK (WS {age:.1f}s)"
+            health['market_data'] = f'OK (WS {age:.1f}s)'
         else:
-            health['market_data'] = f"STALE (WS {age:.1f}s)"
+            health['market_data'] = f'STALE (WS {age:.1f}s)'
     else:
-        health['market_data'] = f"WAITING ({websocket_status})"
-
-    if BINANCE_API_KEY and BINANCE_API_SECRET:
+        health['market_data'] = f'WAITING ({websocket_status})'
+    if namespace == SANDBOX_NS:
+        health['binance_api'] = 'PAPER MODE'
+    elif BINANCE_API_KEY and BINANCE_API_SECRET:
         try:
             test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
             if test_client.get_server_time():
                 health['binance_api'] = 'OK'
         except Exception as e:
-            health['errors'].append(f"Binance API Handshake Failure: {str(e)}")
+            health['errors'].append(f'Binance API Handshake Failure: {str(e)}')
     else:
         health['binance_api'] = 'KEYS MISSING'
+    return health
 
-    return jsonify(health)
+
+def render_dashboard(namespace, page_label=''):
+    return render_template('index.html', page_label=page_label, api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api', trades_href='/sandbox/trades' if namespace == SANDBOX_NS else '/trades')
+
+
+def render_trade_history(namespace, page_label=''):
+    return render_template('trade_history.html', page_label=page_label, api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api', dashboard_href='/sandbox' if namespace == SANDBOX_NS else '/')
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -589,27 +697,40 @@ def login():
         if request.form.get('password') == ADMIN_PASSWORD:
             session['logged_in'] = True
             return redirect(url_for('index'))
-        else:
-            error = "Invalid Credentials."
+        error = 'Invalid Credentials.'
     return render_template('login.html', error=error)
+
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login'))
 
+
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_dashboard(LIVE_NS)
+
+
+@app.route('/sandbox')
+def sandbox_index():
+    return render_dashboard(SANDBOX_NS, page_label='SANDBOX')
+
 
 @app.route('/trades')
 def trade_history_page():
-    return render_template('trade_history.html')
+    return render_trade_history(LIVE_NS)
+
+
+@app.route('/sandbox/trades')
+def sandbox_trade_history_page():
+    return render_trade_history(SANDBOX_NS, page_label='SANDBOX')
+
 
 @app.route('/feed.xml', methods=['GET'])
 def status_feed():
     try:
-        item = build_status_feed_item()
+        item = build_status_feed_item(LIVE_NS)
         now = time.time()
         feed_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
@@ -634,123 +755,153 @@ def status_feed():
         response.headers['Pragma'] = 'no-cache'
         return response
     except Exception as e:
-        return app.response_class(
-            f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>muzz.world bot status</title><item><title>Feed error</title><description>{escape(str(e))}</description></item></channel></rss>',
-            mimetype='application/rss+xml',
-            status=500
-        )
+        return app.response_class(f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>muzz.world bot status</title><item><title>Feed error</title><description>{escape(str(e))}</description></item></channel></rss>', mimetype='application/rss+xml', status=500)
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify(build_health_payload(LIVE_NS))
+
+
+@app.route('/sandbox/api/health', methods=['GET'])
+def sandbox_health_check():
+    return jsonify(build_health_payload(SANDBOX_NS))
+
 
 @app.route('/api/trades', methods=['GET'])
 def get_trades():
-    try:
-        trade_count = int(redis.get('trade_count') or 0)
-        return jsonify({
-            'trade_count': trade_count,
-            'trades': load_trade_history(100)
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return jsonify({'trade_count': read_int_state(LIVE_NS, 'trade_count'), 'trades': load_trade_history(LIVE_NS, 100)})
+
+
+@app.route('/sandbox/api/trades', methods=['GET'])
+def sandbox_get_trades():
+    return jsonify({'trade_count': read_int_state(SANDBOX_NS, 'trade_count'), 'trades': load_trade_history(SANDBOX_NS, 100)})
+
 
 @app.route('/api/state', methods=['GET'])
 def get_state():
-    try:
-        logs = redis.lrange('bot_logs', 0, LOG_HISTORY_LIMIT - 1)
-        usdt_bal = float(redis.get('balance_usdt') or 0.0)
-        sol_bal = float(redis.get('balance_sol') or 0.0)
-        current_price = float(redis.get('current_sol_price') or 0.0)
-        trade_count = int(redis.get('trade_count') or 0)
-        purchase_price = read_float_state('purchase_price')
-        target_price = purchase_price * SELL_TARGET_MULTIPLIER if purchase_price > 0 else 0.0
-        stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100)) if purchase_price > 0 else 0.0
-        profit_pct = pct_change(purchase_price, current_price) if purchase_price > 0 else 0.0
-        seconds_open = 0
-        if purchase_price > 0:
-            seconds_open = max(0, int(time.time() - read_float_state('position_opened_at', time.time())))
+    return jsonify(build_state_payload(LIVE_NS))
 
-        websocket_last_seen = read_float_state('websocket_last_seen')
-        market_data_age = max(0.0, time.time() - websocket_last_seen) if websocket_last_seen > 0 else 0.0
 
-        total_usd = usdt_bal + (sol_bal * current_price)
-        total_gbp = total_usd * 0.78
-        try:
-            fiat_res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=2)
-            if fiat_res.status_code == 200:
-                rates = fiat_res.json().get('rates', {})
-                total_gbp = total_usd * rates.get('GBP', 0.78)
-        except Exception:
-            pass
+@app.route('/sandbox/api/state', methods=['GET'])
+def sandbox_get_state():
+    return jsonify(build_state_payload(SANDBOX_NS))
 
-        return jsonify({
-            'bot_running': redis.get('bot_running') == 'true',
-            'position_active': redis.get('position_active') == 'true',
-            'purchase_price': str(purchase_price),
-            'current_sol_price': str(current_price),
-            'balance_usdt': str(usdt_bal),
-            'balance_sol': str(sol_bal),
-            'total_portfolio_usd': str(round(total_usd, 2)),
-            'total_portfolio_gbp': str(round(total_gbp, 2)),
-            'trade_count': trade_count,
-            'engine_status': redis.get('engine_status') or 'Initializing...',
-            'websocket_status': read_text_state('websocket_status', 'DISCONNECTED'),
-            'market_data_age': round(market_data_age, 1),
-            'strategy': {
-                'mode': read_text_state('strategy_mode'),
-                'setup': read_text_state('strategy_setup'),
-                'recent_high': read_float_state('strategy_recent_high'),
-                'local_low': read_float_state('strategy_local_low'),
-                'drop_pct': read_float_state('strategy_drop_pct'),
-                'bounce_pct': read_float_state('strategy_bounce_pct'),
-                'target_price': target_price,
-                'stop_price': stop_price,
-                'profit_pct': profit_pct,
-                'seconds_open': seconds_open,
-                'fail_countdown': max(0, FAIL_TO_LAUNCH_SECONDS - seconds_open) if purchase_price > 0 else FAIL_TO_LAUNCH_SECONDS
-            },
-            'logs': logs
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/toggle', methods=['POST'])
 def toggle_bot():
-    try:
-        data = request.json
-        action = data.get('run', False)
-        redis.set('bot_running', 'true' if action else 'false')
-        log_activity(f"Trading State Update: ENGINE {'STARTED' if action else 'PAUSED'}")
-        return jsonify({'status': 'success', 'bot_running': action})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    action = (request.json or {}).get('run', False)
+    ns_set(LIVE_NS, 'bot_running', 'true' if action else 'false')
+    log_activity(f"Trading State Update: ENGINE {'STARTED' if action else 'PAUSED'}", namespace=LIVE_NS)
+    return jsonify({'status': 'success', 'bot_running': action})
+
+
+@app.route('/sandbox/api/toggle', methods=['POST'])
+def sandbox_toggle_bot():
+    action = (request.json or {}).get('run', False)
+    ns_set(SANDBOX_NS, 'bot_running', 'true' if action else 'false')
+    log_activity(f"Sandbox State Update: ENGINE {'STARTED' if action else 'PAUSED'}", namespace=SANDBOX_NS)
+    return jsonify({'status': 'success', 'bot_running': action})
+
 
 @app.route('/api/manual_set', methods=['POST'])
 def manual_set_position():
     try:
-        data = request.json
+        data = request.json or {}
         price = data.get('price')
         if price and float(price) > 0:
-            redis.set('position_active', 'true')
-            redis.set('purchase_price', str(round(float(price), 2)))
-            redis.set('position_opened_at', str(time.time()))
-            log_activity(f"Manual Track Override: Position set ACTIVE at Entry ${price}")
-            return jsonify({'status': 'success'})
+            ns_set(LIVE_NS, 'position_active', 'true')
+            ns_set(LIVE_NS, 'purchase_price', round(float(price), 2))
+            ns_set(LIVE_NS, 'position_opened_at', time.time())
+            log_activity(f'Manual Track Override: Position set ACTIVE at Entry ${price}', namespace=LIVE_NS)
         else:
-            redis.set('position_active', 'false')
-            redis.delete('purchase_price')
-            redis.delete('bot_tracked_qty')
-            clear_position_tracking()
-            log_activity("Manual Track Override: Position cleared to INACTIVE")
-            return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/api/logs/clear', methods=['POST'])
-def clear_logs():
-    try:
-        redis.delete('bot_logs')
-        log_activity("Terminal log wiped by operator.", skip_db=True)
+            ns_set(LIVE_NS, 'position_active', 'false')
+            ns_delete(LIVE_NS, 'purchase_price', 'bot_tracked_qty')
+            clear_position_tracking(LIVE_NS)
+            log_activity('Manual Track Override: Position cleared to INACTIVE', namespace=LIVE_NS)
         return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/sandbox/api/manual_set', methods=['POST'])
+def sandbox_manual_set_position():
+    try:
+        data = request.json or {}
+        price = data.get('price')
+        if price and float(price) > 0:
+            ns_set(SANDBOX_NS, 'position_active', 'true')
+            ns_set(SANDBOX_NS, 'purchase_price', round(float(price), 2))
+            ns_set(SANDBOX_NS, 'position_opened_at', time.time())
+            log_activity(f'Sandbox manual track: position set ACTIVE at Entry ${price}', namespace=SANDBOX_NS)
+        else:
+            ns_set(SANDBOX_NS, 'position_active', 'false')
+            ns_delete(SANDBOX_NS, 'purchase_price', 'bot_tracked_qty')
+            clear_position_tracking(SANDBOX_NS)
+            log_activity('Sandbox manual track: position cleared to INACTIVE', namespace=SANDBOX_NS)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/logs/clear', methods=['POST'])
+def clear_logs():
+    redis.delete(ns_key(LIVE_NS, 'bot_logs'))
+    log_activity('Terminal log wiped by operator.', namespace=LIVE_NS, skip_db=True)
+    return jsonify({'status': 'success'})
+
+
+@app.route('/sandbox/api/logs/clear', methods=['POST'])
+def sandbox_clear_logs():
+    redis.delete(ns_key(SANDBOX_NS, 'bot_logs'))
+    log_activity('Sandbox terminal log wiped by operator.', namespace=SANDBOX_NS, skip_db=True)
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/manual_buy', methods=['POST'])
+def execute_manual_buy():
+    try:
+        data = request.json or {}
+        usdt_amount = min(float(data.get('usdt_amount', 0)), MAX_TRADE_USDT)
+        client = get_binance_client()
+        current_price = get_live_price()
+        sol_quantity = math.floor((usdt_amount / current_price) * 100) / 100.0
+        if sol_quantity > 0.01:
+            log_activity(f'MANUAL INTERVENTION: Executing forced Market BUY for {sol_quantity} SOL...', namespace=LIVE_NS)
+            client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
+            record_trade(LIVE_NS, 'BUY', sol_quantity, current_price, 'MANUAL', 'Manual market buy')
+            ns_set(LIVE_NS, 'position_opened_at', time.time())
+            time.sleep(1)
+            reconcile_live_state(client)
+            return jsonify({'status': 'success', 'message': f'Successfully purchased {sol_quantity} SOL.'})
+        return jsonify({'status': 'error', 'message': 'Calculated order size too low.'}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/sandbox/api/manual_buy', methods=['POST'])
+def sandbox_execute_manual_buy():
+    try:
+        data = request.json or {}
+        usdt_amount = float(data.get('usdt_amount', 0))
+        current_price = get_live_price()
+        usdt_bal = read_float_state(SANDBOX_NS, 'balance_usdt')
+        deploy = min(usdt_amount, usdt_bal)
+        sol_quantity = math.floor((deploy / current_price) * 100) / 100.0
+        if sol_quantity > 0.01:
+            ns_set(SANDBOX_NS, 'balance_usdt', round(usdt_bal - (sol_quantity * current_price), 4))
+            ns_set(SANDBOX_NS, 'balance_sol', round(read_float_state(SANDBOX_NS, 'balance_sol') + sol_quantity, 4))
+            ns_set(SANDBOX_NS, 'position_active', 'true')
+            ns_set(SANDBOX_NS, 'purchase_price', current_price)
+            ns_set(SANDBOX_NS, 'bot_tracked_qty', sol_quantity)
+            ns_set(SANDBOX_NS, 'position_opened_at', time.time())
+            record_trade(SANDBOX_NS, 'BUY', sol_quantity, current_price, 'MANUAL_PAPER', 'Manual paper buy')
+            log_activity(f'SANDBOX MANUAL BUY: Bought {sol_quantity} SOL at ${current_price:.2f}.', namespace=SANDBOX_NS)
+            return jsonify({'status': 'success', 'message': f'Paper bought {sol_quantity} SOL.'})
+        return jsonify({'status': 'error', 'message': 'Calculated order size too low.'}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/api/liquidate', methods=['POST'])
 def liquidate_to_usdt():
@@ -758,25 +909,32 @@ def liquidate_to_usdt():
         client = get_binance_client()
         current_price = get_live_price()
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-        bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
-
-        sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty if bot_tracked_qty > 0 else sol_bal) * 100) / 100.0
-
+        bot_tracked_qty = read_float_state(LIVE_NS, 'bot_tracked_qty', sol_bal)
+        sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
         if sol_to_liquidate > 0.01:
-            log_activity(f"MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.")
+            log_activity(f'MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.', namespace=LIVE_NS)
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
-            record_trade('SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
-            redis.set('position_active', 'false')
-            redis.delete('purchase_price')
-            redis.delete('bot_tracked_qty')
-            clear_position_tracking()
+            record_trade(LIVE_NS, 'SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
+            ns_set(LIVE_NS, 'position_active', 'false')
+            ns_delete(LIVE_NS, 'purchase_price', 'bot_tracked_qty')
+            clear_position_tracking(LIVE_NS)
             return jsonify({'status': 'success', 'message': f'Liquidated {sol_to_liquidate} SOL.'})
-        else:
-            return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
-
+        return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
     except Exception as e:
-        log_activity(f"Manual Liquidation Error: {e}")
+        log_activity(f'Manual Liquidation Error: {e}', namespace=LIVE_NS)
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/sandbox/api/liquidate', methods=['POST'])
+def sandbox_liquidate_to_usdt():
+    try:
+        current_price = get_live_price()
+        execute_paper_sell(SANDBOX_NS, current_price, 'Manual paper liquidation')
+        return jsonify({'status': 'success', 'message': 'Sandbox position liquidated.'})
+    except Exception as e:
+        log_activity(f'Sandbox Manual Liquidation Error: {e}', namespace=SANDBOX_NS)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
