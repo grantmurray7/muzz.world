@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>muzz.world - Trade History</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #2d3139; color: #ffffff; padding: 1.5rem; }
+        .card { background-color: #1f2226; border: 1px solid #434954; }
+        .table-row { border-bottom: 1px solid #343a44; }
+    </style>
+</head>
+<body class="font-sans antialiased">
+    <div class="flex items-end justify-between mb-5 gap-4">
+        <div>
+            <h1 class="text-4xl font-black tracking-tight leading-none">trade history</h1>
+            <p class="text-sm text-gray-400 font-mono mt-1">muzz.world execution ledger</p>
+        </div>
+        <div class="flex items-center gap-3 font-mono">
+            <div class="text-right">
+                <span class="text-xs text-gray-400 block uppercase font-bold">Total Trades</span>
+                <span id="tradeCount" class="text-2xl font-black text-green-400">0</span>
+            </div>
+            <a href="/" class="bg-gray-100 hover:bg-white text-gray-900 font-mono font-bold py-2.5 px-5 rounded text-sm uppercase tracking-wider transition shadow whitespace-nowrap">Dashboard</a>
+        </div>
+    </div>
+
+    <div class="card rounded p-4">
+        <div class="overflow-x-auto">
+            <table class="w-full font-mono text-sm">
+                <thead>
+                    <tr class="text-left text-gray-400 uppercase tracking-wider text-xs border-b border-gray-700">
+                        <th class="pb-3 pr-4">#</th>
+                        <th class="pb-3 pr-4">Time</th>
+                        <th class="pb-3 pr-4">Side</th>
+                        <th class="pb-3 pr-4 text-right">SOL</th>
+                        <th class="pb-3 pr-4 text-right">Price</th>
+                        <th class="pb-3 pr-4 text-right">USDT</th>
+                        <th class="pb-3 pr-4">Source</th>
+                        <th class="pb-3">Note</th>
+                    </tr>
+                </thead>
+                <tbody id="tradeRows">
+                    <tr><td colspan="8" class="py-5 text-gray-500">Loading trade history...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        async function fetchTrades() {
+            try {
+                const response = await fetch('/api/trades');
+                const data = await response.json();
+                document.getElementById('tradeCount').innerText = data.trade_count || 0;
+
+                const tradeRows = document.getElementById('tradeRows');
+                tradeRows.innerHTML = '';
+
+                if (!data.trades || data.trades.length === 0) {
+                    tradeRows.innerHTML = '<tr><td colspan="8" class="py-5 text-gray-500">No trades recorded yet.</td></tr>';
+                    return;
+                }
+
+                data.trades.forEach(trade => {
+                    const row = document.createElement('tr');
+                    row.className = 'table-row';
+                    const sideClass = trade.side === 'BUY' ? 'text-green-400' : 'text-red-400';
+                    row.innerHTML = `
+                        <td class="py-3 pr-4 text-gray-400">${trade.id}</td>
+                        <td class="py-3 pr-4 whitespace-nowrap">${trade.time || ''}</td>
+                        <td class="py-3 pr-4 font-black ${sideClass}">${trade.side}</td>
+                        <td class="py-3 pr-4 text-right">${Number(trade.quantity || 0).toFixed(4)}</td>
+                        <td class="py-3 pr-4 text-right">$${Number(trade.price || 0).toFixed(2)}</td>
+                        <td class="py-3 pr-4 text-right">$${Number(trade.notional_usdt || 0).toFixed(2)}</td>
+                        <td class="py-3 pr-4">${trade.source || ''}</td>
+                        <td class="py-3 text-gray-300">${trade.note || ''}</td>
+                    `;
+                    tradeRows.appendChild(row);
+                });
+            } catch (err) {
+                document.getElementById('tradeRows').innerHTML = '<tr><td colspan="8" class="py-5 text-red-400">Failed loading trade history.</td></tr>';
+            }
+        }
+
+        setInterval(fetchTrades, 10000);
+        fetchTrades();
+    </script>
+</body>
+</html>
