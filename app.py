@@ -667,7 +667,7 @@ def manual_set_position():
 def clear_logs():
     try:
         redis.delete('bot_logs')
-        log_activity("Terminal log wiped by operator.")
+        log_activity("Terminal log wiped by operator.", skip_db=True)
         return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
