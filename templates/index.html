@@ -114,7 +114,7 @@
                 <span class="uppercase font-bold tracking-wider text-sm">Spot Benchmark</span>
                 <div>
                     <span class="mr-1.5 text-sm soft">SOL/USDT</span>
-                    <span id="solPrice" class="font-black text-2xl spot-pink">$0.00</span>
+                    <span id="solPrice" class="font-black text-2xl spot-pink">$0.000</span>
                 </div>
             </div>
 
@@ -269,6 +269,10 @@
             return `$${Number(value || 0).toFixed(2)}`;
         }
 
+        function money3(value) {
+            return `$${Number(value || 0).toFixed(3)}`;
+        }
+
         function pct(value) {
             return `${Number(value || 0).toFixed(2)}%`;
         }
@@ -315,7 +319,7 @@
 
                 document.getElementById('balUsdt').innerText = money(data.balance_usdt);
                 document.getElementById('balSol').innerText = Number(data.balance_sol || 0).toFixed(4);
-                document.getElementById('solPrice').innerText = money(currentSpot);
+                document.getElementById('solPrice').innerText = money3(currentSpot);
                 document.getElementById('tradeCount').innerText = data.trade_count || 0;
                 document.getElementById('totalNetUsd').innerText = money(data.total_portfolio_usd);
                 document.getElementById('totalNetGbp').innerText = `£${Number(data.total_portfolio_gbp || 0).toFixed(2)}`;
