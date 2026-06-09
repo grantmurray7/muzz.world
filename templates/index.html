@@ -287,8 +287,19 @@
             return `$${Number(value || 0).toFixed(2)}`;
         }
 
-        function money3(value) {
-            return `$${Number(value || 0).toFixed(3)}`;
+        function formatSpotPrice(rawValue) {
+            const raw = String(rawValue ?? '0').trim();
+            if (!raw) return '$0.00';
+
+            const numeric = Number(raw);
+            if (!Number.isFinite(numeric)) return '$0.00';
+
+            if (!raw.includes('.')) {
+                return `$${numeric.toFixed(2)}`;
+            }
+
+            const trimmed = raw.replace(/0+$/, '').replace(/\.$/, '');
+            return `$${trimmed}`;
         }
 
         function pct(value) {
@@ -327,13 +338,14 @@
             try {
                 const response = await fetch(`${apiBase}/state`);
                 const data = await response.json();
-                const currentSpot = parseFloat(data.current_sol_price || 0);
+                const currentSpotRaw = data.current_sol_price || '0';
+                const currentSpot = parseFloat(currentSpotRaw || 0);
                 const strategy = data.strategy || {};
                 const profitPct = Number(strategy.profit_pct || 0);
 
                 document.getElementById('balUsdt').innerText = money(data.balance_usdt);
                 document.getElementById('balSol').innerText = Number(data.balance_sol || 0).toFixed(4);
-                document.getElementById('solPrice').innerText = money3(currentSpot);
+                document.getElementById('solPrice').innerText = formatSpotPrice(currentSpotRaw);
                 document.getElementById('tradeCount').innerText = data.trade_count || 0;
                 document.getElementById('totalNetUsd').innerText = money(data.total_portfolio_usd);
                 document.getElementById('totalNetGbp').innerText = `£${Number(data.total_portfolio_gbp || 0).toFixed(2)}`;
