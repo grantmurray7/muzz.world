@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gateway Login</title>
     <style>
+        :root { --accent-pink: rgb(237, 125, 175); }
         body {
             background-color: #0d1117;
             color: #c9d1d9;
@@ -42,20 +43,20 @@
             margin-bottom: 12px;
         }
         input[type="password"]:focus {
-            border-color: #58a6ff;
+            border-color: var(--accent-pink);
             outline: none;
         }
         button {
             width: 100%;
             padding: 8px;
-            background-color: #238636;
+            background-color: var(--accent-pink);
             color: #ffffff;
             border: 1px solid rgba(240,246,252,0.1);
             border-radius: 6px;
-            font-weight: 500;
+            font-weight: 700;
             cursor: pointer;
         }
-        button:hover { background-color: #2ea043; }
+        button:hover { filter: brightness(1.08); }
         .error { color: #f85149; font-size: 13px; margin-bottom: 12px; text-align: center; }
     </style>
 </head>
@@ -65,7 +66,7 @@
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
         <form method="POST">
             <input type="password" name="password" placeholder="Enter ADMIN_PASSWORD" required autofocus>
-            <button type="submit">Unlock System</button>
+            <button type="submit">Let's fuck</button>
         </form>
     </div>
 </body>
