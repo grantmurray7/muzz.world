@@ -5,6 +5,8 @@ import math
 import json
 import requests
 import queue
+from email.utils import formatdate
+from html import escape
 from threading import Thread
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from binance.client import Client
@@ -35,12 +37,13 @@ PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 5
 MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
 TRADE_HISTORY_LIMIT = 200
 LOG_HISTORY_LIMIT = 250
+RSS_STATUS_INTERVAL = 30
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
 # --- Authentication Guard ---
 @app.before_request
 def require_login():
-    allowed_routes = ['login', 'static', 'api/health', 'api/manual_buy']
+    allowed_routes = ['login', 'static', 'api/health', 'api/manual_buy', 'status_feed']
     if request.endpoint not in allowed_routes and not session.get('logged_in'):
         return redirect(url_for('login'))
 
@@ -164,6 +167,73 @@ def pct_change(from_price, to_price):
     if from_price <= 0:
         return 0.0
     return ((to_price - from_price) / from_price) * 100
+
+def read_float_state(key, default=0.0):
+    try:
+        return float(redis.get(key) or default)
+    except Exception:
+        return default
+
+def read_int_state(key, default=0):
+    try:
+        return int(redis.get(key) or default)
+    except Exception:
+        return default
+
+def build_status_feed_item(now=None):
+    now = now or time.time()
+    bucket_ts = int(now // RSS_STATUS_INTERVAL) * RSS_STATUS_INTERVAL
+    trade_count = read_int_state('trade_count')
+    bot_running = redis.get('bot_running') == 'true'
+    position_active = redis.get('position_active') == 'true'
+    engine_status = redis.get('engine_status') or 'Initializing...'
+    current_price = read_float_state('current_sol_price')
+    usdt_bal = read_float_state('balance_usdt')
+    sol_bal = read_float_state('balance_sol')
+    purchase_price = read_float_state('purchase_price')
+    buy_step = read_int_state('buy_sequence_step')
+    mode = 'SELL' if position_active else 'BUY'
+    running_label = 'RUNNING' if bot_running else 'PAUSED'
+
+    title_parts = [running_label, mode, engine_status, f'Trades: {trade_count}']
+    if current_price > 0:
+        title_parts.insert(2, f'SOL ${current_price:.2f}')
+
+    description_parts = [
+        f'Status: {engine_status}',
+        f'Mode: {mode}',
+        f'Running: {running_label}',
+        f'Total trades: {trade_count}',
+        f'SOL spot: ${current_price:.2f}',
+        f'USDT: ${usdt_bal:.2f}',
+        f'SOL held: {sol_bal:.4f}'
+    ]
+
+    if position_active and purchase_price > 0:
+        target_price = purchase_price * SELL_TARGET_MULTIPLIER
+        profit_pct = pct_change(purchase_price, current_price)
+        description_parts.extend([
+            f'Entry: ${purchase_price:.2f}',
+            f'Sell target: ${target_price:.2f} (+0.35%)',
+            f'Current move: {profit_pct:+.2f}%'
+        ])
+    else:
+        description_parts.extend([
+            f'Buy steps: {min(buy_step, 3)}/3',
+            'Buy rule: $0.10 below 2m anchor, then two +$0.01 rebounds'
+        ])
+
+    latest_logs = redis.lrange('bot_logs', 0, 0)
+    if latest_logs:
+        description_parts.append(f'Latest log: {latest_logs[0]}')
+
+    return {
+        'bucket_ts': bucket_ts,
+        'pub_date': formatdate(bucket_ts, usegmt=True),
+        'title': ' | '.join(title_parts),
+        'description': '\n'.join(description_parts),
+        'guid': f'muzz-world-status-{bucket_ts}'
+    }
 
 # --- Truth Reconciliation Engine ---
 def reconcile_state_against_binance(client):
@@ -481,6 +551,40 @@ def index():
 @app.route('/trades')
 def trade_history_page():
     return render_template('trade_history.html')
+
+@app.route('/feed.xml', methods=['GET'])
+def status_feed():
+    try:
+        item = build_status_feed_item()
+        now = time.time()
+        feed_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>muzz.world bot status</title>
+    <link>https://muzz.world/</link>
+    <description>SOL trading bot status heartbeat every {RSS_STATUS_INTERVAL} seconds.</description>
+    <language>en-gb</language>
+    <ttl>1</ttl>
+    <lastBuildDate>{formatdate(now, usegmt=True)}</lastBuildDate>
+    <item>
+      <title>{escape(item['title'])}</title>
+      <link>https://muzz.world/</link>
+      <guid isPermaLink="false">{escape(item['guid'])}</guid>
+      <pubDate>{item['pub_date']}</pubDate>
+      <description>{escape(item['description'])}</description>
+    </item>
+  </channel>
+</rss>'''
+        response = app.response_class(feed_xml, mimetype='application/rss+xml')
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        return response
+    except Exception as e:
+        return app.response_class(
+            f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>muzz.world bot status</title><item><title>Feed error</title><description>{escape(str(e))}</description></item></channel></rss>',
+            mimetype='application/rss+xml',
+            status=500
+        )
 
 @app.route('/api/trades', methods=['GET'])
 def get_trades():
