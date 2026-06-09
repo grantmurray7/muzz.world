@@ -10,8 +10,6 @@
     <style>
         :root {
             --accent-pink: rgb(237, 125, 175);
-            --panel: #161922;
-            --panel-border: rgba(255, 255, 255, 0.08);
             --page: #0b0d14;
         }
         * { box-sizing: border-box; }
@@ -28,20 +26,20 @@
         }
         .login-card {
             width: min(520px, calc(100vw - 24px));
-            padding: 22px 18px 18px;
-            border-radius: 14px;
-            border: 1px solid var(--panel-border);
-            background: linear-gradient(180deg, #1a1e28 0%, #151922 100%);
-            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            box-shadow: none;
         }
         .login-logo {
             display: block;
             width: min(72%, 360px);
             height: auto;
-            margin: 0 auto 14px;
+            margin: 0 auto 30px;
         }
         .password-wrap {
-            margin: 0 auto 10px;
+            margin: 0 auto 14px;
             width: min(100%, 280px);
         }
         input[type="password"] {
@@ -95,7 +93,7 @@
             right: 8px;
             bottom: -1px;
             z-index: 1;
-            width: min(28%, 122px);
+            width: min(36%, 158px);
             height: auto;
             pointer-events: none;
             user-select: none;
@@ -108,14 +106,13 @@
             text-align: center;
         }
         @media (max-width: 700px) {
-            .login-card { padding: 18px 14px 14px; }
-            .login-logo { width: 82%; }
+            .login-logo { width: 82%; margin-bottom: 24px; }
             .password-wrap, .cta { width: min(100%, 280px); }
             button {
                 min-height: 120px;
                 padding: 16px 114px 16px 14px;
             }
-            .cta-figure { width: min(32%, 108px); right: 6px; bottom: -1px; }
+            .cta-figure { width: min(38%, 138px); right: 6px; bottom: -1px; }
         }
     </style>
 </head>
