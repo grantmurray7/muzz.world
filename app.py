@@ -115,6 +115,12 @@ def find_anchor_price(samples, anchor_ts):
 
     return anchor_price
 
+def get_cache_age_seconds(samples, now):
+    valid_timestamps = [sample['ts'] for sample in samples if sample.get('ts', 0.0) > 0]
+    if not valid_timestamps:
+        return 0
+    return max(0, int(now - min(valid_timestamps)))
+
 def pct_change(from_price, to_price):
     if from_price <= 0:
         return 0.0
@@ -221,7 +227,11 @@ def run_trading_bot():
             if not position_active:
                 samples = load_price_samples()
                 now = time.time()
+                cache_age_seconds = get_cache_age_seconds(samples, now)
                 anchor_price = find_anchor_price(samples, now - LOOKBACK_SECONDS)
+
+                if anchor_price is None and cache_age_seconds >= LOOKBACK_SECONDS and samples:
+                    anchor_price = samples[0]['price']
 
                 if (now - last_signal_check) < SIGNAL_EVALUATION_INTERVAL:
                     time.sleep(SAMPLE_INTERVAL)
@@ -231,9 +241,12 @@ def run_trading_bot():
                 buy_triggered = False
                 thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
 
-                if len(samples) < 4 or anchor_price is None:
-                    warm_seconds = min(len(samples) * SAMPLE_INTERVAL, LOOKBACK_SECONDS)
-                    thought_msg += f" | Warming 2m price cache ({warm_seconds}/{LOOKBACK_SECONDS}s via 10s polls)..."
+                if len(samples) < 4 or cache_age_seconds < LOOKBACK_SECONDS or anchor_price is None:
+                    warm_seconds = min(cache_age_seconds, LOOKBACK_SECONDS)
+                    thought_msg += (
+                        f" | Warming 2m price cache ({warm_seconds}/{LOOKBACK_SECONDS}s real age, "
+                        f"{len(samples)} samples)..."
+                    )
                     log_activity(thought_msg)
                     redis.set('engine_status', 'WARMING_2M_CACHE')
                     continue
