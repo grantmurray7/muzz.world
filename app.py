@@ -220,10 +220,11 @@ last_price_recorded_second = None
 SYMBOL = 'SOLUSDT'
 SAMPLE_INTERVAL = 1
 LOOKBACK_SECONDS = 120
-UPLIFT_THRESHOLD_PCT = 0.02
 AUTO_BUY_ALLOCATION = 0.95
-SELL_TARGET_PCT = 0.60
-SELL_TARGET_MULTIPLIER = 1 + (SELL_TARGET_PCT / 100)
+ARM_GAP_USD = 0.25
+REBOUND_BUY_USD = 0.05
+SELL_TARGET_USD = 0.35
+STOP_LOSS_USD = 0.08
 PRICE_HISTORY_LIMIT = LOOKBACK_SECONDS + 30
 MAX_TRADE_USDT = 50.00
 TRADE_HISTORY_LIMIT = 200
@@ -539,7 +540,19 @@ def reset_position_state(namespace, setup='Position reset to cash mode'):
     ns_set(namespace, 'position_active', 'false')
     ns_delete(namespace, 'purchase_price', 'bot_tracked_qty')
     clear_position_tracking(namespace)
-    set_strategy_snapshot(namespace, mode='BUY', setup=setup)
+    set_strategy_snapshot(
+        namespace,
+        mode='BUY',
+        setup=setup,
+        armed_low='0',
+        anchor_gap_usd='0',
+        rebound_progress_usd='0',
+        buy_progress_pct='0',
+        target_price='0',
+        stop_price='0',
+        profit_usd='0',
+        position_status=''
+    )
 
 
 def sanitize_position_state(namespace, actual_sol_balance, source_label):
@@ -580,27 +593,27 @@ def build_status_feed_item(namespace, now=None):
     running_label = 'RUNNING' if bot_running else 'PAUSED'
 
     if position_active and purchase_price > 0:
-        target_price = purchase_price * SELL_TARGET_MULTIPLIER
-        profit_pct = pct_change(purchase_price, current_price)
-        progress_pct = max(0.0, min(100.0, (profit_pct / SELL_TARGET_PCT) * 100))
-        remaining_pct = max(0.0, SELL_TARGET_PCT - profit_pct)
+        target_price = purchase_price + SELL_TARGET_USD
+        stop_price = purchase_price - STOP_LOSS_USD
+        profit_usd = current_price - purchase_price
+        progress_pct = max(0.0, min(100.0, ((profit_usd + STOP_LOSS_USD) / (SELL_TARGET_USD + STOP_LOSS_USD)) * 100))
         remaining_usd = max(0.0, target_price - current_price)
         title = '\n'.join([
             f'{running_label} | SELL | SOL ${current_price:.2f}',
-            f'Progress: {profit_pct:+.2f}% / +{SELL_TARGET_PCT:.2f}% ({progress_pct:.0f}%)',
-            f'Entry ${purchase_price:.2f} -> Target ${target_price:.2f}',
-            f'To go: {remaining_pct:.2f}% / ${remaining_usd:.2f} | Trades: {trade_count}'
+            f'Progress: ${profit_usd:+.2f} | Target +${SELL_TARGET_USD:.2f} ({progress_pct:.0f}%)',
+            f'Entry ${purchase_price:.2f} -> Target ${target_price:.2f} | Stop ${stop_price:.2f}',
+            f'To go: ${remaining_usd:.2f} | Trades: {trade_count}'
         ])
     else:
         anchor_price = read_float_state(namespace, 'strategy_anchor_price')
-        anchor_delta = read_float_state(namespace, 'strategy_anchor_delta')
-        uplift_1 = read_float_state(namespace, 'strategy_uplift_1')
-        uplift_2 = read_float_state(namespace, 'strategy_uplift_2')
-        uplift_3 = read_float_state(namespace, 'strategy_uplift_3')
+        anchor_gap_usd = read_float_state(namespace, 'strategy_anchor_gap_usd')
+        armed_low = read_float_state(namespace, 'strategy_armed_low')
+        rebound_progress_usd = read_float_state(namespace, 'strategy_rebound_progress_usd')
         title = '\n'.join([
             f'{running_label} | BUY | SOL ${current_price:.2f}',
-            'Rebound setup: 3 x +0.02% while below 2m anchor',
-            f'Anchor ${anchor_price:.2f} ({anchor_delta:+.2f}%) | Uplifts {uplift_1:+.2f}/{uplift_2:+.2f}/{uplift_3:+.2f}',
+            'Armed rebound: 2m anchor gap then 5c bounce',
+            f'Anchor ${anchor_price:.2f} | Gap ${anchor_gap_usd:.2f} | Armed low ${armed_low:.2f}',
+            f'Rebound progress ${rebound_progress_usd:.2f} / ${REBOUND_BUY_USD:.2f} | USDT ${usdt_bal:.2f}',
             f'USDT ${usdt_bal:.2f}'
         ])
     description_parts = [
@@ -660,7 +673,7 @@ def reconcile_live_state(client):
         return False
 
 
-def execute_paper_buy(namespace, price, note='2m anchor rebound'):
+def execute_paper_buy(namespace, price, note='armed 2m rebound'):
     usdt_bal = read_float_state(namespace, 'balance_usdt')
     usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
     if usdt_alloc < 5.0:
@@ -774,50 +787,52 @@ def run_namespaced_trader(namespace, paper=False):
                         mode='BUY',
                         setup=f'Warming 2m anchor cache ({warm_seconds}/{LOOKBACK_SECONDS}s)',
                         anchor_price='0',
-                        anchor_delta='0',
-                        uplift_1='0',
-                        uplift_2='0',
-                        uplift_3='0',
+                        anchor_gap_usd='0',
+                        armed_low='0',
+                        rebound_progress_usd='0',
+                        buy_progress_pct='0',
                         position_status=''
                     )
                     time.sleep(SAMPLE_INTERVAL)
                     continue
 
-                latest_prices = [sample['price'] for sample in samples[-4:]]
-                uplift_1 = pct_change(latest_prices[0], latest_prices[1])
-                uplift_2 = pct_change(latest_prices[1], latest_prices[2])
-                uplift_3 = pct_change(latest_prices[2], latest_prices[3])
-                anchor_delta = pct_change(anchor_price, current_price)
-                below_anchor = current_price < anchor_price
-                uplift_confirmed = all(step >= UPLIFT_THRESHOLD_PCT for step in (uplift_1, uplift_2, uplift_3))
-
-                if below_anchor and uplift_confirmed:
-                    setup = 'Rebound confirmed below 2m anchor'
-                    engine_status = 'REBOUND_CONFIRMED'
-                elif below_anchor:
-                    setup = 'Below 2m anchor, waiting for 3 uplifts'
-                    engine_status = 'BELOW_2M_ANCHOR'
+                anchor_gap_usd = max(0.0, anchor_price - current_price)
+                armed_low = read_float_state(namespace, 'strategy_armed_low')
+                if anchor_gap_usd >= ARM_GAP_USD:
+                    if armed_low <= 0 or current_price < armed_low:
+                        armed_low = current_price
+                    rebound_progress_usd = max(0.0, current_price - armed_low)
+                    buy_progress_pct = min(100.0, (rebound_progress_usd / REBOUND_BUY_USD) * 100)
+                    if rebound_progress_usd >= REBOUND_BUY_USD:
+                        setup = f'Armed low ${armed_low:.2f}; rebound confirmed'
+                        engine_status = 'REBOUND_CONFIRMED'
+                    else:
+                        setup = f'Armed at ${armed_low:.2f}; waiting for +${REBOUND_BUY_USD:.2f} rebound'
+                        engine_status = 'ARMED_WAITING_FOR_REBOUND'
                 else:
-                    setup = 'Waiting for price to move back below 2m anchor'
-                    engine_status = 'WAITING_BELOW_2M_ANCHOR'
+                    armed_low = 0.0
+                    rebound_progress_usd = 0.0
+                    buy_progress_pct = min(100.0, (anchor_gap_usd / ARM_GAP_USD) * 100)
+                    setup = f'Waiting for ${ARM_GAP_USD:.2f} gap below 2m anchor'
+                    engine_status = 'WAITING_FOR_ARM'
 
                 set_strategy_snapshot(
                     namespace,
                     mode='BUY',
                     setup=setup,
                     anchor_price=f'{anchor_price:.6f}',
-                    anchor_delta=f'{anchor_delta:.4f}',
-                    uplift_1=f'{uplift_1:.4f}',
-                    uplift_2=f'{uplift_2:.4f}',
-                    uplift_3=f'{uplift_3:.4f}',
+                    anchor_gap_usd=f'{anchor_gap_usd:.4f}',
+                    armed_low=f'{armed_low:.6f}',
+                    rebound_progress_usd=f'{rebound_progress_usd:.4f}',
+                    buy_progress_pct=f'{buy_progress_pct:.2f}',
                     position_status=''
                 )
                 ns_set(namespace, 'engine_status', engine_status)
 
-                if below_anchor and uplift_confirmed:
+                if anchor_gap_usd >= ARM_GAP_USD and rebound_progress_usd >= REBOUND_BUY_USD:
                     buy_reason = (
-                        f'3 x +{UPLIFT_THRESHOLD_PCT:.2f}% uplifts while '
-                        f'price remains {anchor_delta:+.2f}% vs 2m anchor ${anchor_price:.2f}'
+                        f'2m anchor ${anchor_price:.2f} kept a ${anchor_gap_usd:.2f} gap; '
+                        f'price rebounded ${rebound_progress_usd:.2f} from armed low ${armed_low:.2f}'
                     )
                     if paper:
                         execute_paper_buy(namespace, current_price, buy_reason)
@@ -847,24 +862,28 @@ def run_namespaced_trader(namespace, paper=False):
                         else:
                             log_activity('Auto buy aborted: available balance under operational thresholds.', namespace=namespace)
             else:
-                target_price = purchase_price * SELL_TARGET_MULTIPLIER
-                profit_pct = pct_change(purchase_price, current_price)
+                target_price = purchase_price + SELL_TARGET_USD
+                stop_price = purchase_price - STOP_LOSS_USD
+                profit_usd = current_price - purchase_price
                 opened_at = read_float_state(namespace, 'position_opened_at', time.time())
                 seconds_open = max(0, int(time.time() - opened_at))
                 set_strategy_snapshot(
                     namespace,
                     mode='SELL',
-                    setup='Holding for +0.60% exit',
+                    setup=f'Holding for +${SELL_TARGET_USD:.2f} / -${STOP_LOSS_USD:.2f}',
                     target_price=f'{target_price:.6f}',
-                    profit_pct=f'{profit_pct:.4f}',
+                    stop_price=f'{stop_price:.6f}',
+                    profit_usd=f'{profit_usd:.4f}',
                     seconds_open=str(seconds_open),
-                    position_status='Holding until target is hit'
+                    position_status='Holding until target or stop is hit'
                 )
-                ns_set(namespace, 'engine_status', 'HOLDING_FOR_+0.60%_EXIT')
+                ns_set(namespace, 'engine_status', 'MANAGING_REBOUND_POSITION')
 
                 sell_note = None
                 if current_price >= target_price:
-                    sell_note = f'Target hit at +{SELL_TARGET_PCT:.2f}%'
+                    sell_note = f'Target hit at +${SELL_TARGET_USD:.2f}'
+                elif current_price <= stop_price:
+                    sell_note = f'Stop hit at -${STOP_LOSS_USD:.2f}'
 
                 if sell_note:
                     if paper:
@@ -910,8 +929,10 @@ def build_state_payload(namespace):
     current_price = read_float_state(namespace, 'current_sol_price')
     trade_count = read_int_state(namespace, 'trade_count')
     purchase_price = read_float_state(namespace, 'purchase_price')
-    target_price = purchase_price * SELL_TARGET_MULTIPLIER if purchase_price > 0 else 0.0
+    target_price = purchase_price + SELL_TARGET_USD if purchase_price > 0 else 0.0
+    stop_price = purchase_price - STOP_LOSS_USD if purchase_price > 0 else 0.0
     profit_pct = pct_change(purchase_price, current_price) if purchase_price > 0 else 0.0
+    profit_usd = (current_price - purchase_price) if purchase_price > 0 else 0.0
     seconds_open = 0
     if purchase_price > 0:
         seconds_open = max(0, int(time.time() - read_float_state(namespace, 'position_opened_at', time.time())))
@@ -943,12 +964,14 @@ def build_state_payload(namespace):
             'mode': read_text_state(namespace, 'strategy_mode'),
             'setup': read_text_state(namespace, 'strategy_setup'),
             'anchor_price': read_float_state(namespace, 'strategy_anchor_price'),
-            'anchor_delta': read_float_state(namespace, 'strategy_anchor_delta'),
-            'uplift_1': read_float_state(namespace, 'strategy_uplift_1'),
-            'uplift_2': read_float_state(namespace, 'strategy_uplift_2'),
-            'uplift_3': read_float_state(namespace, 'strategy_uplift_3'),
+            'anchor_gap_usd': read_float_state(namespace, 'strategy_anchor_gap_usd'),
+            'armed_low': read_float_state(namespace, 'strategy_armed_low'),
+            'rebound_progress_usd': read_float_state(namespace, 'strategy_rebound_progress_usd'),
+            'buy_progress_pct': read_float_state(namespace, 'strategy_buy_progress_pct'),
             'target_price': target_price,
+            'stop_price': stop_price,
             'profit_pct': profit_pct,
+            'profit_usd': profit_usd,
             'seconds_open': seconds_open,
             'position_status': read_text_state(namespace, 'strategy_position_status')
         },

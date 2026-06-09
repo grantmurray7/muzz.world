@@ -63,6 +63,7 @@
         .signal-box { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; background: rgba(0,0,0,0.22); border: 1px solid #343a44; border-radius: 0.5rem; padding: 0.72rem 0.85rem; }
         .signal-label { color: #ffffff; font-size: 0.9rem; font-weight: 800; line-height: 1.1; }
         .signal-value { color: #ffffff; font-size: 1rem; font-weight: 800; line-height: 1.1; text-align: right; white-space: nowrap; }
+        .signal-box.blank { opacity: 0; pointer-events: none; }
         .meter-shell { margin-top: 0.8rem; }
         .meter-track { position: relative; height: 14px; border-radius: 999px; overflow: hidden; background: linear-gradient(90deg, rgba(255,107,107,0.22) 0%, rgba(255,107,107,0.12) 38%, rgba(82,229,164,0.12) 62%, rgba(82,229,164,0.28) 100%); border: 1px solid #343a44; }
         .meter-fill { position: absolute; inset: 0 auto 0 0; width: 50%; background: linear-gradient(90deg, rgba(255,107,107,0.55), rgba(237,125,175,0.72), rgba(82,229,164,0.78)); }
@@ -152,19 +153,27 @@
                     </div>
                     <div class="signal-box">
                         <span class="signal-label">Anchor Gap</span>
-                        <span id="anchorDelta" class="signal-value">0.00%</span>
+                        <span id="anchorGap" class="signal-value">$0.00</span>
                     </div>
                     <div class="signal-box">
-                        <span class="signal-label">Uplift 1</span>
-                        <span id="upliftOne" class="signal-value">0.00%</span>
+                        <span class="signal-label">Armed Low</span>
+                        <span id="armedLow" class="signal-value">N/A</span>
                     </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Uplift 2</span>
-                        <span id="upliftTwo" class="signal-value">0.00%</span>
+                </div>
+
+                <div class="meter-shell mono">
+                    <div class="flex items-center justify-between text-xs uppercase tracking-wider mb-1">
+                        <span class="soft">Buy Meter</span>
+                        <span id="buyMeterHeadline" class="text-white font-bold">Waiting for arm</span>
                     </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Uplift 3</span>
-                        <span id="upliftThree" class="signal-value">0.00%</span>
+                    <div class="meter-track">
+                        <div id="buyMeterFill" class="meter-fill"></div>
+                        <div id="buyMeterMarker" class="meter-marker" style="left: 0%;"></div>
+                    </div>
+                    <div class="meter-legend">
+                        <span>Arm $0.25</span>
+                        <span id="buyMeterMidLabel">Rebound flat</span>
+                        <span>Buy +$0.05</span>
                     </div>
                 </div>
 
@@ -182,7 +191,7 @@
                 <div class="summary-head">
                     <div class="summary-copy">
                         <p class="section-title mono text-white">Open Position</p>
-                        <p class="section-copy mono">Hold until +0.60%. No hard stop.</p>
+                        <p class="section-copy mono">Hold for +$0.35 target or -$0.08 stop.</p>
                     </div>
                     <div class="summary-stat">
                         <span class="summary-stat-label mono">Held Tokens</span>
@@ -200,8 +209,8 @@
                         <span id="targetSellPrice" class="signal-value">N/A</span>
                     </div>
                     <div class="signal-box">
-                        <span class="signal-label">Status</span>
-                        <span id="positionStatus" class="signal-value">Waiting</span>
+                        <span class="signal-label">Stop Exit</span>
+                        <span id="stopPrice" class="signal-value">N/A</span>
                     </div>
                     <div class="signal-box">
                         <span class="signal-label">P/L</span>
@@ -210,6 +219,10 @@
                     <div class="signal-box">
                         <span class="signal-label">Seconds Open</span>
                         <span id="secondsOpen" class="signal-value">0s</span>
+                    </div>
+                    <div class="signal-box">
+                        <span class="signal-label">Status</span>
+                        <span id="positionStatus" class="signal-value">Waiting</span>
                     </div>
                 </div>
 
@@ -225,7 +238,7 @@
                     <div class="meter-legend">
                         <span>Entry</span>
                         <span id="meterMidLabel">Current Flat</span>
-                        <span>Target +0.60%</span>
+                        <span>Target +$0.35</span>
                     </div>
                 </div>
 
@@ -281,7 +294,10 @@
     <script>
         let currentBotRunningState = null;
         const apiBase = '{{ api_base or "/api" }}';
-        const sellTargetPct = 0.60;
+        const buyArmUsd = 0.25;
+        const buyReboundUsd = 0.05;
+        const sellTargetUsd = 0.35;
+        const stopLossUsd = 0.08;
 
         function money(value) {
             return `$${Number(value || 0).toFixed(2)}`;
@@ -306,7 +322,28 @@
             return `${Number(value || 0).toFixed(2)}%`;
         }
 
-        function updateHoldMeter(positionActive, profitPct) {
+        function updateBuyMeter(anchorGapUsd, reboundProgressUsd, buyProgressPct) {
+            const marker = document.getElementById('buyMeterMarker');
+            const fill = document.getElementById('buyMeterFill');
+            const headline = document.getElementById('buyMeterHeadline');
+            const midLabel = document.getElementById('buyMeterMidLabel');
+            const progress = Math.max(0, Math.min(100, Number(buyProgressPct || 0)));
+            marker.style.left = `${progress}%`;
+            fill.style.width = `${progress}%`;
+
+            if (anchorGapUsd < buyArmUsd) {
+                headline.innerText = `Gap ${money(anchorGapUsd)} / ${money(buyArmUsd)}`;
+                midLabel.innerText = 'Waiting for arm';
+            } else if (reboundProgressUsd < buyReboundUsd) {
+                headline.innerText = `Rebound ${money(reboundProgressUsd)} / ${money(buyReboundUsd)}`;
+                midLabel.innerText = `${progress.toFixed(0)}% to buy`;
+            } else {
+                headline.innerText = 'Buy condition met';
+                midLabel.innerText = 'Ready to buy';
+            }
+        }
+
+        function updateHoldMeter(positionActive, profitUsd) {
             const marker = document.getElementById('holdMeterMarker');
             const fill = document.getElementById('holdMeterFill');
             const headline = document.getElementById('meterHeadline');
@@ -320,14 +357,16 @@
                 return;
             }
 
-            const progress = Math.max(0, Math.min(100, (profitPct / sellTargetPct) * 100));
+            const progress = Math.max(0, Math.min(100, ((profitUsd + stopLossUsd) / (sellTargetUsd + stopLossUsd)) * 100));
             marker.style.left = `${progress}%`;
             fill.style.width = `${progress}%`;
-            headline.innerText = `${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(2)}% live`;
+            headline.innerText = `${profitUsd >= 0 ? '+' : ''}${money(profitUsd).replace('$', '')} live`;
 
-            if (profitPct >= sellTargetPct) {
+            if (profitUsd >= sellTargetUsd) {
                 midLabel.innerText = 'Cash-out zone';
-            } else if (profitPct >= 0) {
+            } else if (profitUsd <= -stopLossUsd) {
+                midLabel.innerText = 'Stop zone';
+            } else if (profitUsd >= 0) {
                 midLabel.innerText = `${progress.toFixed(0)}% of target`;
             } else {
                 midLabel.innerText = 'Below entry';
@@ -341,7 +380,10 @@
                 const currentSpotRaw = data.current_sol_price || '0';
                 const currentSpot = parseFloat(currentSpotRaw || 0);
                 const strategy = data.strategy || {};
-                const profitPct = Number(strategy.profit_pct || 0);
+                const profitUsd = Number(strategy.profit_usd || 0);
+                const anchorGapUsd = Number(strategy.anchor_gap_usd || 0);
+                const reboundProgressUsd = Number(strategy.rebound_progress_usd || 0);
+                const buyProgressPct = Number(strategy.buy_progress_pct || 0);
 
                 document.getElementById('balUsdt').innerText = money(data.balance_usdt);
                 document.getElementById('balSol').innerText = Number(data.balance_sol || 0).toFixed(4);
@@ -351,12 +393,11 @@
                 document.getElementById('totalNetGbp').innerText = `£${Number(data.total_portfolio_gbp || 0).toFixed(2)}`;
                 document.getElementById('setupText').innerText = strategy.setup || 'Waiting for state...';
                 document.getElementById('anchorPrice').innerText = strategy.anchor_price > 0 ? money(strategy.anchor_price) : 'N/A';
-                document.getElementById('anchorDelta').innerText = pct(strategy.anchor_delta);
-                document.getElementById('upliftOne').innerText = pct(strategy.uplift_1);
-                document.getElementById('upliftTwo').innerText = pct(strategy.uplift_2);
-                document.getElementById('upliftThree').innerText = pct(strategy.uplift_3);
+                document.getElementById('anchorGap').innerText = money(anchorGapUsd);
+                document.getElementById('armedLow').innerText = strategy.armed_low > 0 ? money(strategy.armed_low) : 'N/A';
                 document.getElementById('openingPurchasePrice').innerText = Number(data.purchase_price || 0) > 0 ? money(data.purchase_price) : 'N/A';
                 document.getElementById('targetSellPrice').innerText = strategy.target_price > 0 ? money(strategy.target_price) : 'N/A';
+                document.getElementById('stopPrice').innerText = strategy.stop_price > 0 ? money(strategy.stop_price) : 'N/A';
                 document.getElementById('positionStatus').innerText = strategy.position_status || 'Waiting';
                 document.getElementById('secondsOpen').innerText = `${strategy.seconds_open || 0}s`;
                 document.getElementById('websocketStatus').innerText = `${data.websocket_status || 'UNKNOWN'} | ${Number(data.market_data_age || 0).toFixed(1)}s`;
@@ -396,14 +437,15 @@
 
                 const plEl = document.getElementById('marginDeltaGap');
                 if (data.position_active) {
-                    plEl.innerText = `${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(2)}% / +0.60%`;
-                    plEl.className = `info-value ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`;
+                    plEl.innerText = `${profitUsd >= 0 ? '+' : '-'}${money(Math.abs(profitUsd)).replace('$', '$')} / +$0.35`;
+                    plEl.className = `signal-value ${profitUsd >= 0 ? 'text-green-400' : 'text-red-400'}`;
                 } else {
                     plEl.innerText = 'N/A';
-                    plEl.className = 'info-value';
+                    plEl.className = 'signal-value';
                 }
 
-                updateHoldMeter(data.position_active, profitPct);
+                updateBuyMeter(anchorGapUsd, reboundProgressUsd, buyProgressPct);
+                updateHoldMeter(data.position_active, profitUsd);
 
                 const logBox = document.getElementById('logBox');
                 logBox.innerHTML = '';
