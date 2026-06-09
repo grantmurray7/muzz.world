@@ -50,11 +50,11 @@
 </head>
 <body class="font-sans antialiased">
 
-    <div class="flex justify-between items-end mb-4 px-1 gap-4">
-        <div class="flex flex-col flex-shrink-0">
+    <div class="flex items-center justify-between gap-4 mb-4 px-1 min-h-[92px]">
+        <div class="flex items-center flex-shrink-0 self-center h-full">
             <img class="dashboard-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world">
         </div>
-        <div class="flex-1 flex justify-center items-center gap-2 font-mono">
+        <div class="flex-1 flex items-center justify-center self-center gap-2 font-mono h-full">
             <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="accent-btn font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition duration-150 whitespace-nowrap">
                 SYNCHRONIZING...
             </button>
@@ -65,7 +65,7 @@
                 LOGOUT
             </a>
         </div>
-        <div class="flex items-center space-x-4 text-sm font-mono flex-shrink-0">
+        <div class="flex items-center self-center flex-shrink-0 space-x-4 text-sm font-mono h-full">
             <div class="text-right leading-tight text-base">
                 <span id="totalNetUsd" class="text-green-400 font-black">$0.00</span>
                 <span class="text-gray-500 mx-1.5">|</span>
