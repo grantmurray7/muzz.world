@@ -1,5 +1,5 @@
 Flask
 python-binance
 upstash-redis
-requests[socks]
+requests
 gunicorn
