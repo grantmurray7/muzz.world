@@ -25,17 +25,20 @@ redis = Redis.from_env()
 log_queue = queue.Queue()
 price_state_lock = Lock()
 
-# --- Hard Safety Bounds ---
+# --- Strategy Bounds ---
 SYMBOL = 'SOLUSDT'
-SAMPLE_INTERVAL = 10
-SIGNAL_EVALUATION_INTERVAL = 10
-LOOKBACK_SECONDS = 120
-BUY_DIP_FROM_ANCHOR_USD = 0.10
-BUY_REBOUND_STEP_USD = 0.01
+SAMPLE_INTERVAL = 1
+SCALP_WINDOW_SECONDS = 90
+DROP_TRIGGER_PCT = -0.15
+BOUNCE_TRIGGER_PCT = 0.05
 AUTO_BUY_ALLOCATION = 0.95
-SELL_TARGET_MULTIPLIER = 1.0035
-PRICE_HISTORY_LIMIT = int(LOOKBACK_SECONDS / SAMPLE_INTERVAL) + 24
-MAX_TRADE_USDT = 50.00  # Manual intervention ceiling
+SELL_TARGET_PCT = 0.20
+SELL_TARGET_MULTIPLIER = 1 + (SELL_TARGET_PCT / 100)
+FAIL_TO_LAUNCH_SECONDS = 30
+FAIL_TO_LAUNCH_MIN_PCT = 0.05
+HARD_STOP_PCT = -0.12
+PRICE_HISTORY_LIMIT = 1500
+MAX_TRADE_USDT = 50.00
 TRADE_HISTORY_LIMIT = 200
 LOG_HISTORY_LIMIT = 250
 RSS_STATUS_INTERVAL = 30
@@ -203,26 +206,10 @@ def load_price_samples():
 
     return parsed_samples
 
-def find_anchor_price(samples, anchor_ts):
-    anchor_price = None
-
-    for sample in samples:
-        if sample['ts'] <= anchor_ts:
-            anchor_price = sample['price']
-        else:
-            break
-
-    return anchor_price
-
-def get_cache_age_seconds(samples, now):
-    valid_timestamps = [sample['ts'] for sample in samples if sample.get('ts', 0.0) > 0]
-    if not valid_timestamps:
-        return 0
-    return max(0, int(now - min(valid_timestamps)))
-
-def reset_buy_sequence():
-    redis.delete('buy_sequence_step')
-    redis.delete('buy_sequence_last_price')
+def get_recent_samples(samples, seconds, now=None):
+    now = now or time.time()
+    cutoff = now - seconds
+    return [sample for sample in samples if sample.get('ts', 0.0) >= cutoff]
 
 def pct_change(from_price, to_price):
     if from_price <= 0:
@@ -241,6 +228,10 @@ def read_int_state(key, default=0):
     except Exception:
         return default
 
+def clear_position_tracking():
+    redis.delete('position_opened_at')
+    redis.delete('entry_progress_armed')
+
 def build_status_feed_item(now=None):
     now = now or time.time()
     bucket_ts = int(now // RSS_STATUS_INTERVAL) * RSS_STATUS_INTERVAL
@@ -252,18 +243,17 @@ def build_status_feed_item(now=None):
     usdt_bal = read_float_state('balance_usdt')
     sol_bal = read_float_state('balance_sol')
     purchase_price = read_float_state('purchase_price')
-    buy_step = read_int_state('buy_sequence_step')
     running_label = 'RUNNING' if bot_running else 'PAUSED'
 
     if position_active and purchase_price > 0:
         target_price = purchase_price * SELL_TARGET_MULTIPLIER
         profit_pct = pct_change(purchase_price, current_price)
-        progress_pct = max(0.0, min(100.0, (profit_pct / 0.35) * 100))
-        remaining_pct = max(0.0, 0.35 - profit_pct)
+        progress_pct = max(0.0, min(100.0, (profit_pct / SELL_TARGET_PCT) * 100))
+        remaining_pct = max(0.0, SELL_TARGET_PCT - profit_pct)
         remaining_usd = max(0.0, target_price - current_price)
         title = '\n'.join([
             f'{running_label} | SELL | SOL ${current_price:.2f}',
-            f'Progress: {profit_pct:+.2f}% / +0.35% ({progress_pct:.0f}%)',
+            f'Progress: {profit_pct:+.2f}% / +{SELL_TARGET_PCT:.2f}% ({progress_pct:.0f}%)',
             f'Entry ${purchase_price:.2f} -> Target ${target_price:.2f}',
             f'To go: {remaining_pct:.2f}% / ${remaining_usd:.2f} | Trades: {trade_count}'
         ])
@@ -276,9 +266,9 @@ def build_status_feed_item(now=None):
     else:
         title = '\n'.join([
             f'{running_label} | BUY | SOL ${current_price:.2f}',
-            f'Buy steps: {min(buy_step, 3)}/3',
-            'Need: $0.10 dip, then 2 x +$0.01 rebounds',
-            f'USDT ${usdt_bal:.2f} | Trades: {trade_count}'
+            'Scalp setup: 90s flush then bounce',
+            f'Arm {DROP_TRIGGER_PCT:.2f}% | Buy bounce +{BOUNCE_TRIGGER_PCT:.2f}% | Trades: {trade_count}',
+            f'USDT ${usdt_bal:.2f}'
         ])
         description_parts = [
             title,
@@ -302,9 +292,6 @@ def build_status_feed_item(now=None):
 def reconcile_state_against_binance(client):
     log_activity("Running core truth reconciliation step...")
     try:
-        redis.delete('price_history')
-        reset_buy_sequence()
-
         usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
         sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
 
@@ -327,10 +314,8 @@ def reconcile_state_against_binance(client):
                 if trade['isBuyer']:
                     qty = float(trade['qty'])
                     price = float(trade['price'])
-
                     accumulated_qty += qty
                     weighted_cost += (price * qty)
-
                     if accumulated_qty >= (sol_bal * 0.99):
                         break
 
@@ -340,12 +325,15 @@ def reconcile_state_against_binance(client):
                 redis.set('position_active', 'true')
                 redis.set('purchase_price', str(avg_entry_price))
                 redis.set('bot_tracked_qty', str(sol_bal))
+                if not redis.get('position_opened_at'):
+                    redis.set('position_opened_at', str(time.time()))
                 return True
 
         log_activity("Reconciliation: No active bot holdings detected. Set to Cash Mode.")
         redis.set('position_active', 'false')
         redis.delete('purchase_price')
         redis.delete('bot_tracked_qty')
+        clear_position_tracking()
         return True
 
     except Exception as e:
@@ -364,8 +352,6 @@ def run_trading_bot():
     if not reconcile_state_against_binance(client):
         log_activity("Initial truth sync failed. Thread loop aborted for account safety.")
         return
-
-    last_signal_check = 0.0
 
     while True:
         try:
@@ -401,124 +387,88 @@ def run_trading_bot():
             bot_tracked_qty = float(redis.get('bot_tracked_qty') or 0.0)
 
             if not position_active:
-                samples = load_price_samples()
                 now = time.time()
-                cache_age_seconds = get_cache_age_seconds(samples, now)
-                anchor_price = find_anchor_price(samples, now - LOOKBACK_SECONDS)
-
-                if anchor_price is None and cache_age_seconds >= LOOKBACK_SECONDS and samples:
-                    anchor_price = samples[0]['price']
-
-                if (now - last_signal_check) < SIGNAL_EVALUATION_INTERVAL:
+                samples = get_recent_samples(load_price_samples(), SCALP_WINDOW_SECONDS, now=now)
+                if len(samples) < 10:
+                    redis.set('engine_status', 'WARMING_SCALP_WINDOW')
+                    log_activity(f"BUY mode | Spot: ${current_price:.2f} | Warming scalp window: {len(samples)} samples / {SCALP_WINDOW_SECONDS}s")
                     time.sleep(SAMPLE_INTERVAL)
                     continue
 
-                last_signal_check = now
-                buy_triggered = False
-                thought_msg = f"BUY mode | Spot: ${current_price:.2f}"
+                recent_high = max(sample['price'] for sample in samples)
+                high_indexes = [idx for idx, sample in enumerate(samples) if sample['price'] == recent_high]
+                high_index = high_indexes[-1] if high_indexes else 0
+                post_high_samples = samples[high_index:]
+                local_low = min(sample['price'] for sample in post_high_samples)
+                drop_pct = pct_change(recent_high, current_price)
+                bounce_pct = pct_change(local_low, current_price)
+                armed = drop_pct <= DROP_TRIGGER_PCT
 
-                if cache_age_seconds < LOOKBACK_SECONDS or anchor_price is None:
-                    warm_seconds = min(cache_age_seconds, LOOKBACK_SECONDS)
-                    if samples:
-                        forming_anchor = samples[0]['price']
-                        forming_delta = pct_change(forming_anchor, current_price)
-                        anchor_status = f"2m Anchor forming: ${forming_anchor:.2f} ({forming_delta:+.2f}%)"
-                    else:
-                        anchor_status = "2m Anchor forming: no samples yet"
-
-                    thought_msg += (
-                        f" | {anchor_status}"
-                        f" | Buy steps: warming"
-                        f" | Cache: {warm_seconds}/{LOOKBACK_SECONDS}s real age, {len(samples)} samples"
-                    )
-                    log_activity(thought_msg)
-                    redis.set('engine_status', 'WARMING_2M_CACHE')
-                    continue
-
-                anchor_delta = pct_change(anchor_price, current_price)
-                dip_gap = anchor_price - current_price
-                previous_step = int(redis.get('buy_sequence_step') or 0)
-                previous_price = float(redis.get('buy_sequence_last_price') or 0.0)
-                buy_steps = 0
-                sequence_note = "waiting for $0.10 dip"
-
-                if previous_step == 0:
-                    if dip_gap >= BUY_DIP_FROM_ANCHOR_USD:
-                        buy_steps = 1
-                        sequence_note = f"Step 1 hit: dip ${dip_gap:.2f} >= ${BUY_DIP_FROM_ANCHOR_USD:.2f}"
-                        redis.set('buy_sequence_step', '1')
-                        redis.set('buy_sequence_last_price', str(current_price))
-                    else:
-                        reset_buy_sequence()
-                else:
-                    rebound_gap = current_price - previous_price
-                    if rebound_gap >= BUY_REBOUND_STEP_USD:
-                        buy_steps = previous_step + 1
-                        sequence_note = (
-                            f"Step {buy_steps} hit: rebound +${rebound_gap:.2f} "
-                            f">= ${BUY_REBOUND_STEP_USD:.2f}"
-                        )
-                        redis.set('buy_sequence_step', str(buy_steps))
-                        redis.set('buy_sequence_last_price', str(current_price))
-                    elif dip_gap >= BUY_DIP_FROM_ANCHOR_USD:
-                        buy_steps = 1
-                        sequence_note = f"Rebound miss; Step 1 re-armed at ${dip_gap:.2f} below anchor"
-                        redis.set('buy_sequence_step', '1')
-                        redis.set('buy_sequence_last_price', str(current_price))
-                    else:
-                        reset_buy_sequence()
-                        sequence_note = "sequence reset; waiting for $0.10 dip"
-
-                anchor_condition = "dip OK" if dip_gap >= BUY_DIP_FROM_ANCHOR_USD else "dip WAIT"
-                thought_msg += (
-                    f" | 2m Anchor: ${anchor_price:.2f} ({anchor_delta:+.2f}%, {anchor_condition})"
-                    f" | Buy steps: {min(buy_steps, 3)}/3"
-                    f" | Dip gap: ${dip_gap:.2f} / ${BUY_DIP_FROM_ANCHOR_USD:.2f}"
+                thought_msg = (
+                    f"BUY mode | Spot: ${current_price:.2f}"
+                    f" | 90s High: ${recent_high:.2f}"
+                    f" | Local Low: ${local_low:.2f}"
+                    f" | Drop: {drop_pct:+.2f}% / {DROP_TRIGGER_PCT:.2f}%"
+                    f" | Bounce: {bounce_pct:+.2f}% / +{BOUNCE_TRIGGER_PCT:.2f}%"
                 )
-                if previous_step > 0:
-                    thought_msg += f" | Last step price: ${previous_price:.2f}"
-                thought_msg += f" | {sequence_note}"
 
-                if buy_steps >= 3:
-                    buy_triggered = True
-                    log_activity("BUY ALERT: $0.10 anchor dip followed by two consecutive +$0.01 rebounds.")
-                else:
-                    thought_msg += " | Waiting for buy sequence."
-
-                log_activity(thought_msg)
-                redis.set('engine_status', 'MONITORING_DOLLAR_DIP_REBOUND_WS')
-
-                if buy_triggered:
+                if armed and bounce_pct >= BOUNCE_TRIGGER_PCT and current_price > local_low:
+                    log_activity(thought_msg + " | Bounce confirmed. Buying.")
                     usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
                     usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
 
                     if usdt_alloc >= 5.0:
                         sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
-                        log_activity(f"EXECUTION: Dispatching Market BUY for {sol_quantity} SOL...")
+                        log_activity(f"EXECUTION: Dispatching scalp Market BUY for {sol_quantity} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
-                        record_trade('BUY', sol_quantity, current_price, 'AUTO', 'Dollar dip rebound sequence')
-                        reset_buy_sequence()
+                        record_trade('BUY', sol_quantity, current_price, 'AUTO', '90s flush bounce scalp')
+                        redis.set('position_opened_at', str(time.time()))
                         time.sleep(1)
                         reconcile_state_against_binance(client)
                     else:
                         log_activity("Transaction aborted: Available balance under operational thresholds.")
+                else:
+                    status_label = 'DROP ARMED' if armed else 'WAITING FOR FLUSH'
+                    log_activity(thought_msg + f" | {status_label}")
+                    redis.set('engine_status', 'SCALP_DROP_ARMED' if armed else 'SCANNING_FOR_SCALP_ENTRY')
 
             else:
                 target_price = purchase_price * SELL_TARGET_MULTIPLIER
-                profit_pct = ((current_price - purchase_price) / purchase_price) * 100
-                thought_msg = f"SELL mode | Spot: ${current_price:.2f} | Target: ${target_price:.2f} ({profit_pct:+.2f}% / +0.35%) | Holding."
+                stop_price = purchase_price * (1 + (HARD_STOP_PCT / 100))
+                profit_pct = pct_change(purchase_price, current_price)
+                opened_at = read_float_state('position_opened_at', time.time())
+                seconds_open = max(0, int(time.time() - opened_at))
 
+                thought_msg = (
+                    f"SELL mode | Spot: ${current_price:.2f}"
+                    f" | Entry: ${purchase_price:.2f}"
+                    f" | Target: ${target_price:.2f} (+{SELL_TARGET_PCT:.2f}%)"
+                    f" | Stop: ${stop_price:.2f} ({HARD_STOP_PCT:.2f}%)"
+                    f" | P/L: {profit_pct:+.2f}%"
+                    f" | Open: {seconds_open}s"
+                )
                 log_activity(thought_msg)
-                redis.set('engine_status', 'HOLDING_FOR_+0.35%_EXIT_WS')
+                redis.set('engine_status', 'MANAGING_SCALP_POSITION')
 
+                sell_reason = None
+                sell_note = None
                 if current_price >= target_price:
+                    sell_reason = 'target hit'
+                    sell_note = f'+{SELL_TARGET_PCT:.2f}% scalp target'
+                elif current_price <= stop_price:
+                    sell_reason = 'hard stop'
+                    sell_note = f'{HARD_STOP_PCT:.2f}% protective stop'
+                elif seconds_open >= FAIL_TO_LAUNCH_SECONDS and profit_pct < FAIL_TO_LAUNCH_MIN_PCT:
+                    sell_reason = 'failed launch'
+                    sell_note = f'Under +{FAIL_TO_LAUNCH_MIN_PCT:.2f}% after {FAIL_TO_LAUNCH_SECONDS}s'
+
+                if sell_reason:
                     sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
                     sol_to_liquidate = math.floor(min(sol_bal, bot_tracked_qty) * 100) / 100.0
-
                     if sol_to_liquidate > 0.01:
-                        log_activity(f"EXECUTION: Target Hit. Market Selling bot-tracked size of {sol_to_liquidate} SOL...")
+                        log_activity(f"EXECUTION: {sell_reason.title()}. Market selling {sol_to_liquidate} SOL...")
                         client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
-                        record_trade('SELL', sol_to_liquidate, current_price, 'AUTO', '+0.35% target exit')
+                        record_trade('SELL', sol_to_liquidate, current_price, 'AUTO', sell_note)
                         time.sleep(1)
                         reconcile_state_against_binance(client)
                     else:
@@ -550,6 +500,7 @@ def execute_manual_buy():
             log_activity(f"MANUAL INTERVENTION: Executing forced Market BUY for {sol_quantity} SOL...")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
             record_trade('BUY', sol_quantity, current_price, 'MANUAL', 'Manual market buy')
+            redis.set('position_opened_at', str(time.time()))
             time.sleep(1)
             reconcile_state_against_binance(client)
             return jsonify({'status': 'success', 'message': f'Successfully purchased {sol_quantity} SOL.'})
@@ -712,13 +663,14 @@ def manual_set_position():
         if price and float(price) > 0:
             redis.set('position_active', 'true')
             redis.set('purchase_price', str(round(float(price), 2)))
-            reset_buy_sequence()
+            redis.set('position_opened_at', str(time.time()))
             log_activity(f"Manual Track Override: Position set ACTIVE at Entry ${price}")
             return jsonify({'status': 'success'})
         else:
             redis.set('position_active', 'false')
             redis.delete('purchase_price')
-            reset_buy_sequence()
+            redis.delete('bot_tracked_qty')
+            clear_position_tracking()
             log_activity("Manual Track Override: Position cleared to INACTIVE")
             return jsonify({'status': 'success'})
     except Exception as e:
@@ -747,11 +699,10 @@ def liquidate_to_usdt():
             log_activity(f"MANUAL OVERRIDE LIQUIDATION: Market selling {sol_to_liquidate} SOL.")
             client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
             record_trade('SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
-
             redis.set('position_active', 'false')
             redis.delete('purchase_price')
             redis.delete('bot_tracked_qty')
-            reset_buy_sequence()
+            clear_position_tracking()
             return jsonify({'status': 'success', 'message': f'Liquidated {sol_to_liquidate} SOL.'})
         else:
             return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
