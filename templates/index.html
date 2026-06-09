@@ -100,12 +100,12 @@
                     </div>
                     <div class="pt-2 border-t border-gray-700 space-y-2 font-mono text-base">
                         <div class="flex justify-between">
-                            <span class="muted">2m Anchor Check:</span>
-                            <span id="flashTargetPrice" class="text-white font-bold">Warming...</span>
+                            <span class="muted">90s Flush Check:</span>
+                            <span id="flashTargetPrice" class="text-white font-bold">Waiting...</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="muted">3x Uplift Filter:</span>
-                            <span id="cascadeTracker" class="text-white font-bold">3 x 10s rebounds...</span>
+                            <span class="muted">Bounce Trigger:</span>
+                            <span id="cascadeTracker" class="text-white font-bold">-0.15%, then +0.05%</span>
                         </div>
                     </div>
                     
@@ -133,7 +133,7 @@
                             <span id="openingPurchasePrice" class="text-yellow-500 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="muted">Target Exit (+0.35%):</span>
+                            <span class="muted">Target Exit (+0.20%):</span>
                             <span id="targetSellPrice" class="text-red-400 font-bold">N/A</span>
                         </div>
                         <div class="flex justify-between">
@@ -248,12 +248,12 @@
                     solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-active";
 
                     const buyPrice = parseFloat(data.purchase_price);
-                    const targetExit = buyPrice * 1.0035;
+                    const targetExit = buyPrice * 1.002;
                     const profitPct = ((currentSpot - buyPrice) / buyPrice) * 100;
 
                     document.getElementById('openingPurchasePrice').innerText = `$${buyPrice.toFixed(2)}`;
                     document.getElementById('targetSellPrice').innerText = `$${targetExit.toFixed(2)}`;
-                    document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +0.35%`;
+                    document.getElementById('marginDeltaGap').innerText = `${profitPct.toFixed(2)}% / +0.20%`;
                     document.getElementById('marginDeltaGap').className = profitPct >= 0 ? "text-green-400 font-black" : "text-red-400 font-black";
 
                     document.getElementById('flashTargetPrice').innerText = "N/A";
@@ -262,8 +262,8 @@
                     usdtSide.className = "card p-4 rounded space-y-3 border-t-4 border-green-400 mode-active";
                     solSide.className = "card p-4 rounded space-y-3 border-t-4 border-blue-400 mode-dim";
 
-                    document.getElementById('flashTargetPrice').innerText = "Below anchor required";
-                    document.getElementById('cascadeTracker').innerText = "3 x +$0.01 after $0.10 dip";
+                    document.getElementById('flashTargetPrice').innerText = "Need -0.15% flush";
+                    document.getElementById('cascadeTracker').innerText = "Buy on +0.05% bounce";
 
                     document.getElementById('openingPurchasePrice').innerText = "N/A";
                     document.getElementById('targetSellPrice').innerText = "N/A";
