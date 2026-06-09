@@ -21,7 +21,7 @@
         .left-panel .muted { color: #ffffff; }
         .left-panel .soft { color: #ffffff; }
         .dashboard-logo { display: block; width: 155px; max-width: 30vw; height: auto; }
-        #logBox { height: 60vh; overflow-y: auto; }
+        #logBox { height: 52vh; overflow-y: auto; }
         .accent-btn {
             background: var(--accent-pink);
             color: #ffffff;
@@ -45,7 +45,7 @@
             body { padding: 1.5rem; }
             .desktop-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; height: calc(100vh - 6rem); }
             .log-container { height: calc(100vh - 6rem) !important; display: flex; flex-direction: column; }
-            #logBox { flex: 0 0 auto; height: calc(100vh - 10rem) !important; font-size: 0.95rem !important; }
+            #logBox { flex: 0 0 auto; height: calc(100vh - 12rem) !important; font-size: 0.82rem !important; line-height: 1.15 !important; }
         }
     </style>
 </head>
@@ -187,8 +187,8 @@
                     Wipe Logs
                 </button>
             </div>
-            <div id="logBox" class="bg-black bg-opacity-40 p-3 rounded font-mono text-sm text-gray-200 overflow-y-auto space-y-1.5 border border-gray-800">
-                <p class="text-gray-500">[Awaiting backend handshake update metrics...]</p>
+            <div id="logBox" class="bg-black bg-opacity-40 p-2.5 rounded font-mono text-gray-200 overflow-y-auto space-y-1 border border-gray-800">
+                <p class="text-gray-500 text-xs leading-tight">[Awaiting backend handshake update metrics...]</p>
             </div>
         </div>
 
@@ -275,7 +275,7 @@
                 logBox.innerHTML = '';
                 data.logs.forEach(log => {
                     const p = document.createElement('p');
-                    p.className = "leading-snug text-sm";
+                    p.className = "text-xs leading-tight";
                     p.innerText = log;
                     logBox.appendChild(p);
                 });
