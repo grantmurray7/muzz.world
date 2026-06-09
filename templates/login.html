@@ -20,10 +20,17 @@
             border: 1px solid #30363d;
             border-radius: 6px;
             padding: 24px;
-            width: 300px;
+            width: min(380px, calc(100vw - 32px));
             box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            box-sizing: border-box;
         }
-        h2 { margin-top: 0; font-weight: 400; font-size: 20px; text-align: center; }
+        .login-logo {
+            display: block;
+            width: 100%;
+            max-width: 320px;
+            height: auto;
+            margin: 0 auto 22px;
+        }
         input[type="password"] {
             width: 100%;
             padding: 8px;
@@ -54,7 +61,7 @@
 </head>
 <body>
     <div class="login-card">
-        <h2>Master Terminal</h2>
+        <img class="login-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world">
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
         <form method="POST">
             <input type="password" name="password" placeholder="Enter ADMIN_PASSWORD" required autofocus>
