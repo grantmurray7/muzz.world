@@ -121,6 +121,9 @@ def get_cache_age_seconds(samples, now):
         return 0
     return max(0, int(now - min(valid_timestamps)))
 
+def count_buy_steps(uplifts):
+    return sum(1 for step in uplifts if step >= UPLIFT_THRESHOLD_PCT)
+
 def pct_change(from_price, to_price):
     if from_price <= 0:
         return 0.0
@@ -243,9 +246,17 @@ def run_trading_bot():
 
                 if len(samples) < 4 or cache_age_seconds < LOOKBACK_SECONDS or anchor_price is None:
                     warm_seconds = min(cache_age_seconds, LOOKBACK_SECONDS)
+                    if samples:
+                        forming_anchor = samples[0]['price']
+                        forming_delta = pct_change(forming_anchor, current_price)
+                        anchor_status = f"2m Anchor forming: ${forming_anchor:.2f} ({forming_delta:+.2f}%)"
+                    else:
+                        anchor_status = "2m Anchor forming: no samples yet"
+
                     thought_msg += (
-                        f" | Warming 2m price cache ({warm_seconds}/{LOOKBACK_SECONDS}s real age, "
-                        f"{len(samples)} samples)..."
+                        f" | {anchor_status}"
+                        f" | Buy steps: warming"
+                        f" | Cache: {warm_seconds}/{LOOKBACK_SECONDS}s real age, {len(samples)} samples"
                     )
                     log_activity(thought_msg)
                     redis.set('engine_status', 'WARMING_2M_CACHE')
@@ -257,13 +268,16 @@ def run_trading_bot():
                     pct_change(latest_prices[1], latest_prices[2]),
                     pct_change(latest_prices[2], latest_prices[3])
                 ]
+                buy_steps = count_buy_steps(uplifts)
                 anchor_delta = pct_change(anchor_price, current_price)
+                anchor_condition = "below anchor OK" if current_price < anchor_price else "above anchor WAIT"
                 thought_msg += (
-                    f" | 2m Anchor: ${anchor_price:.2f} ({anchor_delta:+.2f}%)"
+                    f" | 2m Anchor: ${anchor_price:.2f} ({anchor_delta:+.2f}%, {anchor_condition})"
+                    f" | Buy steps: {buy_steps}/3"
                     f" | Uplifts: [{uplifts[0]:+.2f}%, {uplifts[1]:+.2f}%, {uplifts[2]:+.2f}%]"
                 )
 
-                if all(step >= UPLIFT_THRESHOLD_PCT for step in uplifts) and current_price < anchor_price:
+                if buy_steps == 3 and current_price < anchor_price:
                     buy_triggered = True
                     log_activity(
                         "BUY ALERT: Three consecutive +0.02% uplifts confirmed while price remains below the 2-minute anchor."
