@@ -57,7 +57,7 @@
             min-width: 220px;
         }
         .brand-logo {
-            height: 48px;
+            height: 68px;
             width: auto;
             display: block;
         }
@@ -648,9 +648,18 @@
             setText('marketAgeSummary', `${fmt(data.market.market_data_age, 2)}s`);
             setText('marketSource', String(data.market.market_data_source || 'none').toUpperCase());
             setText('marketSourceSummary', String(data.market.market_data_source || 'none').toUpperCase());
+            const diag = data.market_diagnostics || {};
             setText('wsThreadAlive', data.market_diagnostics.ws_thread_alive ? 'ALIVE' : 'DEAD');
             setText('wsReconnects', String(data.market_diagnostics.reconnect_count || 0));
             setText('wsReconnectSummary', String(data.market_diagnostics.reconnect_count || 0));
+            setText('feedStatus', diag.status || 'N/A');
+            setText('feedThreadAlive', diag.ws_thread_alive ? 'TRUE' : 'FALSE');
+            setText('feedReconnects', String(diag.reconnect_count || 0));
+            setText('feedLastOpen', formatTsLabel(diag.last_open_at_label));
+            setText('feedLastMessage', formatTsLabel(diag.last_message_at_label));
+            setText('feedLastClose', formatTsLabel(diag.last_close_at_label));
+            setText('feedCloseCode', diag.last_close_code || 'N/A');
+            setText('feedLastError', diag.last_ws_error || data.market.market_data_error || 'N/A');
 
             const lastSignal = data.last_signal || {};
             const signalText = lastSignal.timestamp
@@ -682,21 +691,6 @@
             if (data.stats.unsupported_external_position) {
                 setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${data.stats.unsupported_external_position}`);
             }
-
-            const diag = data.market_diagnostics || {};
-            const marketDiagText = [
-                `status: ${diag.status || 'N/A'}`,
-                `thread_alive: ${diag.ws_thread_alive ? 'true' : 'false'}`,
-                `reconnect_count: ${diag.reconnect_count || 0}`,
-                `last_open: ${formatTsLabel(diag.last_open_at_label)}`,
-                `last_message: ${formatTsLabel(diag.last_message_at_label)}`,
-                `last_close: ${formatTsLabel(diag.last_close_at_label)}`,
-                `close_code: ${diag.last_close_code || 'N/A'}`,
-                `close_reason: ${diag.last_close_reason || 'N/A'}`,
-                `last_ws_error: ${diag.last_ws_error || 'N/A'}`,
-                `market_error: ${diag.error || data.market.market_data_error || 'N/A'}`
-            ].join('\n');
-            setText('marketDiag', marketDiagText);
 
             document.getElementById('logBox').value = (data.logs || []).join('\n');
             applyConfig(data.config || {});
