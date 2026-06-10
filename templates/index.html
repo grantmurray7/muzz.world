@@ -5,39 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ page_label }} Dashboard</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
         :root {
-            --bg: #edf1f5;
+            --bg: #eef2f6;
             --panel: #ffffff;
-            --panel-soft: #f6f8fb;
-            --panel-strong: #eef3f8;
-            --border: #d9e0e8;
-            --text: #24303d;
-            --muted: #6d7885;
+            --panel-soft: #f7f9fc;
+            --border: #d7dee7;
+            --text: #213040;
+            --muted: #6f7d8c;
             --header: #5f6b77;
             --accent: #e87722;
-            --accent-soft: #fff3e8;
-            --danger: #cc4b4b;
-            --success: #1f8f55;
-            --warning: #b67818;
+            --accent-soft: #fff2e8;
+            --danger: #d34b4b;
+            --success: #1e8e5a;
         }
 
         * { box-sizing: border-box; }
-
         body {
             margin: 0;
             background: var(--bg);
             color: var(--text);
-            font: 12px/1.4 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }
-
-        .mono {
-            font-family: inherit;
-            font-variant-numeric: tabular-nums;
+            font: 12px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
 
         .hidden { display: none !important; }
+        .mono { font-variant-numeric: tabular-nums; }
 
         .app-shell {
             min-height: 100vh;
@@ -53,38 +45,37 @@
             padding: 10px 18px;
             background: var(--header);
             color: #fff;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
 
         .brand {
             display: flex;
             align-items: center;
             gap: 12px;
-            min-width: 220px;
         }
 
         .brand-logo {
-            height: 68px;
+            height: 66px;
             width: auto;
             display: block;
         }
 
         .brand-copy h1 {
             margin: 0;
-            font-size: 16px;
+            font-size: 18px;
             font-weight: 800;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.04em;
         }
 
         .brand-copy p {
-            margin: 2px 0 0;
+            margin: 3px 0 0;
+            color: rgba(255, 255, 255, 0.8);
             font-size: 11px;
-            color: rgba(255, 255, 255, 0.78);
         }
 
-        .nav-actions {
+        .top-actions {
             display: flex;
+            align-items: center;
             flex-wrap: wrap;
             justify-content: flex-end;
             gap: 8px;
@@ -98,19 +89,14 @@
             color: var(--text);
             font-size: 10px;
             line-height: 1;
-            font-weight: 700;
+            font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 0.05em;
             cursor: pointer;
-            transition: 0.15s ease;
-            white-space: nowrap;
         }
 
-        .btn:hover { filter: brightness(0.98); }
         .btn-primary { background: var(--accent); color: #fff; border-color: #cf6d1d; }
-        .btn-secondary { background: #fff; color: var(--text); }
-        .btn-danger { background: var(--danger); color: #fff; border-color: #b53a3a; }
-        .btn-nav { background: #fff; color: var(--text); }
+        .btn-danger { background: var(--danger); color: #fff; border-color: #b73c3c; }
 
         .warning-banner {
             margin: 10px 14px 0;
@@ -121,68 +107,80 @@
             color: #8f3a3a;
         }
 
-        .page-body {
-            flex: 1 1 auto;
-            min-height: 0;
-            padding: 10px 14px 14px;
+        .page {
+            padding: 12px 14px 18px;
             display: flex;
             flex-direction: column;
             gap: 12px;
         }
 
-        .status-strip {
+        .card,
+        details {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: 0 1px 0 rgba(16, 24, 40, 0.02);
+        }
+
+        .metrics-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 12px;
         }
 
-        .mini-card,
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            box-shadow: 0 1px 0 rgba(16, 24, 40, 0.02);
-            min-height: 0;
-        }
-
-        .mini-card {
-            padding: 12px;
+        .metric-card {
+            padding: 14px;
             display: flex;
             flex-direction: column;
             gap: 8px;
-            background: linear-gradient(180deg, #ffffff 0%, #f9fbfd 100%);
+            background: linear-gradient(180deg, #fff 0%, #f8fbfd 100%);
         }
 
-        .mini-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-
-        .mini-label,
-        .panel-kicker,
+        .eyebrow,
+        .table th,
         .field-label,
-        .meta-key,
-        .table-head,
-        .label {
+        .section-kicker {
             color: var(--muted);
             font-size: 10px;
-            font-weight: 700;
+            font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 0.06em;
         }
 
-        .mini-value {
-            font-size: 19px;
+        .metric-value {
+            font-size: 24px;
             line-height: 1.05;
             font-weight: 800;
-            color: var(--text);
         }
 
-        .mini-subvalue {
+        .metric-sub {
             color: var(--muted);
             font-size: 11px;
+        }
+
+        .layout-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+            gap: 12px;
+        }
+
+        .section-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .section-title {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 800;
+        }
+
+        .section-body {
+            padding: 12px 14px;
         }
 
         .pill {
@@ -199,213 +197,103 @@
             letter-spacing: 0.05em;
         }
 
-        .dashboard-grid {
-            flex: 1 1 auto;
-            min-height: 0;
-            display: grid;
-            grid-template-columns: 290px minmax(0, 1fr) 420px;
-            gap: 12px;
-        }
-
-        .column {
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .panel {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .panel-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            padding: 12px 14px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .panel-title {
-            margin: 0;
-            font-size: 13px;
-            font-weight: 800;
-            color: var(--text);
-        }
-
-        .panel-body {
-            padding: 12px 14px;
-        }
-
-        .panel-body.compact { padding: 10px 12px; }
-
-        .scrollable {
-            min-height: 0;
+        .table-wrap {
             overflow: auto;
         }
 
-        .stack {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            min-height: 0;
+        .table {
+            width: 100%;
+            border-collapse: collapse;
         }
 
-        .control-stack {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
+        .table th,
+        .table td {
+            padding: 10px 8px;
+            border-top: 1px solid var(--border);
+            text-align: left;
+            white-space: nowrap;
         }
 
-        .control-stack .btn { width: 100%; }
+        .table tbody tr:hover { background: var(--panel-soft); }
+        .table td.num,
+        .table th.num { text-align: right; }
 
-        .small-note {
-            font-size: 11px;
-            line-height: 1.35;
+        .table-empty {
+            padding: 24px 12px;
+            text-align: center;
             color: var(--muted);
         }
 
-        .meta-grid {
+        .position-grid {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
-            gap: 8px 10px;
+            gap: 8px 12px;
             align-items: center;
         }
 
-        .meta-value {
+        .position-value {
             text-align: right;
-            font-size: 12px;
             font-weight: 700;
-            color: var(--text);
             word-break: break-word;
         }
 
-        .hero-grid {
-            display: grid;
-            grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-            gap: 12px;
+        .empty-state {
+            padding: 18px;
+            border: 1px dashed var(--border);
+            border-radius: 10px;
+            background: var(--panel-soft);
+            color: var(--muted);
         }
 
-        .feature-card {
+        details > summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 12px 14px;
+            font-weight: 800;
+            user-select: none;
+        }
+
+        details > summary::-webkit-details-marker { display: none; }
+        .details-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            padding: 0 14px 14px;
+        }
+
+        .subcard {
             border: 1px solid var(--border);
             border-radius: 10px;
             background: var(--panel-soft);
+            min-height: 0;
+        }
+
+        .subcard-head {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 800;
+        }
+
+        .subcard-body {
             padding: 12px;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .feature-title {
-            margin: 0;
-            font-size: 13px;
-            font-weight: 800;
-            color: var(--text);
-        }
-
-        .metrics-table {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-            background: #fff;
-        }
-
-        .metrics-table .row { display: contents; }
-
-        .metric-key,
-        .metric-value {
-            padding: 9px 10px;
-            border-top: 1px solid var(--border);
-        }
-
-        .metrics-table .row:first-child .metric-key,
-        .metrics-table .row:first-child .metric-value {
-            border-top: 0;
-        }
-
-        .metric-key {
-            color: var(--muted);
-            font-weight: 700;
-        }
-
-        .metric-value {
-            text-align: right;
-            font-weight: 800;
-            color: var(--text);
-        }
-
-        .accent-value { color: var(--accent); }
-
-        .two-up {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
-        }
-
-        .text-block,
-        .feed-block {
-            white-space: pre-wrap;
-            font-size: 11px;
-            line-height: 1.4;
-            color: #39424b;
-        }
-
-        .warning-text { color: var(--warning); }
-
-        .log-box {
-            width: 100%;
-            height: 100%;
-            min-height: 220px;
-            resize: none;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            background: #f8fafc;
-            color: #39424b;
-            padding: 8px;
-            font-size: 11px;
-            line-height: 1.35;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 10px;
-        }
-
-        .stat-chip {
-            padding: 10px;
-            border: 1px solid var(--border);
-            border-radius: 9px;
-            background: var(--panel-soft);
-        }
-
-        .stat-chip .value {
-            display: block;
-            margin-top: 4px;
-            font-size: 16px;
-            font-weight: 800;
-            color: var(--text);
         }
 
         .config-list {
             display: flex;
             flex-direction: column;
             gap: 8px;
+            max-height: 460px;
+            overflow: auto;
         }
 
         .config-row {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 124px;
+            grid-template-columns: minmax(0, 1fr) 120px;
             gap: 10px;
             align-items: center;
         }
 
-        input,
-        select {
+        input {
             width: 100%;
             border: 1px solid var(--border);
             border-radius: 8px;
@@ -417,54 +305,41 @@
 
         .checkbox-row {
             display: flex;
-            align-items: center;
             gap: 8px;
+            align-items: center;
             margin-top: 10px;
-            color: #5f6872;
+            color: var(--muted);
+        }
+
+        .log-box,
+        .health-box {
+            width: 100%;
+            min-height: 320px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            color: #39424b;
+            padding: 10px;
             font-size: 11px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            overflow: auto;
         }
 
-        .subgrid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
+        .positive { color: var(--success); }
+        .negative { color: var(--danger); }
+        .accent { color: var(--accent); }
+
+        @media (max-width: 1280px) {
+            .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .layout-grid,
+            .details-grid { grid-template-columns: 1fr; }
         }
 
-        @media (min-width: 1200px) and (min-height: 760px) {
-            body { height: 100vh; overflow: hidden; }
-            .app-shell { height: 100vh; }
-            .page-body,
-            .dashboard-grid,
-            .column,
-            .panel,
-            .scrollable,
-            .stack { min-height: 0; }
-        }
-
-        @media (max-width: 1450px) {
-            .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .dashboard-grid { grid-template-columns: 270px minmax(0, 1fr) 360px; }
-            .hero-grid,
-            .two-up,
-            .subgrid { grid-template-columns: 1fr; }
-        }
-
-        @media (max-width: 1180px) {
-            body { overflow: auto; }
-            .status-strip,
-            .dashboard-grid,
-            .stats-grid { grid-template-columns: 1fr; }
-            .column { min-height: auto; }
-        }
-
-        @media (max-width: 700px) {
-            .topbar {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-
-            .brand { min-width: 0; }
-            .nav-actions { justify-content: flex-start; }
+        @media (max-width: 760px) {
+            .topbar { flex-direction: column; align-items: flex-start; }
+            .metrics-grid { grid-template-columns: 1fr; }
+            .top-actions { justify-content: flex-start; }
         }
     </style>
 </head>
@@ -474,279 +349,136 @@
             <div class="brand">
                 <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world logo">
                 <div class="brand-copy">
-                    <h1 id="modeTitle">{{ page_label }} Mission Control</h1>
-                    <p>REAL and SANDBOX stay separate, boot paused, and require an explicit start.</p>
+                    <h1 id="modeTitle">{{ page_label }} Dashboard</h1>
+                    <p>Lean view first. Details stay tucked away unless you open them.</p>
                 </div>
             </div>
-            <div class="nav-actions">
-                <a href="{{ trades_href }}" class="btn btn-nav">Trades</a>
-                <a href="{{ results_href }}" class="btn btn-nav">Results</a>
-                {% if page_label == 'REAL' %}
-                <a href="/sandbox" class="btn btn-nav">Sandbox</a>
-                {% else %}
-                <a href="/" class="btn btn-nav">Real</a>
+            <div class="top-actions">
+                <button class="btn btn-primary" onclick="startBot()">Start</button>
+                <button class="btn" onclick="pauseBot()">Pause</button>
+                <button class="btn btn-danger" onclick="killBot()">Kill</button>
+                <button class="btn" onclick="manualClose()">Close Position</button>
+                {% if page_label == 'SANDBOX' %}
+                <button class="btn" onclick="resetSandbox()">Reset Sandbox</button>
                 {% endif %}
-                <a href="/logout" class="btn btn-nav">Logout</a>
+                <a href="{{ trades_href }}" class="btn">Trades</a>
+                <a href="{{ results_href }}" class="btn">Results</a>
+                {% if page_label == 'REAL' %}
+                <a href="/sandbox" class="btn">Sandbox</a>
+                {% else %}
+                <a href="/" class="btn">Real</a>
+                {% endif %}
+                <a href="/logout" class="btn">Logout</a>
             </div>
         </div>
 
         <div id="realWarning" class="warning-banner hidden">
-            <strong>Real Trading Warning.</strong> REAL mode submits live Hyperliquid orders on mainnet. START still requires typed confirmation.
+            <strong>Real Trading Warning.</strong> REAL mode submits live orders on mainnet and still requires typed confirmation before start.
         </div>
 
-        <div class="page-body">
-            <div class="status-strip">
-                <div class="mini-card">
-                    <div class="mini-head">
-                        <span class="mini-label">Environment</span>
-                        <span id="environmentLabelPill" class="pill">{{ page_label }}</span>
-                    </div>
-                    <div id="statusHeadline" class="mini-value">PAUSED</div>
-                    <div id="engineSummaryTop" class="mini-subvalue">Waiting for state...</div>
+        <div class="page">
+            <div class="metrics-grid">
+                <div class="card metric-card">
+                    <div class="eyebrow">Portfolio Value</div>
+                    <div id="portfolioValue" class="metric-value mono">0.0000</div>
+                    <div id="portfolioSub" class="metric-sub mono">Available 0.0000</div>
                 </div>
-                <div class="mini-card">
-                    <div class="mini-head">
-                        <span class="mini-label">Market Feed</span>
-                        <span id="marketSourceBadge" class="pill">NONE</span>
-                    </div>
-                    <div id="marketAgeBadge" class="mini-value">0.00s</div>
-                    <div id="feedSummaryTop" class="mini-subvalue">No feed data yet.</div>
+                <div class="card metric-card">
+                    <div class="eyebrow">Daily PnL</div>
+                    <div id="dailyPnlTop" class="metric-value mono">0.0000</div>
+                    <div id="pnlSub" class="metric-sub mono">Total 0.0000</div>
                 </div>
-                <div class="mini-card">
-                    <div class="mini-head">
-                        <span class="mini-label">Execution State</span>
-                        <span class="pill">{{ page_label }}</span>
-                    </div>
-                    <div id="deploymentSummary" class="mini-value">0 Orders</div>
-                    <div id="deploymentSubcopy" class="mini-subvalue">No active position.</div>
+                <div class="card metric-card">
+                    <div class="eyebrow">Active Position</div>
+                    <div id="positionHeadline" class="metric-value mono">None</div>
+                    <div id="positionSub" class="metric-sub mono">No open position</div>
                 </div>
-                <div class="mini-card">
-                    <div class="mini-head">
-                        <span class="mini-label">Risk Snapshot</span>
-                        <span class="pill">Live Data</span>
-                    </div>
-                    <div id="riskHeadline" class="mini-value">0.0000</div>
-                    <div id="riskSubcopy" class="mini-subvalue">Daily PnL / equity readiness.</div>
+                <div class="card metric-card">
+                    <div class="eyebrow">Bot + Feed</div>
+                    <div id="botFeedHeadline" class="metric-value mono">PAUSED</div>
+                    <div id="botFeedSub" class="metric-sub mono">Feed age 0.00s</div>
                 </div>
             </div>
 
-            <div class="dashboard-grid">
-                <div class="column">
-                    <div class="panel">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Control</div>
-                                <h2 class="panel-title">Environment Controls</h2>
-                            </div>
-                            <span id="environmentLabel" class="pill">{{ page_label }}</span>
+            <div class="layout-grid">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <div class="section-kicker">Scanner</div>
+                            <h2 class="section-title">Top 10 Hot Perps</h2>
                         </div>
-                        <div class="panel-body compact stack">
-                            <div class="control-stack">
-                                <button class="btn btn-primary" onclick="startBot()">Start</button>
-                                <button class="btn btn-secondary" onclick="pauseBot()">Pause</button>
-                                <button class="btn btn-danger" onclick="killBot()">Kill Switch</button>
-                                <button class="btn btn-secondary" onclick="manualClose()">Manual Close</button>
-                                {% if page_label == 'SANDBOX' %}
-                                <button class="btn btn-secondary" onclick="resetSandbox()">Reset Sandbox</button>
-                                {% endif %}
-                            </div>
-                            <div class="small-note">Both REAL and SANDBOX are designed to start paused. Trading begins only after an explicit START in that environment.</div>
-                        </div>
+                        <span id="hotPerpsStatus" class="pill">Warming Up</span>
                     </div>
-
-                    <div class="panel">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Mode</div>
-                                <h2 class="panel-title">Deployment State</h2>
-                            </div>
-                        </div>
-                        <div class="panel-body compact">
-                            <div class="meta-grid mono">
-                                <div class="meta-key">Bot state</div><div id="botState" class="meta-value">PAUSED</div>
-                                <div class="meta-key">Engine</div><div id="engineStatus" class="meta-value">Loading...</div>
-                                <div class="meta-key">Open orders</div><div id="openOrders" class="meta-value">0</div>
-                                <div class="meta-key">Active position</div><div id="activePosition" class="meta-value">NO</div>
-                                <div class="meta-key">Trade notional</div><div id="tradeNotional" class="meta-value">0.00 USDC</div>
-                                <div class="meta-key">Trades today</div><div id="tradesToday" class="meta-value">0</div>
-                                <div class="meta-key">Daily PnL</div><div id="dailyPnl" class="meta-value">0.0000</div>
-                                <div class="meta-key">Total PnL</div><div id="totalPnl" class="meta-value">0.0000</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="panel">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Feed</div>
-                                <h2 class="panel-title">Market Diagnostics</h2>
-                            </div>
-                        </div>
-                        <div class="panel-body compact">
-                            <div class="meta-grid mono">
-                                <div class="meta-key">Feed status</div><div id="feedStatus" class="meta-value">N/A</div>
-                                <div class="meta-key">Source</div><div id="marketSource" class="meta-value">NONE</div>
-                                <div class="meta-key">Age</div><div id="marketAgeSummary" class="meta-value">0.00s</div>
-                                <div class="meta-key">WS thread</div><div id="wsThreadAlive" class="meta-value">UNKNOWN</div>
-                                <div class="meta-key">Loop thread</div><div id="marketLoopAlive" class="meta-value">UNKNOWN</div>
-                                <div class="meta-key">Reconnects</div><div id="wsReconnects" class="meta-value">0</div>
-                                <div class="meta-key">Last message</div><div id="feedLastMessage" class="meta-value">N/A</div>
-                                <div class="meta-key">Last error</div><div id="feedLastError" class="meta-value">N/A</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="panel scrollable" style="flex: 1 1 auto;">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Health</div>
-                                <h2 class="panel-title">Raw Health Output</h2>
-                            </div>
-                        </div>
-                        <div class="panel-body compact">
-                            <div id="healthBox" class="feed-block mono"></div>
-                        </div>
+                    <div class="section-body table-wrap">
+                        <table class="table mono">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Coin</th>
+                                    <th class="num">Score</th>
+                                    <th>Basis</th>
+                                    <th class="num">1m</th>
+                                    <th class="num">5m</th>
+                                    <th class="num">15m</th>
+                                    <th class="num">Price</th>
+                                </tr>
+                            </thead>
+                            <tbody id="hotPerpsBody">
+                                <tr><td colspan="8" class="table-empty">Building the market ranking...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
-                <div class="column">
-                    <div class="panel">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Overview</div>
-                                <h2 class="panel-title">Market + Strategy Console</h2>
-                            </div>
-                            <span id="environmentSummary" class="pill">{{ page_label }}</span>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <div class="section-kicker">Execution</div>
+                            <h2 class="section-title">Active Position</h2>
                         </div>
-                        <div class="panel-body">
-                            <div class="hero-grid">
-                                <div class="feature-card">
-                                    <div>
-                                        <div class="panel-kicker">Execution Market</div>
-                                        <h3 class="feature-title">Current Runtime Market</h3>
-                                    </div>
-                                    <div class="metrics-table mono">
-                                        <div class="row"><div class="metric-key">Coin</div><div class="metric-value">HYPE</div></div>
-                                        <div class="row"><div class="metric-key">Mid price</div><div id="midPrice" class="metric-value accent-value">0.00000</div></div>
-                                        <div class="row"><div class="metric-key">Spread %</div><div id="spreadPct" class="metric-value">0.0000%</div></div>
-                                        <div class="row"><div class="metric-key">2m return</div><div id="return2m" class="metric-value">0.0000%</div></div>
-                                        <div class="row"><div class="metric-key">5m return</div><div id="return5m" class="metric-value">0.0000%</div></div>
-                                        <div class="row"><div class="metric-key">15m return</div><div id="return15m" class="metric-value">0.0000%</div></div>
-                                        <div class="row"><div class="metric-key">60m return</div><div id="return60m" class="metric-value">0.0000%</div></div>
-                                        <div class="row"><div class="metric-key">Bounce from 2m low</div><div id="bounce2m" class="metric-value">0.0000%</div></div>
-                                        <div class="row"><div class="metric-key">Book imbalance</div><div id="bookImbalance" class="metric-value">0.0000</div></div>
-                                        <div class="row"><div class="metric-key">Imbalance 10s ago</div><div id="bookImbalanceOld" class="metric-value">0.0000</div></div>
-                                        <div class="row"><div class="metric-key">Market data age</div><div id="marketAge" class="metric-value">0.00s</div></div>
-                                    </div>
-                                </div>
-                                <div class="feature-card">
-                                    <div>
-                                        <div class="panel-kicker">Strategy Status</div>
-                                        <h3 class="feature-title">Signal Readiness</h3>
-                                    </div>
-                                    <div class="stats-grid mono">
-                                        <div class="stat-chip"><span class="label">Bot state</span><span id="botStateSummary" class="value">PAUSED</span></div>
-                                        <div class="stat-chip"><span class="label">Engine</span><span id="engineSummary" class="value">Loading...</span></div>
-                                        <div class="stat-chip"><span class="label">Feed status</span><span id="feedThreadAlive" class="value">N/A</span></div>
-                                        <div class="stat-chip"><span class="label">Reconnects</span><span id="wsReconnectSummary" class="value">0</span></div>
-                                        <div class="stat-chip"><span class="label">Available balance</span><span id="availableBalance" class="value">0.0000</span></div>
-                                        <div class="stat-chip"><span class="label">Equity</span><span id="equityBalance" class="value">0.0000</span></div>
-                                        <div class="stat-chip"><span class="label">Consecutive losses</span><span id="consecutiveLosses" class="value">0</span></div>
-                                        <div class="stat-chip"><span class="label">Source</span><span id="marketSourceSummary" class="value">NONE</span></div>
-                                    </div>
-                                    <div class="small-note">The engine stays paused on boot in both environments. This layout is ready for the future multi-market scanner, while remaining fully compatible with the current HYPE execution runtime.</div>
-                                </div>
-                            </div>
-                        </div>
+                        <span id="environmentBadge" class="pill">{{ page_label }}</span>
                     </div>
-
-                    <div class="two-up">
-                        <div class="panel">
-                            <div class="panel-head">
-                                <div>
-                                    <div class="panel-kicker">Signals</div>
-                                    <h2 class="panel-title">Decision Context</h2>
-                                </div>
-                            </div>
-                            <div class="panel-body compact stack">
-                                <div>
-                                    <div class="label">Last Signal</div>
-                                    <div id="lastSignal" class="text-block mono mt-1">Waiting for signal log...</div>
-                                </div>
-                                <div>
-                                    <div class="label">Reason Not Taken</div>
-                                    <div id="reasonNotTaken" class="text-block warning-text mono mt-1">Waiting for evaluation...</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-head">
-                                <div>
-                                    <div class="panel-kicker">Execution</div>
-                                    <h2 class="panel-title">Position + Trade Context</h2>
-                                </div>
-                            </div>
-                            <div class="panel-body compact stack">
-                                <div>
-                                    <div class="label">Position Detail</div>
-                                    <div id="positionDetail" class="text-block mono mt-1">No active position.</div>
-                                </div>
-                                <div>
-                                    <div class="label">Last Trade</div>
-                                    <div id="lastTrade" class="text-block mono mt-1">No completed trades yet.</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="panel scrollable" style="flex: 1 1 auto;">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Ops</div>
-                                <h2 class="panel-title">Action Log</h2>
-                            </div>
-                            <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
-                        </div>
-                        <div class="panel-body compact" style="height: 100%; min-height: 0;">
-                            <textarea id="logBox" class="log-box mono" readonly></textarea>
-                        </div>
+                    <div class="section-body">
+                        <div id="positionCard" class="empty-state">No active position.</div>
                     </div>
                 </div>
+            </div>
 
-                <div class="column">
-                    <div class="panel">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Supervisor</div>
-                                <h2 class="panel-title">Loop + Feed Detail</h2>
-                            </div>
-                        </div>
-                        <div class="panel-body compact">
-                            <div class="meta-grid mono">
-                                <div class="meta-key">Loop alive</div><div id="loopThreadAlive" class="meta-value">N/A</div>
-                                <div class="meta-key">WS alive</div><div id="feedThreadAliveDetail" class="meta-value">N/A</div>
-                                <div class="meta-key">Reconnects</div><div id="feedReconnects" class="meta-value">0</div>
-                                <div class="meta-key">Last open</div><div id="feedLastOpen" class="meta-value">N/A</div>
-                                <div class="meta-key">Last message</div><div id="feedLastMessageDetail" class="meta-value">N/A</div>
-                                <div class="meta-key">Last close</div><div id="feedLastClose" class="meta-value">N/A</div>
-                                <div class="meta-key">Close code</div><div id="feedCloseCode" class="meta-value">N/A</div>
-                                <div class="meta-key">Loop heartbeat</div><div id="loopHeartbeat" class="meta-value">N/A</div>
-                                <div class="meta-key">Loop error</div><div id="loopError" class="meta-value">N/A</div>
-                                <div class="meta-key">WS error</div><div id="feedLastErrorDetail" class="meta-value">N/A</div>
-                            </div>
-                        </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <div class="section-kicker">History</div>
+                        <h2 class="section-title">Recent Trades</h2>
                     </div>
+                    <span id="tradeCountBadge" class="pill">0 Trades</span>
+                </div>
+                <div class="section-body table-wrap">
+                    <table class="table mono">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Coin</th>
+                                <th>Exit</th>
+                                <th class="num">Size</th>
+                                <th class="num">Entry</th>
+                                <th class="num">Exit</th>
+                                <th class="num">Fees</th>
+                                <th class="num">Net PnL</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentTradesBody">
+                            <tr><td colspan="8" class="table-empty">Loading recent trades...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
 
-                    <div class="panel scrollable" style="flex: 1 1 auto;">
-                        <div class="panel-head">
-                            <div>
-                                <div class="panel-kicker">Config</div>
-                                <h2 class="panel-title">Environment Configuration</h2>
-                            </div>
-                            <button class="btn btn-primary" onclick="saveConfig()">Save Config</button>
-                        </div>
-                        <div class="panel-body compact">
+            <details>
+                <summary>Details</summary>
+                <div class="details-grid">
+                    <div class="subcard">
+                        <div class="subcard-head">Config</div>
+                        <div class="subcard-body">
                             <div class="config-list">
                                 <div class="config-row"><div class="field-label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
@@ -777,16 +509,33 @@
                                 {% endif %}
                             </div>
                             <div class="checkbox-row mono">
-                                <input id="cfg_require_imbalance_improvement" type="checkbox" class="w-4 h-4">
-                                <span>Require book imbalance to be higher than 10 seconds ago</span>
+                                <input id="cfg_require_imbalance_improvement" type="checkbox">
+                                <span>Require book imbalance improvement</span>
                             </div>
-                            {% if page_label == 'REAL' %}
-                            <p class="small-note mono mt-3">REAL mode still boots paused and does not simulate slippage. It logs actual fill slippage from live fills.</p>
-                            {% endif %}
+                            <div style="margin-top: 12px;">
+                                <button class="btn btn-primary" onclick="saveConfig()">Save Config</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="subcard">
+                        <div class="subcard-head">Health</div>
+                        <div class="subcard-body">
+                            <div id="healthBox" class="health-box mono"></div>
+                        </div>
+                    </div>
+
+                    <div class="subcard">
+                        <div class="subcard-head" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                            <span>Action Log</span>
+                            <button class="btn" onclick="clearLogs()">Clear Logs</button>
+                        </div>
+                        <div class="subcard-body">
+                            <textarea id="logBox" class="log-box mono" readonly></textarea>
                         </div>
                     </div>
                 </div>
-            </div>
+            </details>
         </div>
     </div>
 
@@ -807,20 +556,28 @@
             return Number(value || 0).toFixed(digits);
         }
 
-        function pct(value, digits = 4) {
-            return `${fmt(value, digits)}%`;
-        }
-
         function setText(id, value) {
             const el = document.getElementById(id);
             if (el) el.textContent = value;
         }
 
+        function buildNoCacheUrl(path) {
+            return `${apiBase}${path}?_=${Date.now()}`;
+        }
+
+        async function fetchJsonNoCache(path) {
+            const res = await fetch(buildNoCacheUrl(path), {
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+            });
+            if (!res.ok) throw new Error(`${path} returned ${res.status}`);
+            return res.json();
+        }
+
         function applyConfig(config) {
             configFields.forEach((field) => {
                 const el = document.getElementById(`cfg_${field}`);
-                if (!el || !(field in config)) return;
-                el.value = config[field];
+                if (el && field in config) el.value = config[field];
             });
             const checkbox = document.getElementById('cfg_require_imbalance_improvement');
             if (checkbox) checkbox.checked = !!config.require_imbalance_improvement;
@@ -837,143 +594,124 @@
             return payload;
         }
 
-        function formatTsLabel(raw, fallback = 'N/A') {
-            return raw && String(raw).trim() ? raw : fallback;
+        function valueClass(value) {
+            const num = Number(value || 0);
+            if (num > 0) return 'positive';
+            if (num < 0) return 'negative';
+            return '';
         }
 
-        function buildNoCacheUrl(path) {
-            return `${apiBase}${path}?_=${Date.now()}`;
-        }
-
-        async function fetchJsonNoCache(path) {
-            const res = await fetch(buildNoCacheUrl(path), {
-                cache: 'no-store',
-                headers: {
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
-                }
-            });
-            if (!res.ok) {
-                throw new Error(`${path} returned ${res.status}`);
+        function renderHotPerps(items, error) {
+            const body = document.getElementById('hotPerpsBody');
+            const badge = document.getElementById('hotPerpsStatus');
+            if (!items || !items.length) {
+                body.innerHTML = `<tr><td colspan="8" class="table-empty">${error || 'Ranking is warming up.'}</td></tr>`;
+                badge.textContent = error ? 'Error' : 'Warming Up';
+                return;
             }
-            return res.json();
+            badge.textContent = 'Live';
+            body.innerHTML = items.map((item, index) => `
+                <tr>
+                    <td>${index + 1}</td>
+                    <td>${item.coin}</td>
+                    <td class="num ${valueClass(item.score_pct)}">${fmt(item.score_pct, 4)}%</td>
+                    <td>${item.score_basis}</td>
+                    <td class="num ${valueClass(item.return_1m)}">${fmt(item.return_1m, 4)}%</td>
+                    <td class="num ${valueClass(item.return_5m)}">${fmt(item.return_5m, 4)}%</td>
+                    <td class="num ${valueClass(item.return_15m)}">${fmt(item.return_15m, 4)}%</td>
+                    <td class="num">${fmt(item.mid, 5)}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderPosition(position, targets) {
+            const card = document.getElementById('positionCard');
+            if (!position || !position.active) {
+                card.className = 'empty-state';
+                card.innerHTML = 'No active position.';
+                setText('positionHeadline', 'None');
+                setText('positionSub', 'No open position');
+                return;
+            }
+            setText('positionHeadline', `${position.coin || 'HYPE'} ${position.side || 'LONG'}`);
+            setText('positionSub', `${fmt(position.size, 4)} units | ${position.seconds_open || 0}s open`);
+            card.className = '';
+            card.innerHTML = `
+                <div class="position-grid mono">
+                    <div class="field-label">Coin</div><div class="position-value">${position.coin || 'HYPE'}</div>
+                    <div class="field-label">Side</div><div class="position-value">${position.side || 'LONG'}</div>
+                    <div class="field-label">Size</div><div class="position-value">${fmt(position.size, 4)}</div>
+                    <div class="field-label">Entry</div><div class="position-value">${fmt(position.entry_price, 5)}</div>
+                    <div class="field-label">Current PnL</div><div class="position-value ${valueClass(position.gross_unrealized_pnl)}">${fmt(position.gross_unrealized_pnl, 4)} USDC</div>
+                    <div class="field-label">PnL %</div><div class="position-value ${valueClass(position.gross_unrealized_pnl_pct)}">${fmt(position.gross_unrealized_pnl_pct, 4)}%</div>
+                    <div class="field-label">Entry Type</div><div class="position-value">${position.entry_maker_or_taker || 'maker'}</div>
+                    <div class="field-label">Take Profit</div><div class="position-value">${targets ? fmt(targets.take_profit_price, 5) : 'N/A'}</div>
+                    <div class="field-label">Stop Loss</div><div class="position-value">${targets ? fmt(targets.stop_loss_price, 5) : 'N/A'}</div>
+                    <div class="field-label">Time Stop</div><div class="position-value">${targets ? (targets.time_stop_seconds || 0) : 0}s</div>
+                </div>
+            `;
+        }
+
+        function renderTrades(trades) {
+            const body = document.getElementById('recentTradesBody');
+            const rows = (trades || []).slice(0, 12);
+            setText('tradeCountBadge', `${rows.length} Trades`);
+            if (!rows.length) {
+                body.innerHTML = '<tr><td colspan="8" class="table-empty">No recent trades yet.</td></tr>';
+                return;
+            }
+            body.innerHTML = rows.map((trade) => `
+                <tr>
+                    <td>${trade.timestamp || 'N/A'}</td>
+                    <td>${trade.coin || 'HYPE'}</td>
+                    <td>${trade.exit_reason || 'N/A'}</td>
+                    <td class="num">${fmt(trade.size, 4)}</td>
+                    <td class="num">${fmt(trade.filled_price, 5)}</td>
+                    <td class="num">${fmt(trade.exit_price, 5)}</td>
+                    <td class="num">${fmt(trade.fees_paid, 4)}</td>
+                    <td class="num ${valueClass(trade.net_pnl)}">${fmt(trade.net_pnl, 4)}</td>
+                </tr>
+            `).join('');
         }
 
         async function fetchState() {
             try {
                 const data = await fetchJsonNoCache('/state');
-                const diag = data.market_diagnostics || {};
                 const market = data.market || {};
+                const balances = data.balances || {};
                 const stats = data.stats || {};
-                const hasPosition = !!(data.active_position && data.active_position.active);
-
                 document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
-
-                setText('modeTitle', `${data.environment} Mission Control`);
-                setText('environmentLabel', data.environment);
-                setText('environmentLabelPill', data.environment);
-                setText('environmentSummary', data.environment);
-                setText('botState', data.bot_state);
-                setText('botStateSummary', data.bot_state);
-                setText('engineStatus', data.engine_status);
-                setText('engineSummary', data.engine_status);
-                setText('engineSummaryTop', data.engine_status);
-                setText('statusHeadline', `${data.bot_state} / ${market.market_data_status || 'N/A'}`);
-
-                setText('midPrice', fmt(market.mid, 5));
-                setText('spreadPct', pct(market.spread_pct));
-                setText('return2m', pct(market.return_2m));
-                setText('return5m', pct(market.return_5m));
-                setText('return15m', pct(market.return_15m));
-                setText('return60m', pct(market.return_60m));
-                setText('bounce2m', pct(market.bounce_from_2m_low));
-                setText('bookImbalance', fmt(market.book_imbalance, 4));
-                setText('bookImbalanceOld', fmt(market.book_imbalance_10s_ago, 4));
-                setText('marketAge', `${fmt(market.market_data_age, 2)}s`);
-                setText('marketAgeSummary', `${fmt(market.market_data_age, 2)}s`);
-                setText('marketAgeBadge', `${fmt(market.market_data_age, 2)}s`);
-                setText('marketSource', String(market.market_data_source || 'none').toUpperCase());
-                setText('marketSourceSummary', String(market.market_data_source || 'none').toUpperCase());
-                setText('marketSourceBadge', String(market.market_data_source || 'none').toUpperCase());
-                setText('feedSummaryTop', `${market.market_data_status || 'N/A'} / ${fmt(market.market_data_age, 2)}s age`);
-
-                setText('activePosition', hasPosition ? 'YES' : 'NO');
-                setText('openOrders', String(data.open_orders.count || 0));
-                setText('tradeNotional', `${fmt(data.config.trade_notional_usdc, 2)} USDC`);
-                setText('dailyPnl', fmt(stats.daily_pnl, 4));
-                setText('totalPnl', fmt(stats.total_pnl, 4));
-                setText('consecutiveLosses', String(stats.consecutive_losses || 0));
-                setText('tradesToday', String(stats.trades_today || 0));
-                setText('availableBalance', fmt(data.balances.available, 4));
-                setText('equityBalance', fmt(data.balances.equity, 4));
-                setText('deploymentSummary', `${data.open_orders.count || 0} Order${(data.open_orders.count || 0) === 1 ? '' : 's'}`);
-                setText('deploymentSubcopy', hasPosition ? 'Active position is being managed.' : 'No active position in this environment.');
-                setText('riskHeadline', `${fmt(stats.daily_pnl, 4)} USDC`);
-                setText('riskSubcopy', `Equity ${fmt(data.balances.equity, 4)} / losses ${stats.consecutive_losses || 0}`);
-
-                setText('wsThreadAlive', diag.ws_thread_alive ? 'ALIVE' : 'DEAD');
-                setText('marketLoopAlive', diag.loop_thread_alive ? 'ALIVE' : 'DEAD');
-                setText('wsReconnects', String(diag.reconnect_count || 0));
-                setText('wsReconnectSummary', String(diag.reconnect_count || 0));
-                setText('feedStatus', diag.status || 'N/A');
-                setText('feedThreadAlive', diag.ws_thread_alive ? 'TRUE' : 'FALSE');
-                setText('feedThreadAliveDetail', diag.ws_thread_alive ? 'TRUE' : 'FALSE');
-                setText('loopThreadAlive', diag.loop_thread_alive ? 'TRUE' : 'FALSE');
-                setText('feedReconnects', String(diag.reconnect_count || 0));
-                setText('feedLastOpen', formatTsLabel(diag.last_open_at_label));
-                setText('feedLastMessage', formatTsLabel(diag.last_message_at_label));
-                setText('feedLastMessageDetail', formatTsLabel(diag.last_message_at_label));
-                setText('feedLastClose', formatTsLabel(diag.last_close_at_label));
-                setText('feedCloseCode', diag.last_close_code || 'N/A');
-                setText('feedLastError', diag.last_ws_error || market.market_data_error || 'N/A');
-                setText('feedLastErrorDetail', diag.last_ws_error || market.market_data_error || 'N/A');
-                setText('loopHeartbeat', formatTsLabel(diag.last_loop_heartbeat_at_label));
-                setText('loopError', diag.last_loop_error || 'N/A');
-
-                const lastSignal = data.last_signal || {};
-                const signalText = lastSignal.timestamp
-                    ? `${lastSignal.timestamp}\nmid=${fmt(lastSignal.mid, 5)} | spread=${pct(lastSignal.spread_pct)} | r2m=${pct(lastSignal.return_2m)} | r60m=${pct(lastSignal.return_60m)} | bounce=${pct(lastSignal.bounce_from_2m_low)} | imbalance=${fmt(lastSignal.book_imbalance, 4)}\npassed=${lastSignal.entry_conditions_passed} | reason=${lastSignal.reason_not_taken}`
-                    : 'Waiting for signal log...';
-                setText('lastSignal', signalText);
-                setText('reasonNotTaken', data.reason_last_trade_not_taken || 'Waiting for evaluation...');
-
-                const lastTrade = data.last_trade || {};
-                const tradeText = lastTrade.timestamp
-                    ? `${lastTrade.timestamp}\nexit_reason=${lastTrade.exit_reason} | size=${fmt(lastTrade.size, 4)} | entry=${fmt(lastTrade.filled_price, 5)} | exit=${fmt(lastTrade.exit_price, 5)}\ngross=${fmt(lastTrade.gross_pnl, 4)} USDC | fees=${fmt(lastTrade.fees_paid, 4)} USDC | net=${fmt(lastTrade.net_pnl, 4)} USDC`
-                    : 'No completed trades yet.';
-                setText('lastTrade', tradeText);
-
-                if (hasPosition) {
-                    const p = data.active_position;
-                    const targets = data.position_targets || {};
-                    const detail = [
-                        `size=${fmt(p.size, 4)} HYPE | entry=${fmt(p.entry_price, 5)} | submitted=${fmt(p.submitted_price, 5)}`,
-                        `gross_unrealized=${fmt(p.gross_unrealized_pnl, 4)} USDC | gross_pct=${pct(p.gross_unrealized_pnl_pct)} | seconds_open=${p.seconds_open}`,
-                        `mfe=${pct(p.max_favourable_excursion)} | mae=${pct(p.max_adverse_excursion)} | entry_type=${p.entry_maker_or_taker}`,
-                        `tp=${fmt(targets.take_profit_price || 0, 5)} | stop=${fmt(targets.stop_loss_price || 0, 5)} | time_stop=${targets.time_stop_seconds || 0}s`
-                    ].join('\n');
-                    setText('positionDetail', detail);
-                } else {
-                    setText('positionDetail', 'No active position.');
-                }
-
-                if (stats.unsupported_external_position) {
-                    setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${stats.unsupported_external_position}`);
-                }
-
+                setText('modeTitle', `${data.environment} Dashboard`);
+                setText('environmentBadge', data.environment);
+                setText('portfolioValue', fmt(balances.equity, 4));
+                setText('portfolioSub', `Available ${fmt(balances.available, 4)}`);
+                setText('dailyPnlTop', fmt(stats.daily_pnl, 4));
+                setText('pnlSub', `Total ${fmt(stats.total_pnl, 4)}`);
+                document.getElementById('dailyPnlTop').className = `metric-value mono ${valueClass(stats.daily_pnl)}`.trim();
+                setText('botFeedHeadline', data.bot_state || 'N/A');
+                setText('botFeedSub', `${String(market.market_data_source || 'none').toUpperCase()} | ${fmt(market.market_data_age, 2)}s age`);
+                renderPosition(data.active_position, data.position_targets || {});
+                renderHotPerps(data.hot_perps || [], data.hot_perps_error || '');
                 document.getElementById('logBox').value = (data.logs || []).join('\n');
                 applyConfig(data.config || {});
             } catch (error) {
-                setText('feedStatus', 'ERROR');
-                setText('feedLastError', error.message || 'State refresh failed.');
-                setText('feedLastErrorDetail', error.message || 'State refresh failed.');
+                document.getElementById('hotPerpsBody').innerHTML = `<tr><td colspan="8" class="table-empty">${error.message || 'State refresh failed.'}</td></tr>`;
+            }
+        }
+
+        async function fetchTrades() {
+            try {
+                const data = await fetchJsonNoCache('/trades');
+                renderTrades(data.trades || []);
+            } catch (error) {
+                document.getElementById('recentTradesBody').innerHTML = `<tr><td colspan="8" class="table-empty">${error.message || 'Trade refresh failed.'}</td></tr>`;
             }
         }
 
         async function fetchHealth() {
             try {
                 const data = await fetchJsonNoCache('/health');
-                document.getElementById('healthBox').innerHTML = [
+                document.getElementById('healthBox').textContent = [
                     `database: ${data.database}`,
                     `hyperliquid_sdk: ${data.hyperliquid_sdk}`,
                     `hyperliquid_api: ${data.hyperliquid_api}`,
@@ -992,9 +730,9 @@
                     `ws_last_error: ${data.ws_last_error || 'N/A'}`,
                     `engine: ${data.engine}`,
                     ...(data.errors || []).map((entry) => `error: ${entry}`)
-                ].join('<br>');
+                ].join('\n');
             } catch (error) {
-                document.getElementById('healthBox').innerHTML = `error: ${error.message || 'Health refresh failed.'}`;
+                document.getElementById('healthBox').textContent = error.message || 'Health refresh failed.';
             }
         }
 
@@ -1023,7 +761,7 @@
         async function killBot() {
             let payload = {};
             if (isReal) {
-                const closePosition = confirm('KILL SWITCH: cancel all open orders and close the open REAL position too? Click OK to close, Cancel to leave position open.');
+                const closePosition = confirm('Cancel all open REAL orders and close the live position too?');
                 payload = { close_position: closePosition };
             }
             await fetch(`${apiBase}/kill`, {
@@ -1068,12 +806,13 @@
         }
 
         async function refreshAll() {
-            await Promise.allSettled([fetchState(), fetchHealth()]);
+            await Promise.allSettled([fetchState(), fetchTrades(), fetchHealth()]);
         }
 
         refreshAll();
-        setInterval(fetchState, 1000);
-        setInterval(fetchHealth, 3000);
+        setInterval(fetchState, 2000);
+        setInterval(fetchTrades, 5000);
+        setInterval(fetchHealth, 5000);
     </script>
 </body>
 </html>

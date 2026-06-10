@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from threading import Lock, Thread
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from psycopg2.extras import Json
@@ -60,6 +62,9 @@ TRADING_LOOP_INTERVAL = 1.0
 MARKET_HISTORY_SECONDS = 3900
 MARKET_STALE_AFTER_SECONDS = 20.0
 HYPERLIQUID_WS_URL = 'wss://api.hyperliquid.xyz/ws'
+HYPERLIQUID_INFO_URL = 'https://api.hyperliquid.xyz/info'
+UNIVERSE_REFRESH_INTERVAL_SECONDS = 2.0
+UNIVERSE_META_REFRESH_INTERVAL_SECONDS = 900.0
 RESULTS_TRADE_LIMIT = 500
 TRADE_LOG_LIMIT = 500
 SIGNAL_LOG_LIMIT = 5000
@@ -648,7 +653,138 @@ class MarketDataStore:
             }
 
 
+class MarketUniverseStore:
+    def __init__(self):
+        self.lock = Lock()
+        self.history = {}
+        self.current_mids = {}
+        self.universe = []
+        self.last_refresh_at = 0.0
+        self.last_meta_refresh_at = 0.0
+        self.last_error = ''
+        self.loop_thread = None
+
+    def _post_info(self, payload):
+        req = urllib_request.Request(
+            HYPERLIQUID_INFO_URL,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib_request.urlopen(req, timeout=10) as response:
+            return json.loads(response.read().decode('utf-8'))
+
+    def ensure_running(self):
+        with self.lock:
+            loop_thread = self.loop_thread
+            if loop_thread and loop_thread.is_alive():
+                return False
+            loop_thread = Thread(target=self.loop, daemon=True, name='market-universe-loop')
+            self.loop_thread = loop_thread
+        loop_thread.start()
+        return True
+
+    def refresh_meta(self, now):
+        with self.lock:
+            if self.universe and (now - self.last_meta_refresh_at) < UNIVERSE_META_REFRESH_INTERVAL_SECONDS:
+                return
+        meta = self._post_info({'type': 'meta'})
+        universe = [asset.get('name') for asset in (meta.get('universe') or []) if asset.get('name')]
+        with self.lock:
+            self.universe = universe
+            self.last_meta_refresh_at = now
+
+    def refresh_once(self):
+        now = time.time()
+        with self.lock:
+            if self.last_refresh_at and (now - self.last_refresh_at) < UNIVERSE_REFRESH_INTERVAL_SECONDS:
+                return
+        self.refresh_meta(now)
+        mids_raw = self._post_info({'type': 'allMids'})
+        if not isinstance(mids_raw, dict):
+            raise RuntimeError('Hyperliquid allMids returned an unexpected payload.')
+        with self.lock:
+            allowed = set(self.universe)
+            for coin, raw_mid in mids_raw.items():
+                if allowed and coin not in allowed:
+                    continue
+                try:
+                    mid = float(raw_mid)
+                except Exception:
+                    continue
+                self.current_mids[coin] = mid
+                history = self.history.setdefault(coin, deque())
+                history.append({'ts': now, 'mid': mid})
+                cutoff = now - MARKET_HISTORY_SECONDS
+                while history and history[0]['ts'] < cutoff:
+                    history.popleft()
+            self.last_refresh_at = now
+            self.last_error = ''
+
+    def loop(self):
+        while True:
+            try:
+                self.refresh_once()
+            except Exception as exc:
+                with self.lock:
+                    self.last_error = str(exc)
+            time.sleep(UNIVERSE_REFRESH_INTERVAL_SECONDS)
+
+    def _return_for(self, history, seconds_ago):
+        if not history:
+            return None
+        target_ts = time.time() - seconds_ago
+        candidate = None
+        for item in history:
+            if item['ts'] <= target_ts:
+                candidate = item
+            else:
+                break
+        if candidate is None:
+            return None
+        latest_mid = history[-1]['mid']
+        return pct_change(candidate['mid'], latest_mid)
+
+    def get_hot_perps(self, limit=10):
+        self.ensure_running()
+        with self.lock:
+            histories = {coin: list(items) for coin, items in self.history.items()}
+            last_error = self.last_error
+        ranked = []
+        for coin, history in histories.items():
+            if not history:
+                continue
+            latest_mid = history[-1]['mid']
+            return_1m = self._return_for(history, 60)
+            return_5m = self._return_for(history, 300)
+            return_15m = self._return_for(history, 900)
+            oldest_mid = history[0]['mid']
+            warmup_return = pct_change(oldest_mid, latest_mid) if len(history) > 1 else 0.0
+            score = return_5m
+            basis = '5m'
+            if score is None:
+                score = return_1m
+                basis = '1m'
+            if score is None:
+                score = warmup_return
+                basis = 'warmup'
+            ranked.append(
+                {
+                    'coin': coin,
+                    'mid': trim_float(latest_mid, 6),
+                    'score_pct': trim_float(score, 4),
+                    'score_basis': basis,
+                    'return_1m': trim_float(return_1m or 0.0, 4),
+                    'return_5m': trim_float(return_5m or 0.0, 4),
+                    'return_15m': trim_float(return_15m or 0.0, 4),
+                }
+            )
+        ranked.sort(key=lambda item: item['score_pct'], reverse=True)
+        return {'leaders': ranked[:limit], 'last_error': last_error}
+
+
 market_data = MarketDataStore()
+market_universe = MarketUniverseStore()
 real_client_lock = Lock()
 real_client_bundle = {'info': None, 'exchange': None, 'account_address': '', 'size_decimals': 2}
 
@@ -1082,6 +1218,7 @@ def compute_position_view(position, mid):
     pnl_pct = pct_change(entry, mid)
     return {
         'active': True,
+        'coin': MARKET_COIN,
         'side': position.get('side', 'LONG'),
         'size': trim_float(size, 4),
         'entry_price': trim_float(entry, 6),
@@ -1845,6 +1982,7 @@ def build_health_payload(namespace):
 def build_state_payload(namespace):
     snapshot, history, market_status, market_error = market_data.get_snapshot()
     ws_diag = market_data.get_diagnostics()
+    hot_perps = market_universe.get_hot_perps(limit=10)
     metrics = compute_market_metrics(snapshot, history) if snapshot else {
         'mid': 0.0,
         'best_bid': 0.0,
@@ -1940,6 +2078,8 @@ def build_state_payload(namespace):
         },
         'last_signal': last_signal,
         'last_trade': last_trade,
+        'hot_perps': hot_perps['leaders'],
+        'hot_perps_error': hot_perps['last_error'],
         'reason_last_trade_not_taken': get_reason_not_taken(namespace),
         'logs': load_action_logs(namespace),
     }
