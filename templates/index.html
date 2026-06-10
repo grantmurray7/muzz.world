@@ -313,7 +313,7 @@
 
             const lastTrade = data.last_trade || {};
             const tradeText = lastTrade.timestamp
-                ? `${lastTrade.timestamp}\nexit_reason=${lastTrade.exit_reason} | size=${fmt(lastTrade.size, 4)} | entry=${fmt(lastTrade.filled_price, 5)} | exit=${fmt(lastTrade.exit_price, 5)} | net=${fmt(lastTrade.net_pnl, 4)} USDC`
+                ? `${lastTrade.timestamp}\nexit_reason=${lastTrade.exit_reason} | size=${fmt(lastTrade.size, 4)} | entry=${fmt(lastTrade.filled_price, 5)} | exit=${fmt(lastTrade.exit_price, 5)}\ngross=${fmt(lastTrade.gross_pnl, 4)} USDC | fees=${fmt(lastTrade.fees_paid, 4)} USDC | net=${fmt(lastTrade.net_pnl, 4)} USDC`
                 : 'No completed trades yet.';
             setText('lastTrade', tradeText);
             setText('reasonNotTaken', data.reason_last_trade_not_taken || '');
