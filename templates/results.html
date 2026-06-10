@@ -71,7 +71,17 @@
 
     <script>
         const apiBase = '{{ api_base }}';
-        function fmt(value, digits = 4) { return Number(value || 0).toFixed(digits); }
+        const decimalFormatterCache = new Map();
+        function fmt(value, digits = 4) {
+            const key = String(digits);
+            if (!decimalFormatterCache.has(key)) {
+                decimalFormatterCache.set(key, new Intl.NumberFormat('en-GB', {
+                    minimumFractionDigits: digits,
+                    maximumFractionDigits: digits
+                }));
+            }
+            return decimalFormatterCache.get(key).format(Number(value || 0));
+        }
         function pct(value) { return `${fmt(value, 2)}%`; }
         function holdText(seconds) { return `${Math.round(Number(seconds || 0))}s`; }
 

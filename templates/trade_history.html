@@ -65,8 +65,16 @@
             minute: '2-digit',
             hour12: false
         });
+        const decimalFormatterCache = new Map();
         function fmt(value, digits = 4) {
-            return Number(value || 0).toFixed(digits);
+            const key = String(digits);
+            if (!decimalFormatterCache.has(key)) {
+                decimalFormatterCache.set(key, new Intl.NumberFormat('en-GB', {
+                    minimumFractionDigits: digits,
+                    maximumFractionDigits: digits
+                }));
+            }
+            return decimalFormatterCache.get(key).format(Number(value || 0));
         }
 
         function formatTradeTime(value) {
