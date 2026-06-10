@@ -345,18 +345,30 @@ class MarketDataStore:
         self.status = 'BOOTING'
         self.error = ''
         self.info = None
+        self.last_message_at = 0.0
+        self.subscription_id = None
 
-    def ensure_client(self):
+    def ensure_rest_client(self):
         if Info is None or hl_constants is None:
             raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
         if self.info is None:
             self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
         return self.info
 
-    def poll_once(self):
-        info = self.ensure_client()
-        book = info.l2_snapshot(MARKET_COIN)
-        levels = book.get('levels') or [[], []]
+    def close_stream(self):
+        info = self.info
+        self.info = None
+        self.subscription_id = None
+        if not info:
+            return
+        try:
+            if getattr(info, 'ws_manager', None):
+                info.ws_manager.stop()
+        except Exception:
+            pass
+
+    def _build_snapshot(self, book_data):
+        levels = book_data.get('levels') or [[], []]
         bids = levels[0] if len(levels) > 0 else []
         asks = levels[1] if len(levels) > 1 else []
         if not bids or not asks:
@@ -369,8 +381,12 @@ class MarketDataStore:
         ask_depth = sum(float(level['sz']) for level in asks[:5])
         total_depth = bid_depth + ask_depth
         book_imbalance = (bid_depth / total_depth) if total_depth > 0 else 0.5
-        snapshot = {
-            'ts': time.time(),
+        event_ts = time.time()
+        raw_time = book_data.get('time')
+        if raw_time:
+            event_ts = float(raw_time) / 1000.0
+        return {
+            'ts': event_ts,
             'best_bid': best_bid,
             'best_ask': best_ask,
             'mid': mid,
@@ -379,6 +395,8 @@ class MarketDataStore:
             'ask_depth_top5': ask_depth,
             'book_imbalance': book_imbalance,
         }
+
+    def _record_snapshot(self, snapshot):
         with self.lock:
             self.snapshot = snapshot
             self.history.append(snapshot)
@@ -387,17 +405,50 @@ class MarketDataStore:
                 self.history.popleft()
             self.status = 'LIVE'
             self.error = ''
-        return snapshot
+            self.last_message_at = time.time()
+
+    def on_book_message(self, book_msg):
+        if not isinstance(book_msg, dict):
+            return
+        book_data = book_msg.get('data') or {}
+        if book_data.get('coin') != MARKET_COIN:
+            return
+        snapshot = self._build_snapshot(book_data)
+        self._record_snapshot(snapshot)
+
+    def connect_stream(self):
+        if Info is None or hl_constants is None:
+            raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
+        self.close_stream()
+        with self.lock:
+            self.status = 'CONNECTING'
+            self.error = ''
+            self.last_message_at = 0.0
+        self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=False)
+        self.subscription_id = self.info.subscribe({'type': 'l2Book', 'coin': MARKET_COIN}, self.on_book_message)
+        snapshot_book = self.info.l2_snapshot(MARKET_COIN)
+        self._record_snapshot(self._build_snapshot(snapshot_book))
 
     def loop(self):
         while True:
             try:
-                self.poll_once()
+                self.connect_stream()
+                while True:
+                    time.sleep(1)
+                    with self.lock:
+                        last_message_at = self.last_message_at
+                    if not last_message_at:
+                        continue
+                    age = time.time() - last_message_at
+                    if age > MARKET_STALE_AFTER_SECONDS:
+                        raise RuntimeError(f'Hyperliquid websocket stale ({age:.1f}s without book update).')
             except Exception as exc:
                 with self.lock:
                     self.status = 'ERROR'
                     self.error = str(exc)
-            time.sleep(MARKET_POLL_INTERVAL)
+            finally:
+                self.close_stream()
+            time.sleep(2)
 
     def get_snapshot(self):
         with self.lock:
