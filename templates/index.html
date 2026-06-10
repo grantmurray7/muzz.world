@@ -617,105 +617,130 @@
             return raw && String(raw).trim() ? raw : fallback;
         }
 
+        function buildNoCacheUrl(path) {
+            return `${apiBase}${path}?_=${Date.now()}`;
+        }
+
+        async function fetchJsonNoCache(path) {
+            const res = await fetch(buildNoCacheUrl(path), {
+                cache: 'no-store',
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            });
+            if (!res.ok) {
+                throw new Error(`${path} returned ${res.status}`);
+            }
+            return res.json();
+        }
+
         async function fetchState() {
-            const res = await fetch(`${apiBase}/state`);
-            const data = await res.json();
-            document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
-            setText('environmentLabel', data.environment);
-            setText('environmentLabelPill', data.environment);
-            setText('environmentSummary', data.environment);
-            setText('botState', data.bot_state);
-            setText('botStateSummary', data.bot_state);
-            setText('engineStatus', data.engine_status);
-            setText('engineSummary', data.engine_status);
-            setText('midPrice', fmt(data.market.mid, 5));
-            setText('spreadPct', pct(data.market.spread_pct));
-            setText('return2m', pct(data.market.return_2m));
-            setText('return60m', pct(data.market.return_60m));
-            setText('bounce2m', pct(data.market.bounce_from_2m_low));
-            setText('bookImbalance', fmt(data.market.book_imbalance, 4));
-            setText('bookImbalanceOld', fmt(data.market.book_imbalance_10s_ago, 4));
-            setText('activePosition', data.active_position.active ? 'YES' : 'NO');
-            setText('openOrders', String(data.open_orders.count || 0));
-            setText('tradeNotional', `${fmt(data.config.trade_notional_usdc, 2)} USDC`);
-            setText('dailyPnl', fmt(data.stats.daily_pnl, 4));
-            setText('totalPnl', fmt(data.stats.total_pnl, 4));
-            setText('consecutiveLosses', String(data.stats.consecutive_losses || 0));
-            setText('tradesToday', String(data.stats.trades_today || 0));
-            setText('availableBalance', fmt(data.balances.available, 4));
-            setText('equityBalance', fmt(data.balances.equity, 4));
-            setText('marketAge', `${fmt(data.market.market_data_age, 2)}s`);
-            setText('marketAgeSummary', `${fmt(data.market.market_data_age, 2)}s`);
-            setText('marketSource', String(data.market.market_data_source || 'none').toUpperCase());
-            setText('marketSourceSummary', String(data.market.market_data_source || 'none').toUpperCase());
-            const diag = data.market_diagnostics || {};
-            setText('wsThreadAlive', data.market_diagnostics.ws_thread_alive ? 'ALIVE' : 'DEAD');
-            setText('wsReconnects', String(data.market_diagnostics.reconnect_count || 0));
-            setText('wsReconnectSummary', String(data.market_diagnostics.reconnect_count || 0));
-            setText('feedStatus', diag.status || 'N/A');
-            setText('feedThreadAlive', diag.ws_thread_alive ? 'TRUE' : 'FALSE');
-            setText('feedReconnects', String(diag.reconnect_count || 0));
-            setText('feedLastOpen', formatTsLabel(diag.last_open_at_label));
-            setText('feedLastMessage', formatTsLabel(diag.last_message_at_label));
-            setText('feedLastClose', formatTsLabel(diag.last_close_at_label));
-            setText('feedCloseCode', diag.last_close_code || 'N/A');
-            setText('feedLastError', diag.last_ws_error || data.market.market_data_error || 'N/A');
+            try {
+                const data = await fetchJsonNoCache('/state');
+                document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
+                setText('environmentLabel', data.environment);
+                setText('environmentLabelPill', data.environment);
+                setText('environmentSummary', data.environment);
+                setText('botState', data.bot_state);
+                setText('botStateSummary', data.bot_state);
+                setText('engineStatus', data.engine_status);
+                setText('engineSummary', data.engine_status);
+                setText('midPrice', fmt(data.market.mid, 5));
+                setText('spreadPct', pct(data.market.spread_pct));
+                setText('return2m', pct(data.market.return_2m));
+                setText('return60m', pct(data.market.return_60m));
+                setText('bounce2m', pct(data.market.bounce_from_2m_low));
+                setText('bookImbalance', fmt(data.market.book_imbalance, 4));
+                setText('bookImbalanceOld', fmt(data.market.book_imbalance_10s_ago, 4));
+                setText('activePosition', data.active_position.active ? 'YES' : 'NO');
+                setText('openOrders', String(data.open_orders.count || 0));
+                setText('tradeNotional', `${fmt(data.config.trade_notional_usdc, 2)} USDC`);
+                setText('dailyPnl', fmt(data.stats.daily_pnl, 4));
+                setText('totalPnl', fmt(data.stats.total_pnl, 4));
+                setText('consecutiveLosses', String(data.stats.consecutive_losses || 0));
+                setText('tradesToday', String(data.stats.trades_today || 0));
+                setText('availableBalance', fmt(data.balances.available, 4));
+                setText('equityBalance', fmt(data.balances.equity, 4));
+                setText('marketAge', `${fmt(data.market.market_data_age, 2)}s`);
+                setText('marketAgeSummary', `${fmt(data.market.market_data_age, 2)}s`);
+                setText('marketSource', String(data.market.market_data_source || 'none').toUpperCase());
+                setText('marketSourceSummary', String(data.market.market_data_source || 'none').toUpperCase());
+                const diag = data.market_diagnostics || {};
+                setText('wsThreadAlive', diag.ws_thread_alive ? 'ALIVE' : 'DEAD');
+                setText('wsReconnects', String(diag.reconnect_count || 0));
+                setText('wsReconnectSummary', String(diag.reconnect_count || 0));
+                setText('feedStatus', diag.status || 'N/A');
+                setText('feedThreadAlive', diag.ws_thread_alive ? 'TRUE' : 'FALSE');
+                setText('feedReconnects', String(diag.reconnect_count || 0));
+                setText('feedLastOpen', formatTsLabel(diag.last_open_at_label));
+                setText('feedLastMessage', formatTsLabel(diag.last_message_at_label));
+                setText('feedLastClose', formatTsLabel(diag.last_close_at_label));
+                setText('feedCloseCode', diag.last_close_code || 'N/A');
+                setText('feedLastError', diag.last_ws_error || data.market.market_data_error || 'N/A');
 
-            const lastSignal = data.last_signal || {};
-            const signalText = lastSignal.timestamp
-                ? `${lastSignal.timestamp}\nmid=${fmt(lastSignal.mid, 5)} | spread=${pct(lastSignal.spread_pct)} | r2m=${pct(lastSignal.return_2m)} | r60m=${pct(lastSignal.return_60m)} | bounce=${pct(lastSignal.bounce_from_2m_low)} | imbalance=${fmt(lastSignal.book_imbalance, 4)}\npassed=${lastSignal.entry_conditions_passed} | reason=${lastSignal.reason_not_taken}`
-                : 'Waiting for signal log...';
-            setText('lastSignal', signalText);
+                const lastSignal = data.last_signal || {};
+                const signalText = lastSignal.timestamp
+                    ? `${lastSignal.timestamp}\nmid=${fmt(lastSignal.mid, 5)} | spread=${pct(lastSignal.spread_pct)} | r2m=${pct(lastSignal.return_2m)} | r60m=${pct(lastSignal.return_60m)} | bounce=${pct(lastSignal.bounce_from_2m_low)} | imbalance=${fmt(lastSignal.book_imbalance, 4)}\npassed=${lastSignal.entry_conditions_passed} | reason=${lastSignal.reason_not_taken}`
+                    : 'Waiting for signal log...';
+                setText('lastSignal', signalText);
 
-            const lastTrade = data.last_trade || {};
-            const tradeText = lastTrade.timestamp
-                ? `${lastTrade.timestamp}\nexit_reason=${lastTrade.exit_reason} | size=${fmt(lastTrade.size, 4)} | entry=${fmt(lastTrade.filled_price, 5)} | exit=${fmt(lastTrade.exit_price, 5)}\ngross=${fmt(lastTrade.gross_pnl, 4)} USDC | fees=${fmt(lastTrade.fees_paid, 4)} USDC | net=${fmt(lastTrade.net_pnl, 4)} USDC`
-                : 'No completed trades yet.';
-            setText('lastTrade', tradeText);
-            setText('reasonNotTaken', data.reason_last_trade_not_taken || '');
+                const lastTrade = data.last_trade || {};
+                const tradeText = lastTrade.timestamp
+                    ? `${lastTrade.timestamp}\nexit_reason=${lastTrade.exit_reason} | size=${fmt(lastTrade.size, 4)} | entry=${fmt(lastTrade.filled_price, 5)} | exit=${fmt(lastTrade.exit_price, 5)}\ngross=${fmt(lastTrade.gross_pnl, 4)} USDC | fees=${fmt(lastTrade.fees_paid, 4)} USDC | net=${fmt(lastTrade.net_pnl, 4)} USDC`
+                    : 'No completed trades yet.';
+                setText('lastTrade', tradeText);
+                setText('reasonNotTaken', data.reason_last_trade_not_taken || '');
 
-            if (data.active_position.active) {
-                const p = data.active_position;
-                const targets = data.position_targets || {};
-                const detail = [
-                    `size=${fmt(p.size, 4)} HYPE | entry=${fmt(p.entry_price, 5)} | submitted=${fmt(p.submitted_price, 5)}`,
-                    `gross_unrealized=${fmt(p.gross_unrealized_pnl, 4)} USDC | gross_pct=${pct(p.gross_unrealized_pnl_pct)} | seconds_open=${p.seconds_open}`,
-                    `mfe=${pct(p.max_favourable_excursion)} | mae=${pct(p.max_adverse_excursion)} | entry_type=${p.entry_maker_or_taker}`,
-                    `tp=${fmt(targets.take_profit_price || 0, 5)} | stop=${fmt(targets.stop_loss_price || 0, 5)} | time_stop=${targets.time_stop_seconds || 0}s`
-                ].join('\n');
-                setText('positionDetail', detail);
-            } else {
-                setText('positionDetail', 'No active position.');
+                if (data.active_position.active) {
+                    const p = data.active_position;
+                    const targets = data.position_targets || {};
+                    const detail = [
+                        `size=${fmt(p.size, 4)} HYPE | entry=${fmt(p.entry_price, 5)} | submitted=${fmt(p.submitted_price, 5)}`,
+                        `gross_unrealized=${fmt(p.gross_unrealized_pnl, 4)} USDC | gross_pct=${pct(p.gross_unrealized_pnl_pct)} | seconds_open=${p.seconds_open}`,
+                        `mfe=${pct(p.max_favourable_excursion)} | mae=${pct(p.max_adverse_excursion)} | entry_type=${p.entry_maker_or_taker}`,
+                        `tp=${fmt(targets.take_profit_price || 0, 5)} | stop=${fmt(targets.stop_loss_price || 0, 5)} | time_stop=${targets.time_stop_seconds || 0}s`
+                    ].join('\n');
+                    setText('positionDetail', detail);
+                } else {
+                    setText('positionDetail', 'No active position.');
+                }
+
+                if (data.stats.unsupported_external_position) {
+                    setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${data.stats.unsupported_external_position}`);
+                }
+
+                document.getElementById('logBox').value = (data.logs || []).join('\n');
+                applyConfig(data.config || {});
+            } catch (error) {
+                setText('feedStatus', 'ERROR');
+                setText('feedLastError', error.message || 'State refresh failed.');
             }
-
-            if (data.stats.unsupported_external_position) {
-                setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${data.stats.unsupported_external_position}`);
-            }
-
-            document.getElementById('logBox').value = (data.logs || []).join('\n');
-            applyConfig(data.config || {});
         }
 
         async function fetchHealth() {
-            const res = await fetch(`${apiBase}/health`);
-            const data = await res.json();
-            document.getElementById('healthBox').innerHTML = [
-                `database: ${data.database}`,
-                `hyperliquid_sdk: ${data.hyperliquid_sdk}`,
-                `hyperliquid_api: ${data.hyperliquid_api}`,
-                `market_data: ${data.market_data}`,
-                `market_data_source: ${data.market_data_source || 'none'}`,
-                `ws_thread_alive: ${data.ws_thread_alive ? 'true' : 'false'}`,
-                `ws_reconnect_count: ${data.ws_reconnect_count || 0}`,
-                `ws_last_open_at: ${data.ws_last_open_at || 'N/A'}`,
-                `ws_last_message_at: ${data.ws_last_message_at || 'N/A'}`,
-                `ws_last_close_at: ${data.ws_last_close_at || 'N/A'}`,
-                `ws_last_close_code: ${data.ws_last_close_code || 'N/A'}`,
-                `ws_last_close_reason: ${data.ws_last_close_reason || 'N/A'}`,
-                `ws_last_error: ${data.ws_last_error || 'N/A'}`,
-                `engine: ${data.engine}`,
-                ...(data.errors || []).map((entry) => `error: ${entry}`)
-            ].join('<br>');
+            try {
+                const data = await fetchJsonNoCache('/health');
+                document.getElementById('healthBox').innerHTML = [
+                    `database: ${data.database}`,
+                    `hyperliquid_sdk: ${data.hyperliquid_sdk}`,
+                    `hyperliquid_api: ${data.hyperliquid_api}`,
+                    `market_data: ${data.market_data}`,
+                    `market_data_source: ${data.market_data_source || 'none'}`,
+                    `ws_thread_alive: ${data.ws_thread_alive ? 'true' : 'false'}`,
+                    `ws_reconnect_count: ${data.ws_reconnect_count || 0}`,
+                    `ws_last_open_at: ${data.ws_last_open_at || 'N/A'}`,
+                    `ws_last_message_at: ${data.ws_last_message_at || 'N/A'}`,
+                    `ws_last_close_at: ${data.ws_last_close_at || 'N/A'}`,
+                    `ws_last_close_code: ${data.ws_last_close_code || 'N/A'}`,
+                    `ws_last_close_reason: ${data.ws_last_close_reason || 'N/A'}`,
+                    `ws_last_error: ${data.ws_last_error || 'N/A'}`,
+                    `engine: ${data.engine}`,
+                    ...(data.errors || []).map((entry) => `error: ${entry}`)
+                ].join('<br>');
+            } catch (error) {
+                document.getElementById('healthBox').innerHTML = `error: ${error.message || 'Health refresh failed.'}`;
+            }
         }
 
         async function startBot() {
@@ -788,11 +813,12 @@
         }
 
         async function refreshAll() {
-            await Promise.all([fetchState(), fetchHealth()]);
+            await Promise.allSettled([fetchState(), fetchHealth()]);
         }
 
         refreshAll();
-        setInterval(refreshAll, 3000);
+        setInterval(fetchState, 1000);
+        setInterval(fetchHealth, 3000);
     </script>
 </body>
 </html>

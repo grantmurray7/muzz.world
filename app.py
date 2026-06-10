@@ -31,6 +31,15 @@ except Exception as exc:  # pragma: no cover - import availability depends on ru
 
 app = Flask(__name__)
 
+
+@app.after_request
+def disable_api_caching(response):
+    if request.path.startswith('/api/') or request.path.startswith('/sandbox/api/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', str(uuid.uuid4()))
 ADMIN_PASSWORD = (os.environ.get('ADMIN_PASSWORD') or '').strip()
 if not ADMIN_PASSWORD:
