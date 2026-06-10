@@ -469,7 +469,25 @@ class MarketDataStore:
             history = list(self.history)
             status = self.status
             error = self.error
-        return snapshot, history, status, error
+            last_message_at = self.last_message_at
+            last_rest_snapshot_at = self.last_rest_snapshot_at
+        now = time.time()
+        effective_snapshot = dict(snapshot)
+        effective_status = status
+        effective_error = error
+        if last_message_at:
+            ws_age = now - last_message_at
+            if ws_age > MARKET_STALE_AFTER_SECONDS:
+                effective_status = 'STALE'
+                effective_error = f'Hyperliquid websocket stale ({ws_age:.1f}s without book update).'
+                effective_snapshot['source'] = 'websocket_stale'
+        elif last_rest_snapshot_at:
+            rest_age = now - last_rest_snapshot_at
+            if rest_age > MARKET_STALE_AFTER_SECONDS:
+                effective_status = 'STALE'
+                effective_error = f'Only REST seed available ({rest_age:.1f}s old); no websocket book updates received.'
+                effective_snapshot['source'] = 'rest_seed_stale'
+        return effective_snapshot, history, effective_status, effective_error
 
 
 market_data = MarketDataStore()
@@ -1624,12 +1642,13 @@ def trade_loop(namespace):
 
 
 def build_health_payload(namespace):
+    snapshot, _, market_status, market_error = market_data.get_snapshot()
     payload = {
         'database': 'OK',
         'hyperliquid_sdk': 'OK' if not HYPERLIQUID_IMPORT_ERROR else 'ERROR',
         'hyperliquid_api': 'N/A',
-        'market_data': market_data.status,
-        'market_data_source': (market_data.snapshot or {}).get('source', 'none'),
+        'market_data': market_status,
+        'market_data_source': snapshot.get('source', 'none') if snapshot else 'none',
         'engine': get_engine_status(namespace),
         'errors': [],
     }
@@ -1640,8 +1659,8 @@ def build_health_payload(namespace):
         payload['errors'].append(str(exc))
     if HYPERLIQUID_IMPORT_ERROR:
         payload['errors'].append(HYPERLIQUID_IMPORT_ERROR)
-    if market_data.error:
-        payload['errors'].append(market_data.error)
+    if market_error:
+        payload['errors'].append(market_error)
     if namespace == REAL_NS:
         if not HYPERLIQUID_API_KEY or not HYPERLIQUID_API_SECRET:
             payload['hyperliquid_api'] = 'MISSING_KEYS'
