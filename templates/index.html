@@ -76,6 +76,7 @@
         .status-ok { color: #52e5a4; }
         .status-fail { color: #ff6b6b; }
         .status-warn { color: #fbbf24; }
+        .sandbox-label { letter-spacing: 0.38em; }
         #logBox { height: 44vh; overflow-y: auto; font-size: 0.74rem; line-height: 0.98rem; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1f2226; }
@@ -98,13 +99,15 @@
 <body class="font-sans antialiased">
     <div class="flex items-center justify-between gap-4 mb-4 px-1 min-h-[92px]">
         <div class="flex items-center flex-shrink-0 self-center h-full gap-3">
-            <img class="dashboard-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world">
+            <a href="{{ '/' if page_label else '/sandbox' }}" aria-label="Switch dashboard mode">
+                <img class="dashboard-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world">
+            </a>
             {% if page_label %}
-            <span class="font-mono text-sm font-black uppercase tracking-widest text-pink-300">{{ page_label }}</span>
+            <span class="font-mono text-sm font-black uppercase text-pink-300 sandbox-label">{{ page_label }}</span>
             {% endif %}
         </div>
         <div class="flex-1 flex items-center justify-center self-center gap-2 font-mono h-full">
-            <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="accent-btn font-mono font-bold py-2.5 px-8 rounded text-sm uppercase tracking-wider transition duration-150 whitespace-nowrap">
+            <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition duration-150 whitespace-nowrap">
                 SYNCHRONIZING...
             </button>
             <a href="{{ trades_href or '/trades' }}" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition whitespace-nowrap">
@@ -340,12 +343,7 @@
             const numeric = Number(raw);
             if (!Number.isFinite(numeric)) return '$0.00';
 
-            if (!raw.includes('.')) {
-                return `$${numeric.toFixed(2)}`;
-            }
-
-            const trimmed = raw.replace(/0+$/, '').replace(/\.$/, '');
-            return `$${trimmed}`;
+            return `$${numeric.toFixed(3)}`;
         }
 
         function pct(value) {
@@ -434,7 +432,6 @@
                 const response = await fetch(`${apiBase}/state`);
                 const data = await response.json();
                 const currentSpotRaw = data.current_sol_price || '0';
-                const currentSpot = parseFloat(currentSpotRaw || 0);
                 const strategy = data.strategy || {};
                 const profitUsd = Number(strategy.profit_usd || 0);
                 const profitPct = Number(strategy.profit_pct || 0);
@@ -479,11 +476,11 @@
                 currentBotRunningState = data.bot_running;
                 const badge = document.getElementById('engineBadge');
                 if (data.bot_running) {
-                    toggleBtn.innerText = 'PAUSE TRADING';
+                    toggleBtn.innerText = 'PAUSE';
                     badge.innerText = '{{ page_label if page_label else "LIVE" }} ACTIVE';
                     badge.className = 'px-2.5 py-1 rounded text-xs font-mono font-bold bg-green-900 text-green-300';
                 } else {
-                    toggleBtn.innerText = 'START TRADING';
+                    toggleBtn.innerText = 'START';
                     badge.innerText = '{{ page_label if page_label else "LIVE" }} PAUSED';
                     badge.className = 'px-2.5 py-1 rounded text-xs font-mono font-bold bg-yellow-900 text-yellow-300';
                 }
