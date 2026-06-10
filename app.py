@@ -286,11 +286,12 @@ DEFAULT_CONFIGS = {
         'cooldown_after_loss_seconds': 0,
         'entry_cooldown_seconds': 0,
         'take_profit_pct': 0.25,
-        'stop_loss_pct': 0.15,
+        'stop_loss_pct': 0.25,
         'time_stop_seconds': 120,
         'emergency_exit_drop_pct': 0.20,
         'emergency_window_seconds': 30,
         'entry_timeout_seconds': 10,
+        'return_30s_threshold_pct': 0.25,
         'return_1m_threshold_pct': 0.25,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
@@ -318,6 +319,7 @@ DEFAULT_CONFIGS = {
         'emergency_exit_drop_pct': 0.20,
         'emergency_window_seconds': 30,
         'entry_timeout_seconds': 10,
+        'return_30s_threshold_pct': 0.25,
         'return_1m_threshold_pct': 0.25,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
@@ -350,6 +352,7 @@ EDITABLE_CONFIG_FIELDS = {
     'emergency_exit_drop_pct',
     'emergency_window_seconds',
     'entry_timeout_seconds',
+    'return_30s_threshold_pct',
     'return_1m_threshold_pct',
     'return_2m_threshold_pct',
     'bounce_from_2m_low_threshold_pct',
@@ -881,18 +884,24 @@ class MarketUniverseStore:
             if not history or coin not in mids:
                 continue
             latest_mid = mids[coin]
+            return_30s = self._return_for(history, 30)
             return_1m = self._return_for(history, 60)
             return_5m = self._return_for(history, 300)
             return_15m = self._return_for(history, 900)
             oldest_mid = history[0]['mid']
             warmup_return = pct_change(oldest_mid, latest_mid) if len(history) > 1 else 0.0
             basis_candidates = []
-            for basis_name in (primary_basis, '5m', '1m', 'warmup'):
+            fallback_bases = ('1m', '5m', 'warmup') if primary_basis == '30s' else ('5m', '1m', 'warmup')
+            for basis_name in (primary_basis, *fallback_bases):
                 if basis_name not in basis_candidates:
                     basis_candidates.append(basis_name)
             score = None
             basis = 'warmup'
             for basis_name in basis_candidates:
+                if basis_name == '30s' and return_30s is not None:
+                    score = return_30s
+                    basis = '30s'
+                    break
                 if basis_name == '1m' and return_1m is not None:
                     score = return_1m
                     basis = '1m'
@@ -910,6 +919,7 @@ class MarketUniverseStore:
                     basis = 'warmup'
                     break
             basis_description = {
+                '30s': 'micro momentum',
                 '15m': 'trend momentum',
                 '5m': 'medium momentum',
                 '1m': 'short momentum',
@@ -927,6 +937,7 @@ class MarketUniverseStore:
                     'score_basis_description': basis_description,
                     'category': category,
                     'description': description,
+                    'return_30s': trim_float(return_30s or 0.0, 4),
                     'return_1m': trim_float(return_1m or 0.0, 4),
                     'return_5m': trim_float(return_5m or 0.0, 4),
                     'return_15m': trim_float(return_15m or 0.0, 4),
@@ -1493,6 +1504,7 @@ def min_mid_since(history, seconds_ago):
 
 def compute_market_metrics(snapshot, history):
     mid = snapshot.get('mid', 0.0)
+    anchor_30s = nearest_value(history, 30, 'mid')
     anchor_1m = nearest_value(history, 60, 'mid')
     anchor_2m = nearest_value(history, 120, 'mid')
     anchor_5m = nearest_value(history, 300, 'mid')
@@ -1507,6 +1519,7 @@ def compute_market_metrics(snapshot, history):
         'spread_pct': snapshot.get('spread_pct', 0.0),
         'book_imbalance': snapshot.get('book_imbalance', 0.0),
         'book_imbalance_10s_ago': imbalance_10s if imbalance_10s is not None else snapshot.get('book_imbalance', 0.0),
+        'return_30s': pct_change(anchor_30s or mid, mid),
         'return_1m': pct_change(anchor_1m or mid, mid),
         'return_2m': pct_change(anchor_2m or mid, mid),
         'return_5m': pct_change(anchor_5m or mid, mid),
@@ -2325,6 +2338,7 @@ def build_state_payload(namespace):
         'spread_pct': 0.0,
         'book_imbalance': 0.0,
         'book_imbalance_10s_ago': 0.0,
+        'return_30s': 0.0,
         'return_1m': 0.0,
         'return_2m': 0.0,
         'return_5m': 0.0,
@@ -2553,10 +2567,10 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
     if (len(positions) + count_entry_orders(namespace)) >= int(config.get('max_open_positions', 1)):
         reasons.append('max open positions reached')
     if namespace == SANDBOX_NS:
-        one_min_threshold = float(config.get('return_1m_threshold_pct', 0.25))
-        if metrics['return_1m'] <= one_min_threshold:
-            reasons.append(f"return_1m {metrics['return_1m']:.4f}% below trigger")
-        checks.append({'name': f'return_1m > {one_min_threshold:.2f}%', 'passed': metrics['return_1m'] > one_min_threshold})
+        thirty_second_threshold = float(config.get('return_30s_threshold_pct', 0.25))
+        if metrics['return_30s'] <= thirty_second_threshold:
+            reasons.append(f"return_30s {metrics['return_30s']:.4f}% below trigger")
+        checks.append({'name': f'return_30s > {thirty_second_threshold:.2f}%', 'passed': metrics['return_30s'] > thirty_second_threshold})
     else:
         if metrics['return_5m'] <= 0.25:
             reasons.append(f"return_5m {metrics['return_5m']:.4f}% below momentum floor")
@@ -3089,7 +3103,7 @@ def manage_positions(namespace):
             maybe_place_exit_order_multi(namespace, position, 'STOP_LOSS', 'taker', {'coin': coin, 'mid': current_mid, 'best_bid': current_mid, 'best_ask': current_mid})
             continue
         if change_pct >= float(config['take_profit_pct']):
-            maybe_place_exit_order_multi(namespace, position, 'TAKE_PROFIT', 'maker', fetch_coin_book_snapshot(coin))
+            maybe_place_exit_order_multi(namespace, position, 'TAKE_PROFIT', 'taker', fetch_coin_book_snapshot(coin))
             continue
         if seconds_open >= int(config['time_stop_seconds']):
             maybe_place_exit_order_multi(namespace, position, 'TIME_STOP', 'maker', fetch_coin_book_snapshot(coin))
@@ -3106,7 +3120,7 @@ def attempt_entries(namespace):
     slots_left = max(0, int(config.get('max_open_positions', 1)) - active_slots)
     if slots_left <= 0:
         return
-    primary_basis = '1m' if namespace == SANDBOX_NS else '5m'
+    primary_basis = '30s' if namespace == SANDBOX_NS else '5m'
     candidates = market_universe.get_hot_perps(limit=12, primary_basis=primary_basis).get('leaders', [])
     for candidate in candidates:
         if slots_left <= 0:
@@ -3154,6 +3168,7 @@ def build_market_focus():
             'best_bid': 0.0,
             'best_ask': 0.0,
             'spread_pct': 0.0,
+            'return_30s': 0.0,
             'return_1m': 0.0,
             'return_2m': 0.0,
             'return_5m': 0.0,
@@ -3252,7 +3267,7 @@ def build_state_payload(namespace):
         save_balances(namespace, balances)
     config = get_config(namespace)
     focus_market = build_market_focus()
-    hot_primary_basis = '1m' if namespace == SANDBOX_NS else '5m'
+    hot_primary_basis = '30s' if namespace == SANDBOX_NS else '5m'
     hot_perps = market_universe.get_hot_perps(limit=10, primary_basis=hot_primary_basis)
     open_orders = get_open_orders(namespace)
     active_position = open_positions[0] if open_positions else {'active': False}
