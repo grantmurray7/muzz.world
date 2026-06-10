@@ -30,7 +30,9 @@ except Exception as exc:  # pragma: no cover - import availability depends on ru
 app = Flask(__name__)
 
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', str(uuid.uuid4()))
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'DefaultPassword123!')
+ADMIN_PASSWORD = (os.environ.get('ADMIN_PASSWORD') or '').strip()
+if not ADMIN_PASSWORD:
+    raise RuntimeError('ADMIN_PASSWORD is required.')
 RENDER_INTERNAL_DATABASE = os.environ.get('RENDER_INTERNAL_DATABASE') or os.environ.get('DATABASE_URL')
 HYPERLIQUID_API_KEY = os.environ.get('HYPERLIQUID_API_KEY')
 HYPERLIQUID_API_SECRET = os.environ.get('HYPERLIQUID_API_SECRET')
