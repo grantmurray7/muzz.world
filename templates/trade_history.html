@@ -15,6 +15,10 @@
         th { color: #94a3b8; font-size: 0.72rem; text-transform: uppercase; }
         .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
         .btn { background: #334155; color: white; border-radius: 0.6rem; padding: 0.7rem 1rem; font-weight: 800; text-transform: uppercase; font-size: 0.8rem; }
+        .tab-btn { background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.55rem 0.9rem; font-weight: 800; text-transform: uppercase; font-size: 0.78rem; }
+        .tab-btn.active { background: #334155; color: #fff; }
+        .hidden { display: none; }
+        .reason-cell { max-width: 420px; white-space: normal; line-height: 1.35; }
     </style>
 </head>
 <body class="min-h-screen p-4 md:p-6">
@@ -30,7 +34,12 @@
             </div>
         </div>
 
-        <div class="panel p-4 overflow-x-auto">
+        <div class="flex flex-wrap gap-2">
+            <button id="completedTab" class="tab-btn active" type="button">Completed</button>
+            <button id="declinedTab" class="tab-btn" type="button">Declined</button>
+        </div>
+
+        <div id="completedPanel" class="panel p-4 overflow-x-auto">
             <table class="mono text-sm">
                 <thead>
                     <tr>
@@ -49,6 +58,27 @@
                 </thead>
                 <tbody id="tradeRows">
                     <tr><td colspan="11" class="text-gray-400">Loading trades...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div id="declinedPanel" class="panel p-4 overflow-x-auto hidden">
+            <table class="mono text-sm">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Perp</th>
+                        <th>Reason</th>
+                        <th>Failed Checks</th>
+                        <th>1m</th>
+                        <th>5m</th>
+                        <th>15m</th>
+                        <th>Spread</th>
+                        <th>Imbalance</th>
+                    </tr>
+                </thead>
+                <tbody id="declinedRows">
+                    <tr><td colspan="9" class="text-gray-400">Loading declined opportunities...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -92,6 +122,19 @@
             return ukDateTimeFormatter.format(parsed).replace(',', '');
         }
 
+        function failedChecksText(checks) {
+            const failed = (checks || []).filter((check) => !check.passed).map((check) => check.name);
+            return failed.length ? failed.join(', ') : 'N/A';
+        }
+
+        function activateTab(name) {
+            const completedActive = name === 'completed';
+            document.getElementById('completedTab').classList.toggle('active', completedActive);
+            document.getElementById('declinedTab').classList.toggle('active', !completedActive);
+            document.getElementById('completedPanel').classList.toggle('hidden', !completedActive);
+            document.getElementById('declinedPanel').classList.toggle('hidden', completedActive);
+        }
+
         async function loadTrades() {
             const res = await fetch(`${apiBase}/trades`);
             const data = await res.json();
@@ -122,8 +165,38 @@
             });
         }
 
+        async function loadDeclinedTrades() {
+            const res = await fetch(`${apiBase}/declined_trades`);
+            const data = await res.json();
+            const rows = document.getElementById('declinedRows');
+            rows.innerHTML = '';
+            if (!data.declined_trades || data.declined_trades.length === 0) {
+                rows.innerHTML = '<tr><td colspan="9" class="text-gray-400">No declined opportunities logged yet.</td></tr>';
+                return;
+            }
+            data.declined_trades.forEach((trade) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${formatTradeTime(trade.timestamp)}</td>
+                    <td>${trade.coin || 'N/A'}</td>
+                    <td class="reason-cell">${trade.reason_not_taken || 'N/A'}</td>
+                    <td class="reason-cell">${failedChecksText(trade.checks)}</td>
+                    <td>${fmt(trade.return_1m, 4)}%</td>
+                    <td>${fmt(trade.return_5m, 4)}%</td>
+                    <td>${fmt(trade.return_15m, 4)}%</td>
+                    <td>${fmt(trade.spread_pct, 4)}%</td>
+                    <td>${fmt(trade.book_imbalance, 4)}</td>
+                `;
+                rows.appendChild(row);
+            });
+        }
+
+        document.getElementById('completedTab').addEventListener('click', () => activateTab('completed'));
+        document.getElementById('declinedTab').addEventListener('click', () => activateTab('declined'));
         loadTrades();
+        loadDeclinedTrades();
         setInterval(loadTrades, 5000);
+        setInterval(loadDeclinedTrades, 5000);
     </script>
 </body>
 </html>

@@ -1364,10 +1364,12 @@ def record_signal(namespace, snapshot, metrics, passed, reason, checks):
         'timestamp': iso_now(),
         'environment': namespace.upper(),
         'bot_state': get_bot_state(namespace),
+        'coin': snapshot.get('coin', 'N/A'),
         'mid': trim_float(snapshot.get('mid', 0.0), 6),
         'best_bid': trim_float(snapshot.get('best_bid', 0.0), 6),
         'best_ask': trim_float(snapshot.get('best_ask', 0.0), 6),
         'spread_pct': trim_float(metrics['spread_pct'], 6),
+        'return_1m': trim_float(metrics.get('return_1m', 0.0), 6),
         'return_2m': trim_float(metrics['return_2m'], 6),
         'return_5m': trim_float(metrics['return_5m'], 6),
         'return_15m': trim_float(metrics['return_15m'], 6),
@@ -3487,6 +3489,20 @@ def get_trades():
 @app.route('/sandbox/api/trades')
 def sandbox_get_trades():
     return jsonify({'trades': list(reversed(load_json_log(SANDBOX_NS, 'trade_log', TRADE_LOG_LIMIT)))})
+
+
+@app.route('/api/declined_trades')
+def get_declined_trades():
+    signals = list(reversed(load_json_log(REAL_NS, 'signal_log', SIGNAL_LOG_LIMIT)))
+    declined = [signal for signal in signals if not signal.get('entry_conditions_passed')]
+    return jsonify({'declined_trades': declined})
+
+
+@app.route('/sandbox/api/declined_trades')
+def sandbox_get_declined_trades():
+    signals = list(reversed(load_json_log(SANDBOX_NS, 'signal_log', SIGNAL_LOG_LIMIT)))
+    declined = [signal for signal in signals if not signal.get('entry_conditions_passed')]
+    return jsonify({'declined_trades': declined})
 
 
 @app.route('/api/results')
