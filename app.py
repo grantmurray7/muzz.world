@@ -1491,6 +1491,7 @@ def min_mid_since(history, seconds_ago):
 
 def compute_market_metrics(snapshot, history):
     mid = snapshot.get('mid', 0.0)
+    anchor_1m = nearest_value(history, 60, 'mid')
     anchor_2m = nearest_value(history, 120, 'mid')
     anchor_5m = nearest_value(history, 300, 'mid')
     anchor_15m = nearest_value(history, 900, 'mid')
@@ -1504,6 +1505,7 @@ def compute_market_metrics(snapshot, history):
         'spread_pct': snapshot.get('spread_pct', 0.0),
         'book_imbalance': snapshot.get('book_imbalance', 0.0),
         'book_imbalance_10s_ago': imbalance_10s if imbalance_10s is not None else snapshot.get('book_imbalance', 0.0),
+        'return_1m': pct_change(anchor_1m or mid, mid),
         'return_2m': pct_change(anchor_2m or mid, mid),
         'return_5m': pct_change(anchor_5m or mid, mid),
         'return_15m': pct_change(anchor_15m or mid, mid),
@@ -2321,6 +2323,7 @@ def build_state_payload(namespace):
         'spread_pct': 0.0,
         'book_imbalance': 0.0,
         'book_imbalance_10s_ago': 0.0,
+        'return_1m': 0.0,
         'return_2m': 0.0,
         'return_5m': 0.0,
         'return_15m': 0.0,
@@ -3149,6 +3152,7 @@ def build_market_focus():
             'best_bid': 0.0,
             'best_ask': 0.0,
             'spread_pct': 0.0,
+            'return_1m': 0.0,
             'return_2m': 0.0,
             'return_5m': 0.0,
             'return_15m': 0.0,
