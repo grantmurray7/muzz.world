@@ -3483,24 +3483,24 @@ def sandbox_get_state():
 
 @app.route('/api/trades')
 def get_trades():
-    return jsonify({'trades': list(reversed(load_json_log(REAL_NS, 'trade_log', TRADE_LOG_LIMIT)))})
+    return jsonify({'trades': load_json_log(REAL_NS, 'trade_log', TRADE_LOG_LIMIT)})
 
 
 @app.route('/sandbox/api/trades')
 def sandbox_get_trades():
-    return jsonify({'trades': list(reversed(load_json_log(SANDBOX_NS, 'trade_log', TRADE_LOG_LIMIT)))})
+    return jsonify({'trades': load_json_log(SANDBOX_NS, 'trade_log', TRADE_LOG_LIMIT)})
 
 
 @app.route('/api/declined_trades')
 def get_declined_trades():
-    signals = list(reversed(load_json_log(REAL_NS, 'signal_log', SIGNAL_LOG_LIMIT)))
+    signals = load_json_log(REAL_NS, 'signal_log', SIGNAL_LOG_LIMIT)
     declined = [signal for signal in signals if not signal.get('entry_conditions_passed')]
     return jsonify({'declined_trades': declined})
 
 
 @app.route('/sandbox/api/declined_trades')
 def sandbox_get_declined_trades():
-    signals = list(reversed(load_json_log(SANDBOX_NS, 'signal_log', SIGNAL_LOG_LIMIT)))
+    signals = load_json_log(SANDBOX_NS, 'signal_log', SIGNAL_LOG_LIMIT)
     declined = [signal for signal in signals if not signal.get('entry_conditions_passed')]
     return jsonify({'declined_trades': declined})
 
