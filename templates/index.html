@@ -38,6 +38,11 @@
             outline: none;
             box-shadow: 0 0 0 3px var(--accent-pink-soft);
         }
+        .accent-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            filter: none;
+        }
         .metric-pink, .spot-pink { color: var(--accent-pink) !important; }
         .dashboard-logo { display: block; width: 155px; max-width: 30vw; height: auto; }
         .mode-dim { opacity: 0.22; transition: opacity 0.3s ease; pointer-events: none; }
@@ -110,6 +115,11 @@
             <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition duration-150 whitespace-nowrap">
                 SYNCHRONIZING...
             </button>
+            {% if page_label %}
+            <button id="resetSandboxBalanceBtn" onclick="resetSandboxBalance()" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition whitespace-nowrap hidden" disabled>
+                RESET 15K
+            </button>
+            {% endif %}
             <a href="{{ trades_href or '/trades' }}" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition whitespace-nowrap">
                 TRADES: <span id="tradeCount">0</span>
             </a>
@@ -427,6 +437,14 @@
             }
         }
 
+        function updateSandboxResetButton(data, strategy) {
+            const resetBtn = document.getElementById('resetSandboxBalanceBtn');
+            if (!resetBtn) return;
+            const canReset = strategyProfile === 'dollar' && !data.position_active && String(strategy.mode || '') === 'BUY';
+            resetBtn.classList.toggle('hidden', !canReset);
+            resetBtn.disabled = !canReset;
+        }
+
         async function fetchState() {
             try {
                 const response = await fetch(`${apiBase}/state`);
@@ -511,6 +529,7 @@
 
                 updateBuyMeter(strategy);
                 updateHoldMeter(data.position_active, profitUsd, profitPct);
+                updateSandboxResetButton(data, strategy);
 
                 const logBox = document.getElementById('logBox');
                 logBox.innerHTML = '';
@@ -617,6 +636,18 @@
                 fetchState();
             } catch (err) {
                 console.error('Manual market buy error:', err);
+            }
+        }
+
+        async function resetSandboxBalance() {
+            if (!confirm('Reset sandbox cash balance to $15,000? This only works in buy setup.')) return;
+            try {
+                const response = await fetch(`${apiBase}/reset_balance`, { method: 'POST' });
+                const result = await response.json();
+                alert(result.message || 'Sandbox balance updated.');
+                fetchState();
+            } catch (err) {
+                console.error('Failed resetting sandbox balance:', err);
             }
         }
 
