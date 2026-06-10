@@ -276,6 +276,7 @@ DEFAULT_CONFIGS = {
         'maker_entry_slippage_pct': 0.0,
         'maker_exit_slippage_pct': 0.0,
         'taker_exit_slippage_pct': 0.02,
+        'min_price_usdc': 0.01,
         'trade_notional_usdc': 250.0,
         'max_notional_usdc': 1000.0,
         'max_open_positions': 10,
@@ -304,6 +305,7 @@ DEFAULT_CONFIGS = {
     REAL_NS: {
         'maker_fee_pct': 0.015,
         'taker_fee_pct': 0.045,
+        'min_price_usdc': 0.0,
         'trade_notional_usdc': 10.0,
         'max_notional_usdc': 1000.0,
         'max_open_positions': 3,
@@ -872,7 +874,7 @@ class MarketUniverseStore:
             'history': history,
         }
 
-    def get_hot_perps(self, limit=10, primary_basis='5m'):
+    def get_hot_perps(self, limit=10, primary_basis='5m', min_price=0.0):
         self.ensure_running()
         with self.lock:
             histories = {coin: list(items) for coin, items in self.history.items()}
@@ -884,6 +886,8 @@ class MarketUniverseStore:
             if not history or coin not in mids:
                 continue
             latest_mid = mids[coin]
+            if latest_mid < float(min_price):
+                continue
             return_30s = self._return_for(history, 30)
             return_1m = self._return_for(history, 60)
             return_5m = self._return_for(history, 300)
@@ -2567,6 +2571,8 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
         reasons.append('open order already working for coin')
     if (len(positions) + count_entry_orders(namespace)) >= int(config.get('max_open_positions', 1)):
         reasons.append('max open positions reached')
+    if float(snapshot.get('mid', 0.0)) < float(config.get('min_price_usdc', 0.0)):
+        reasons.append(f"price {float(snapshot.get('mid', 0.0)):.6f} below minimum")
     if namespace == SANDBOX_NS:
         thirty_second_threshold = float(config.get('return_30s_threshold_pct', 0.25))
         if metrics['return_30s'] <= thirty_second_threshold:
@@ -3122,7 +3128,11 @@ def attempt_entries(namespace):
     if slots_left <= 0:
         return
     primary_basis = '30s' if namespace == SANDBOX_NS else '5m'
-    candidates = market_universe.get_hot_perps(limit=12, primary_basis=primary_basis).get('leaders', [])
+    candidates = market_universe.get_hot_perps(
+        limit=12,
+        primary_basis=primary_basis,
+        min_price=float(config.get('min_price_usdc', 0.0)),
+    ).get('leaders', [])
     for candidate in candidates:
         if slots_left <= 0:
             return
@@ -3269,7 +3279,11 @@ def build_state_payload(namespace):
     config = get_config(namespace)
     focus_market = build_market_focus()
     hot_primary_basis = '30s' if namespace == SANDBOX_NS else '5m'
-    hot_perps = market_universe.get_hot_perps(limit=10, primary_basis=hot_primary_basis)
+    hot_perps = market_universe.get_hot_perps(
+        limit=10,
+        primary_basis=hot_primary_basis,
+        min_price=float(config.get('min_price_usdc', 0.0)),
+    )
     open_orders = get_open_orders(namespace)
     active_position = open_positions[0] if open_positions else {'active': False}
     payload = {
