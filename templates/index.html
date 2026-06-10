@@ -8,349 +8,461 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
         :root {
-            --bg: #eef1f4;
+            --bg: #edf1f5;
             --panel: #ffffff;
-            --panel-soft: #f6f7f8;
-            --sidebar: #eceff2;
-            --header: #65717b;
-            --header-dark: #58626b;
-            --border: #d8dde3;
-            --text: #30363c;
-            --muted: #7a838c;
+            --panel-soft: #f6f8fb;
+            --panel-strong: #eef3f8;
+            --border: #d9e0e8;
+            --text: #24303d;
+            --muted: #6d7885;
+            --header: #5f6b77;
             --accent: #e87722;
-            --accent-soft: #fff4eb;
-            --danger: #d64545;
+            --accent-soft: #fff3e8;
+            --danger: #cc4b4b;
             --success: #1f8f55;
+            --warning: #b67818;
         }
+
         * { box-sizing: border-box; }
+
         body {
             margin: 0;
             background: var(--bg);
             color: var(--text);
-            font-size: 12px;
-            font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            line-height: 1.35;
+            font: 12px/1.4 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
+
         .mono {
             font-family: inherit;
             font-variant-numeric: tabular-nums;
         }
+
+        .hidden { display: none !important; }
+
         .app-shell {
             min-height: 100vh;
             display: flex;
             flex-direction: column;
         }
+
         .topbar {
-            background: var(--header);
-            color: white;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-            padding: 10px 18px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 14px;
+            padding: 10px 18px;
+            background: var(--header);
+            color: #fff;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
+
         .brand {
             display: flex;
             align-items: center;
             gap: 12px;
             min-width: 220px;
         }
+
         .brand-logo {
             height: 68px;
             width: auto;
             display: block;
         }
+
         .brand-copy h1 {
             margin: 0;
             font-size: 16px;
-            line-height: 1.05;
-            font-weight: 700;
-            letter-spacing: 0.04em;
+            font-weight: 800;
             text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
+
+        .brand-copy p {
+            margin: 2px 0 0;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.78);
+        }
+
         .nav-actions {
             display: flex;
             flex-wrap: wrap;
             justify-content: flex-end;
             gap: 8px;
         }
+
         .btn {
-            border: 1px solid rgba(0,0,0,0.12);
-            border-radius: 6px;
+            border: 1px solid rgba(0, 0, 0, 0.12);
+            border-radius: 8px;
             padding: 8px 12px;
+            background: #fff;
+            color: var(--text);
             font-size: 10px;
             line-height: 1;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
-            white-space: nowrap;
+            letter-spacing: 0.05em;
             cursor: pointer;
             transition: 0.15s ease;
+            white-space: nowrap;
         }
+
         .btn:hover { filter: brightness(0.98); }
-        .btn-nav {
-            background: #ffffff;
-            color: #30363c;
-        }
-        .btn-primary {
-            background: var(--accent);
-            color: white;
-            border-color: #d16a1d;
-        }
-        .btn-secondary {
-            background: #ffffff;
-            color: #30363c;
-        }
-        .btn-danger {
-            background: var(--danger);
-            color: white;
-            border-color: #b93636;
-        }
+        .btn-primary { background: var(--accent); color: #fff; border-color: #cf6d1d; }
+        .btn-secondary { background: #fff; color: var(--text); }
+        .btn-danger { background: var(--danger); color: #fff; border-color: #b53a3a; }
+        .btn-nav { background: #fff; color: var(--text); }
+
         .warning-banner {
             margin: 10px 14px 0;
-            background: #fff5f5;
-            border: 1px solid #f1baba;
-            color: #8a3f3f;
-            border-radius: 8px;
             padding: 10px 12px;
-            font-size: 12px;
+            border: 1px solid #efc2c2;
+            border-radius: 8px;
+            background: #fff5f5;
+            color: #8f3a3a;
         }
-        .dashboard {
+
+        .page-body {
             flex: 1 1 auto;
             min-height: 0;
             padding: 10px 14px 14px;
-            display: grid;
-            grid-template-columns: 250px minmax(0, 1fr) 420px;
+            display: flex;
+            flex-direction: column;
             gap: 12px;
         }
+
+        .status-strip {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .mini-card,
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: 0 1px 0 rgba(16, 24, 40, 0.02);
+            min-height: 0;
+        }
+
+        .mini-card {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: linear-gradient(180deg, #ffffff 0%, #f9fbfd 100%);
+        }
+
+        .mini-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .mini-label,
+        .panel-kicker,
+        .field-label,
+        .meta-key,
+        .table-head,
+        .label {
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .mini-value {
+            font-size: 19px;
+            line-height: 1.05;
+            font-weight: 800;
+            color: var(--text);
+        }
+
+        .mini-subvalue {
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .dashboard-grid {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 290px minmax(0, 1fr) 420px;
+            gap: 12px;
+        }
+
         .column {
             min-height: 0;
             display: flex;
             flex-direction: column;
             gap: 12px;
         }
+
         .panel {
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            box-shadow: 0 1px 0 rgba(16,24,40,0.02);
-            min-height: 0;
+            display: flex;
+            flex-direction: column;
         }
-        .panel.soft {
-            background: var(--sidebar);
-        }
+
         .panel-head {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 8px;
-            padding: 10px 12px;
+            gap: 10px;
+            padding: 12px 14px;
             border-bottom: 1px solid var(--border);
         }
+
         .panel-title {
             margin: 0;
-            font-size: 12px;
-            font-weight: 700;
+            font-size: 13px;
+            font-weight: 800;
             color: var(--text);
         }
+
         .panel-body {
-            padding: 10px 12px;
+            padding: 12px 14px;
         }
-        .panel-body.compact {
-            padding: 8px 10px;
+
+        .panel-body.compact { padding: 10px 12px; }
+
+        .scrollable {
+            min-height: 0;
+            overflow: auto;
         }
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 10px;
-            align-items: start;
-        }
-        .summary-card {
-            background: var(--panel-soft);
-            border: 1px solid var(--border);
-            border-radius: 7px;
-            overflow: hidden;
-        }
-        .summary-card h3 {
-            margin: 0;
-            padding: 9px 10px;
-            font-size: 12px;
-            font-weight: 700;
-            border-bottom: 1px solid var(--border);
-            background: #fafbfc;
-        }
-        .summary-table {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-        }
-        .summary-row {
-            display: contents;
-        }
-        .summary-key,
-        .summary-value {
-            padding: 7px 10px;
-            border-top: 1px solid var(--border);
-            font-size: 12px;
-            line-height: 1.2;
-        }
-        .summary-row:first-child .summary-key,
-        .summary-row:first-child .summary-value {
-            border-top: 0;
-        }
-        .summary-key {
-            color: var(--muted);
-            font-weight: 600;
-        }
-        .summary-value {
-            text-align: right;
-            font-weight: 600;
-            color: var(--text);
-            word-break: break-word;
-        }
-        .accent-value { color: var(--accent); }
-        .section-stack {
+
+        .stack {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 12px;
             min-height: 0;
         }
-        .text-block {
-            white-space: pre-wrap;
-            font-size: 11px;
-            line-height: 1.35;
-            color: #38414a;
-        }
-        .muted-block { color: #7b8794; }
-        .warning-text { color: #9a6d0a; }
-        .feed-block {
-            white-space: pre-wrap;
-            font-size: 11px;
-            line-height: 1.35;
-            color: #39424b;
-        }
-        .log-box {
-            width: 100%;
-            height: 100%;
-            min-height: 180px;
-            resize: none;
-            border: 1px solid var(--border);
-            border-radius: 7px;
-            background: #f8fafc;
-            color: #39424b;
-            padding: 8px;
-            font-size: 11px;
-            line-height: 1.3;
-        }
-        .scrollable {
-            overflow: auto;
-            min-height: 0;
-        }
+
         .control-stack {
             display: flex;
             flex-direction: column;
             gap: 8px;
         }
-        .control-stack .btn {
-            width: 100%;
-            justify-content: center;
-        }
+
+        .control-stack .btn { width: 100%; }
+
         .small-note {
             font-size: 11px;
+            line-height: 1.35;
             color: var(--muted);
-            line-height: 1.3;
         }
+
+        .meta-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px 10px;
+            align-items: center;
+        }
+
+        .meta-value {
+            text-align: right;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text);
+            word-break: break-word;
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+            gap: 12px;
+        }
+
+        .feature-card {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--panel-soft);
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .feature-title {
+            margin: 0;
+            font-size: 13px;
+            font-weight: 800;
+            color: var(--text);
+        }
+
+        .metrics-table {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        .metrics-table .row { display: contents; }
+
+        .metric-key,
+        .metric-value {
+            padding: 9px 10px;
+            border-top: 1px solid var(--border);
+        }
+
+        .metrics-table .row:first-child .metric-key,
+        .metrics-table .row:first-child .metric-value {
+            border-top: 0;
+        }
+
+        .metric-key {
+            color: var(--muted);
+            font-weight: 700;
+        }
+
+        .metric-value {
+            text-align: right;
+            font-weight: 800;
+            color: var(--text);
+        }
+
+        .accent-value { color: var(--accent); }
+
+        .two-up {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .text-block,
+        .feed-block {
+            white-space: pre-wrap;
+            font-size: 11px;
+            line-height: 1.4;
+            color: #39424b;
+        }
+
+        .warning-text { color: var(--warning); }
+
+        .log-box {
+            width: 100%;
+            height: 100%;
+            min-height: 220px;
+            resize: none;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #f8fafc;
+            color: #39424b;
+            padding: 8px;
+            font-size: 11px;
+            line-height: 1.35;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .stat-chip {
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            background: var(--panel-soft);
+        }
+
+        .stat-chip .value {
+            display: block;
+            margin-top: 4px;
+            font-size: 16px;
+            font-weight: 800;
+            color: var(--text);
+        }
+
         .config-list {
             display: flex;
             flex-direction: column;
             gap: 8px;
         }
+
         .config-row {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 120px;
+            grid-template-columns: minmax(0, 1fr) 124px;
             gap: 10px;
             align-items: center;
         }
-        .config-row .field-label {
-            font-size: 10px;
-            font-weight: 700;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-        }
-        input, select {
+
+        input,
+        select {
             width: 100%;
             border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 7px 8px;
-            background: white;
+            border-radius: 8px;
+            padding: 8px;
+            background: #fff;
             color: var(--text);
             font-size: 12px;
         }
+
         .checkbox-row {
             display: flex;
             align-items: center;
             gap: 8px;
-            margin-top: 8px;
-            font-size: 11px;
+            margin-top: 10px;
             color: #5f6872;
+            font-size: 11px;
         }
-        .client-meta {
+
+        .subgrid {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 6px 10px;
-            align-items: center;
-        }
-        .client-meta .meta-key {
-            font-size: 10px;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            font-weight: 700;
-        }
-        .client-meta .meta-value {
-            font-size: 12px;
-            font-weight: 600;
-            text-align: right;
-        }
-        .pill {
-            display: inline-block;
-            padding: 3px 6px;
-            border-radius: 999px;
-            background: var(--accent-soft);
-            color: var(--accent);
-            font-weight: 700;
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
         }
 
         @media (min-width: 1200px) and (min-height: 760px) {
             body { height: 100vh; overflow: hidden; }
             .app-shell { height: 100vh; }
-            .dashboard { min-height: 0; }
-            .column, .panel, .scrollable, .section-stack { min-height: 0; }
+            .page-body,
+            .dashboard-grid,
+            .column,
+            .panel,
+            .scrollable,
+            .stack { min-height: 0; }
         }
-        @media (max-width: 1400px) {
-            .dashboard {
-                grid-template-columns: 230px minmax(0, 1fr) 380px;
-            }
+
+        @media (max-width: 1450px) {
+            .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dashboard-grid { grid-template-columns: 270px minmax(0, 1fr) 360px; }
+            .hero-grid,
+            .two-up,
+            .subgrid { grid-template-columns: 1fr; }
         }
+
         @media (max-width: 1180px) {
             body { overflow: auto; }
-            .dashboard {
-                grid-template-columns: 1fr;
-            }
-            .summary-grid {
-                grid-template-columns: 1fr;
-            }
+            .status-strip,
+            .dashboard-grid,
+            .stats-grid { grid-template-columns: 1fr; }
             .column { min-height: auto; }
         }
+
         @media (max-width: 700px) {
             .topbar {
                 flex-direction: column;
                 align-items: flex-start;
             }
+
             .brand { min-width: 0; }
             .nav-actions { justify-content: flex-start; }
         }
@@ -362,7 +474,8 @@
             <div class="brand">
                 <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world logo">
                 <div class="brand-copy">
-                    <h1>{% if page_label == 'REAL' %}Live{% else %}Sandbox{% endif %}</h1>
+                    <h1 id="modeTitle">{{ page_label }} Mission Control</h1>
+                    <p>REAL and SANDBOX stay separate, boot paused, and require an explicit start.</p>
                 </div>
             </div>
             <div class="nav-actions">
@@ -378,189 +491,299 @@
         </div>
 
         <div id="realWarning" class="warning-banner hidden">
-            <strong>Real Trading Warning.</strong> REAL mode submits live Hyperliquid orders on mainnet. START requires typed confirmation.
+            <strong>Real Trading Warning.</strong> REAL mode submits live Hyperliquid orders on mainnet. START still requires typed confirmation.
         </div>
 
-        <div class="dashboard">
-            <div class="column">
-                <div class="panel soft">
-                    <div class="panel-head">
-                        <h2 class="panel-title">Environment</h2>
+        <div class="page-body">
+            <div class="status-strip">
+                <div class="mini-card">
+                    <div class="mini-head">
+                        <span class="mini-label">Environment</span>
                         <span id="environmentLabelPill" class="pill">{{ page_label }}</span>
                     </div>
-                    <div class="panel-body compact">
-                        <div class="client-meta mono">
-                            <div class="meta-key">Environment</div><div id="environmentLabel" class="meta-value">{{ page_label }}</div>
-                            <div class="meta-key">Bot state</div><div id="botState" class="meta-value">PAUSED</div>
-                            <div class="meta-key">Engine</div><div id="engineStatus" class="meta-value">Loading...</div>
-                            <div class="meta-key">Market source</div><div id="marketSource" class="meta-value">NONE</div>
-                            <div class="meta-key">WS thread</div><div id="wsThreadAlive" class="meta-value">UNKNOWN</div>
-                            <div class="meta-key">WS reconnects</div><div id="wsReconnects" class="meta-value">0</div>
-                        </div>
-                    </div>
+                    <div id="statusHeadline" class="mini-value">PAUSED</div>
+                    <div id="engineSummaryTop" class="mini-subvalue">Waiting for state...</div>
                 </div>
-
-                <div class="panel">
-                    <div class="panel-head">
-                        <h2 class="panel-title">Controls</h2>
+                <div class="mini-card">
+                    <div class="mini-head">
+                        <span class="mini-label">Market Feed</span>
+                        <span id="marketSourceBadge" class="pill">NONE</span>
                     </div>
-                    <div class="panel-body compact">
-                        <div class="control-stack">
-                            <button class="btn btn-primary" onclick="startBot()">Start</button>
-                            <button class="btn btn-secondary" onclick="pauseBot()">Pause</button>
-                            <button class="btn btn-danger" onclick="killBot()">Kill Switch</button>
-                            <button class="btn btn-secondary" onclick="manualClose()">Manual Close</button>
-                            {% if page_label == 'SANDBOX' %}
-                            <button class="btn btn-secondary" onclick="resetSandbox()">Reset Sandbox</button>
-                            {% endif %}
-                        </div>
-                        <div class="small-note mt-3">The bot only trades when market data is live and the environment is explicitly started.</div>
-                    </div>
+                    <div id="marketAgeBadge" class="mini-value">0.00s</div>
+                    <div id="feedSummaryTop" class="mini-subvalue">No feed data yet.</div>
                 </div>
-
-                <div class="panel scrollable">
-                    <div class="panel-head">
-                        <h2 class="panel-title">Health</h2>
+                <div class="mini-card">
+                    <div class="mini-head">
+                        <span class="mini-label">Execution State</span>
+                        <span class="pill">{{ page_label }}</span>
                     </div>
-                    <div class="panel-body compact">
-                        <div id="healthBox" class="feed-block mono"></div>
+                    <div id="deploymentSummary" class="mini-value">0 Orders</div>
+                    <div id="deploymentSubcopy" class="mini-subvalue">No active position.</div>
+                </div>
+                <div class="mini-card">
+                    <div class="mini-head">
+                        <span class="mini-label">Risk Snapshot</span>
+                        <span class="pill">Live Data</span>
                     </div>
+                    <div id="riskHeadline" class="mini-value">0.0000</div>
+                    <div id="riskSubcopy" class="mini-subvalue">Daily PnL / equity readiness.</div>
                 </div>
             </div>
 
-            <div class="column">
-                <div class="summary-grid">
-                    <div class="summary-card">
-                        <h3>Market Summary</h3>
-                        <div class="summary-table mono">
-                            <div class="summary-row"><div class="summary-key">HYPE mid price</div><div id="midPrice" class="summary-value accent-value">0.0000</div></div>
-                            <div class="summary-row"><div class="summary-key">Spread %</div><div id="spreadPct" class="summary-value">0.0000%</div></div>
-                            <div class="summary-row"><div class="summary-key">2m return</div><div id="return2m" class="summary-value">0.0000%</div></div>
-                            <div class="summary-row"><div class="summary-key">60m return</div><div id="return60m" class="summary-value">0.0000%</div></div>
-                            <div class="summary-row"><div class="summary-key">Bounce from 2m low</div><div id="bounce2m" class="summary-value">0.0000%</div></div>
-                            <div class="summary-row"><div class="summary-key">Book imbalance</div><div id="bookImbalance" class="summary-value">0.0000</div></div>
-                            <div class="summary-row"><div class="summary-key">Imbalance 10s ago</div><div id="bookImbalanceOld" class="summary-value">0.0000</div></div>
-                            <div class="summary-row"><div class="summary-key">Market data age</div><div id="marketAge" class="summary-value">0.00s</div></div>
+            <div class="dashboard-grid">
+                <div class="column">
+                    <div class="panel">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Control</div>
+                                <h2 class="panel-title">Environment Controls</h2>
+                            </div>
+                            <span id="environmentLabel" class="pill">{{ page_label }}</span>
+                        </div>
+                        <div class="panel-body compact stack">
+                            <div class="control-stack">
+                                <button class="btn btn-primary" onclick="startBot()">Start</button>
+                                <button class="btn btn-secondary" onclick="pauseBot()">Pause</button>
+                                <button class="btn btn-danger" onclick="killBot()">Kill Switch</button>
+                                <button class="btn btn-secondary" onclick="manualClose()">Manual Close</button>
+                                {% if page_label == 'SANDBOX' %}
+                                <button class="btn btn-secondary" onclick="resetSandbox()">Reset Sandbox</button>
+                                {% endif %}
+                            </div>
+                            <div class="small-note">Both REAL and SANDBOX are designed to start paused. Trading begins only after an explicit START in that environment.</div>
                         </div>
                     </div>
-                    <div class="summary-card">
-                        <h3>Bot Summary</h3>
-                        <div class="summary-table mono">
-                            <div class="summary-row"><div class="summary-key">Active position</div><div id="activePosition" class="summary-value">NO</div></div>
-                            <div class="summary-row"><div class="summary-key">Open orders</div><div id="openOrders" class="summary-value">0</div></div>
-                            <div class="summary-row"><div class="summary-key">Trade notional</div><div id="tradeNotional" class="summary-value">0.00 USDC</div></div>
-                            <div class="summary-row"><div class="summary-key">Daily PnL</div><div id="dailyPnl" class="summary-value">0.0000</div></div>
-                            <div class="summary-row"><div class="summary-key">Total PnL</div><div id="totalPnl" class="summary-value">0.0000</div></div>
-                            <div class="summary-row"><div class="summary-key">Consecutive losses</div><div id="consecutiveLosses" class="summary-value">0</div></div>
-                            <div class="summary-row"><div class="summary-key">Trades today</div><div id="tradesToday" class="summary-value">0</div></div>
-                            <div class="summary-row"><div class="summary-key">Available balance</div><div id="availableBalance" class="summary-value">0.0000</div></div>
-                            <div class="summary-row"><div class="summary-key">Equity</div><div id="equityBalance" class="summary-value">0.0000</div></div>
+
+                    <div class="panel">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Mode</div>
+                                <h2 class="panel-title">Deployment State</h2>
+                            </div>
+                        </div>
+                        <div class="panel-body compact">
+                            <div class="meta-grid mono">
+                                <div class="meta-key">Bot state</div><div id="botState" class="meta-value">PAUSED</div>
+                                <div class="meta-key">Engine</div><div id="engineStatus" class="meta-value">Loading...</div>
+                                <div class="meta-key">Open orders</div><div id="openOrders" class="meta-value">0</div>
+                                <div class="meta-key">Active position</div><div id="activePosition" class="meta-value">NO</div>
+                                <div class="meta-key">Trade notional</div><div id="tradeNotional" class="meta-value">0.00 USDC</div>
+                                <div class="meta-key">Trades today</div><div id="tradesToday" class="meta-value">0</div>
+                                <div class="meta-key">Daily PnL</div><div id="dailyPnl" class="meta-value">0.0000</div>
+                                <div class="meta-key">Total PnL</div><div id="totalPnl" class="meta-value">0.0000</div>
+                            </div>
                         </div>
                     </div>
-                    <div class="summary-card">
-                        <h3>Market Feed</h3>
-                        <div class="summary-table mono">
-                            <div class="summary-row"><div class="summary-key">Status</div><div id="feedStatus" class="summary-value">N/A</div></div>
-                            <div class="summary-row"><div class="summary-key">Thread alive</div><div id="feedThreadAlive" class="summary-value">N/A</div></div>
-                            <div class="summary-row"><div class="summary-key">Reconnects</div><div id="feedReconnects" class="summary-value">0</div></div>
-                            <div class="summary-row"><div class="summary-key">Last open</div><div id="feedLastOpen" class="summary-value">N/A</div></div>
-                            <div class="summary-row"><div class="summary-key">Last message</div><div id="feedLastMessage" class="summary-value">N/A</div></div>
-                            <div class="summary-row"><div class="summary-key">Last close</div><div id="feedLastClose" class="summary-value">N/A</div></div>
-                            <div class="summary-row"><div class="summary-key">Close code</div><div id="feedCloseCode" class="summary-value">N/A</div></div>
-                            <div class="summary-row"><div class="summary-key">Last error</div><div id="feedLastError" class="summary-value">N/A</div></div>
+
+                    <div class="panel">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Feed</div>
+                                <h2 class="panel-title">Market Diagnostics</h2>
+                            </div>
+                        </div>
+                        <div class="panel-body compact">
+                            <div class="meta-grid mono">
+                                <div class="meta-key">Feed status</div><div id="feedStatus" class="meta-value">N/A</div>
+                                <div class="meta-key">Source</div><div id="marketSource" class="meta-value">NONE</div>
+                                <div class="meta-key">Age</div><div id="marketAgeSummary" class="meta-value">0.00s</div>
+                                <div class="meta-key">WS thread</div><div id="wsThreadAlive" class="meta-value">UNKNOWN</div>
+                                <div class="meta-key">Loop thread</div><div id="marketLoopAlive" class="meta-value">UNKNOWN</div>
+                                <div class="meta-key">Reconnects</div><div id="wsReconnects" class="meta-value">0</div>
+                                <div class="meta-key">Last message</div><div id="feedLastMessage" class="meta-value">N/A</div>
+                                <div class="meta-key">Last error</div><div id="feedLastError" class="meta-value">N/A</div>
+                            </div>
                         </div>
                     </div>
-                    <div class="summary-card">
-                        <h3>Realtime State</h3>
-                        <div class="summary-table mono">
-                            <div class="summary-row"><div class="summary-key">Environment</div><div id="environmentSummary" class="summary-value">{{ page_label }}</div></div>
-                            <div class="summary-row"><div class="summary-key">Bot state</div><div id="botStateSummary" class="summary-value">PAUSED</div></div>
-                            <div class="summary-row"><div class="summary-key">Engine</div><div id="engineSummary" class="summary-value">Loading...</div></div>
-                            <div class="summary-row"><div class="summary-key">Source</div><div id="marketSourceSummary" class="summary-value">NONE</div></div>
-                            <div class="summary-row"><div class="summary-key">Age</div><div id="marketAgeSummary" class="summary-value">0.00s</div></div>
-                            <div class="summary-row"><div class="summary-key">Reconnects</div><div id="wsReconnectSummary" class="summary-value">0</div></div>
+
+                    <div class="panel scrollable" style="flex: 1 1 auto;">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Health</div>
+                                <h2 class="panel-title">Raw Health Output</h2>
+                            </div>
+                        </div>
+                        <div class="panel-body compact">
+                            <div id="healthBox" class="feed-block mono"></div>
                         </div>
                     </div>
                 </div>
 
-                <div class="panel">
-                    <div class="panel-head">
-                        <h2 class="panel-title">Signal & Trade Context</h2>
+                <div class="column">
+                    <div class="panel">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Overview</div>
+                                <h2 class="panel-title">Market + Strategy Console</h2>
+                            </div>
+                            <span id="environmentSummary" class="pill">{{ page_label }}</span>
+                        </div>
+                        <div class="panel-body">
+                            <div class="hero-grid">
+                                <div class="feature-card">
+                                    <div>
+                                        <div class="panel-kicker">Execution Market</div>
+                                        <h3 class="feature-title">Current Runtime Market</h3>
+                                    </div>
+                                    <div class="metrics-table mono">
+                                        <div class="row"><div class="metric-key">Coin</div><div class="metric-value">HYPE</div></div>
+                                        <div class="row"><div class="metric-key">Mid price</div><div id="midPrice" class="metric-value accent-value">0.00000</div></div>
+                                        <div class="row"><div class="metric-key">Spread %</div><div id="spreadPct" class="metric-value">0.0000%</div></div>
+                                        <div class="row"><div class="metric-key">2m return</div><div id="return2m" class="metric-value">0.0000%</div></div>
+                                        <div class="row"><div class="metric-key">5m return</div><div id="return5m" class="metric-value">0.0000%</div></div>
+                                        <div class="row"><div class="metric-key">15m return</div><div id="return15m" class="metric-value">0.0000%</div></div>
+                                        <div class="row"><div class="metric-key">60m return</div><div id="return60m" class="metric-value">0.0000%</div></div>
+                                        <div class="row"><div class="metric-key">Bounce from 2m low</div><div id="bounce2m" class="metric-value">0.0000%</div></div>
+                                        <div class="row"><div class="metric-key">Book imbalance</div><div id="bookImbalance" class="metric-value">0.0000</div></div>
+                                        <div class="row"><div class="metric-key">Imbalance 10s ago</div><div id="bookImbalanceOld" class="metric-value">0.0000</div></div>
+                                        <div class="row"><div class="metric-key">Market data age</div><div id="marketAge" class="metric-value">0.00s</div></div>
+                                    </div>
+                                </div>
+                                <div class="feature-card">
+                                    <div>
+                                        <div class="panel-kicker">Strategy Status</div>
+                                        <h3 class="feature-title">Signal Readiness</h3>
+                                    </div>
+                                    <div class="stats-grid mono">
+                                        <div class="stat-chip"><span class="label">Bot state</span><span id="botStateSummary" class="value">PAUSED</span></div>
+                                        <div class="stat-chip"><span class="label">Engine</span><span id="engineSummary" class="value">Loading...</span></div>
+                                        <div class="stat-chip"><span class="label">Feed status</span><span id="feedThreadAlive" class="value">N/A</span></div>
+                                        <div class="stat-chip"><span class="label">Reconnects</span><span id="wsReconnectSummary" class="value">0</span></div>
+                                        <div class="stat-chip"><span class="label">Available balance</span><span id="availableBalance" class="value">0.0000</span></div>
+                                        <div class="stat-chip"><span class="label">Equity</span><span id="equityBalance" class="value">0.0000</span></div>
+                                        <div class="stat-chip"><span class="label">Consecutive losses</span><span id="consecutiveLosses" class="value">0</span></div>
+                                        <div class="stat-chip"><span class="label">Source</span><span id="marketSourceSummary" class="value">NONE</span></div>
+                                    </div>
+                                    <div class="small-note">The engine stays paused on boot in both environments. This layout is ready for the future multi-market scanner, while remaining fully compatible with the current HYPE execution runtime.</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="panel-body compact section-stack">
-                        <div>
-                            <div class="label">Last Signal</div>
-                            <div id="lastSignal" class="text-block mono mt-1">Waiting for signal log...</div>
+
+                    <div class="two-up">
+                        <div class="panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="panel-kicker">Signals</div>
+                                    <h2 class="panel-title">Decision Context</h2>
+                                </div>
+                            </div>
+                            <div class="panel-body compact stack">
+                                <div>
+                                    <div class="label">Last Signal</div>
+                                    <div id="lastSignal" class="text-block mono mt-1">Waiting for signal log...</div>
+                                </div>
+                                <div>
+                                    <div class="label">Reason Not Taken</div>
+                                    <div id="reasonNotTaken" class="text-block warning-text mono mt-1">Waiting for evaluation...</div>
+                                </div>
+                            </div>
                         </div>
-                        <div>
-                            <div class="label">Last Trade</div>
-                            <div id="lastTrade" class="text-block mono mt-1">No completed trades yet.</div>
+
+                        <div class="panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="panel-kicker">Execution</div>
+                                    <h2 class="panel-title">Position + Trade Context</h2>
+                                </div>
+                            </div>
+                            <div class="panel-body compact stack">
+                                <div>
+                                    <div class="label">Position Detail</div>
+                                    <div id="positionDetail" class="text-block mono mt-1">No active position.</div>
+                                </div>
+                                <div>
+                                    <div class="label">Last Trade</div>
+                                    <div id="lastTrade" class="text-block mono mt-1">No completed trades yet.</div>
+                                </div>
+                            </div>
                         </div>
-                        <div>
-                            <div class="label">Reason Last Trade Was Not Taken</div>
-                            <div id="reasonNotTaken" class="text-block warning-text mono mt-1">Waiting for evaluation...</div>
+                    </div>
+
+                    <div class="panel scrollable" style="flex: 1 1 auto;">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Ops</div>
+                                <h2 class="panel-title">Action Log</h2>
+                            </div>
+                            <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
                         </div>
-                        <div>
-                            <div class="label">Position Detail</div>
-                            <div id="positionDetail" class="text-block mono mt-1">No active position.</div>
+                        <div class="panel-body compact" style="height: 100%; min-height: 0;">
+                            <textarea id="logBox" class="log-box mono" readonly></textarea>
                         </div>
                     </div>
                 </div>
 
-                <div class="panel scrollable" style="flex:1 1 auto;">
-                    <div class="panel-head">
-                        <h2 class="panel-title">Action Log</h2>
-                        <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
+                <div class="column">
+                    <div class="panel">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Supervisor</div>
+                                <h2 class="panel-title">Loop + Feed Detail</h2>
+                            </div>
+                        </div>
+                        <div class="panel-body compact">
+                            <div class="meta-grid mono">
+                                <div class="meta-key">Loop alive</div><div id="loopThreadAlive" class="meta-value">N/A</div>
+                                <div class="meta-key">WS alive</div><div id="feedThreadAliveDetail" class="meta-value">N/A</div>
+                                <div class="meta-key">Reconnects</div><div id="feedReconnects" class="meta-value">0</div>
+                                <div class="meta-key">Last open</div><div id="feedLastOpen" class="meta-value">N/A</div>
+                                <div class="meta-key">Last message</div><div id="feedLastMessageDetail" class="meta-value">N/A</div>
+                                <div class="meta-key">Last close</div><div id="feedLastClose" class="meta-value">N/A</div>
+                                <div class="meta-key">Close code</div><div id="feedCloseCode" class="meta-value">N/A</div>
+                                <div class="meta-key">Loop heartbeat</div><div id="loopHeartbeat" class="meta-value">N/A</div>
+                                <div class="meta-key">Loop error</div><div id="loopError" class="meta-value">N/A</div>
+                                <div class="meta-key">WS error</div><div id="feedLastErrorDetail" class="meta-value">N/A</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="panel-body compact" style="height:100%; min-height:0;">
-                        <textarea id="logBox" class="log-box mono" readonly></textarea>
-                    </div>
-                </div>
-            </div>
 
-            <div class="column">
-                <div class="panel scrollable" style="flex:1 1 auto;">
-                    <div class="panel-head">
-                        <h2 class="panel-title">Environment Config</h2>
-                        <button class="btn btn-primary" onclick="saveConfig()">Save Config</button>
-                    </div>
-                    <div class="panel-body compact">
-                        <div class="config-list">
-                            <div class="config-row"><div class="field-label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Daily Loss Limit</div><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Max Trades / Hour</div><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
-                            <div class="config-row"><div class="field-label">Consecutive Loss Limit</div><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
-                            <div class="config-row"><div class="field-label">Leverage</div><input id="cfg_leverage" type="number" step="0.1"></div>
-                            <div class="config-row"><div class="field-label">Maker Fee %</div><input id="cfg_maker_fee_pct" type="number" step="0.001"></div>
-                            <div class="config-row"><div class="field-label">Taker Fee %</div><input id="cfg_taker_fee_pct" type="number" step="0.001"></div>
-                            <div class="config-row"><div class="field-label">Take Profit %</div><input id="cfg_take_profit_pct" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Stop Loss %</div><input id="cfg_stop_loss_pct" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Time Stop Seconds</div><input id="cfg_time_stop_seconds" type="number" step="1"></div>
-                            <div class="config-row"><div class="field-label">Emergency Window Sec</div><input id="cfg_emergency_window_seconds" type="number" step="1"></div>
-                            <div class="config-row"><div class="field-label">Emergency Drop %</div><input id="cfg_emergency_exit_drop_pct" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Entry Timeout Seconds</div><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
-                            <div class="config-row"><div class="field-label">Entry Cooldown Sec</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
-                            <div class="config-row"><div class="field-label">Loss Cooldown Sec</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
-                            <div class="config-row"><div class="field-label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Spread Max %</div><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
-                            <div class="config-row"><div class="field-label">Book Imbalance Min</div><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
-                            {% if page_label == 'SANDBOX' %}
-                            <div class="config-row"><div class="field-label">Starting Balance USDC</div><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
-                            <div class="config-row"><div class="field-label">Maker Entry Slippage %</div><input id="cfg_maker_entry_slippage_pct" type="number" step="0.001"></div>
-                            <div class="config-row"><div class="field-label">Maker Exit Slippage %</div><input id="cfg_maker_exit_slippage_pct" type="number" step="0.001"></div>
-                            <div class="config-row"><div class="field-label">Taker Exit Slippage %</div><input id="cfg_taker_exit_slippage_pct" type="number" step="0.001"></div>
+                    <div class="panel scrollable" style="flex: 1 1 auto;">
+                        <div class="panel-head">
+                            <div>
+                                <div class="panel-kicker">Config</div>
+                                <h2 class="panel-title">Environment Configuration</h2>
+                            </div>
+                            <button class="btn btn-primary" onclick="saveConfig()">Save Config</button>
+                        </div>
+                        <div class="panel-body compact">
+                            <div class="config-list">
+                                <div class="config-row"><div class="field-label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Daily Loss Limit</div><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Max Trades / Hour</div><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Consecutive Loss Limit</div><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Leverage</div><input id="cfg_leverage" type="number" step="0.1"></div>
+                                <div class="config-row"><div class="field-label">Maker Fee %</div><input id="cfg_maker_fee_pct" type="number" step="0.001"></div>
+                                <div class="config-row"><div class="field-label">Taker Fee %</div><input id="cfg_taker_fee_pct" type="number" step="0.001"></div>
+                                <div class="config-row"><div class="field-label">Take Profit %</div><input id="cfg_take_profit_pct" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Stop Loss %</div><input id="cfg_stop_loss_pct" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Time Stop Seconds</div><input id="cfg_time_stop_seconds" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Emergency Window Sec</div><input id="cfg_emergency_window_seconds" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Emergency Drop %</div><input id="cfg_emergency_exit_drop_pct" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Entry Timeout Seconds</div><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Entry Cooldown Sec</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Loss Cooldown Sec</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Spread Max %</div><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
+                                <div class="config-row"><div class="field-label">Book Imbalance Min</div><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
+                                {% if page_label == 'SANDBOX' %}
+                                <div class="config-row"><div class="field-label">Starting Balance USDC</div><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Maker Entry Slippage %</div><input id="cfg_maker_entry_slippage_pct" type="number" step="0.001"></div>
+                                <div class="config-row"><div class="field-label">Maker Exit Slippage %</div><input id="cfg_maker_exit_slippage_pct" type="number" step="0.001"></div>
+                                <div class="config-row"><div class="field-label">Taker Exit Slippage %</div><input id="cfg_taker_exit_slippage_pct" type="number" step="0.001"></div>
+                                {% endif %}
+                            </div>
+                            <div class="checkbox-row mono">
+                                <input id="cfg_require_imbalance_improvement" type="checkbox" class="w-4 h-4">
+                                <span>Require book imbalance to be higher than 10 seconds ago</span>
+                            </div>
+                            {% if page_label == 'REAL' %}
+                            <p class="small-note mono mt-3">REAL mode still boots paused and does not simulate slippage. It logs actual fill slippage from live fills.</p>
                             {% endif %}
                         </div>
-                        <div class="checkbox-row mono">
-                            <input id="cfg_require_imbalance_improvement" type="checkbox" class="w-4 h-4">
-                            <span>Require book imbalance to be higher than 10 seconds ago</span>
-                        </div>
-                        {% if page_label == 'REAL' %}
-                        <p class="small-note mono mt-2">REAL mode does not simulate slippage. It logs actual fill slippage from live fills.</p>
-                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -639,7 +862,14 @@
         async function fetchState() {
             try {
                 const data = await fetchJsonNoCache('/state');
+                const diag = data.market_diagnostics || {};
+                const market = data.market || {};
+                const stats = data.stats || {};
+                const hasPosition = !!(data.active_position && data.active_position.active);
+
                 document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
+
+                setText('modeTitle', `${data.environment} Mission Control`);
                 setText('environmentLabel', data.environment);
                 setText('environmentLabelPill', data.environment);
                 setText('environmentSummary', data.environment);
@@ -647,53 +877,73 @@
                 setText('botStateSummary', data.bot_state);
                 setText('engineStatus', data.engine_status);
                 setText('engineSummary', data.engine_status);
-                setText('midPrice', fmt(data.market.mid, 5));
-                setText('spreadPct', pct(data.market.spread_pct));
-                setText('return2m', pct(data.market.return_2m));
-                setText('return60m', pct(data.market.return_60m));
-                setText('bounce2m', pct(data.market.bounce_from_2m_low));
-                setText('bookImbalance', fmt(data.market.book_imbalance, 4));
-                setText('bookImbalanceOld', fmt(data.market.book_imbalance_10s_ago, 4));
-                setText('activePosition', data.active_position.active ? 'YES' : 'NO');
+                setText('engineSummaryTop', data.engine_status);
+                setText('statusHeadline', `${data.bot_state} / ${market.market_data_status || 'N/A'}`);
+
+                setText('midPrice', fmt(market.mid, 5));
+                setText('spreadPct', pct(market.spread_pct));
+                setText('return2m', pct(market.return_2m));
+                setText('return5m', pct(market.return_5m));
+                setText('return15m', pct(market.return_15m));
+                setText('return60m', pct(market.return_60m));
+                setText('bounce2m', pct(market.bounce_from_2m_low));
+                setText('bookImbalance', fmt(market.book_imbalance, 4));
+                setText('bookImbalanceOld', fmt(market.book_imbalance_10s_ago, 4));
+                setText('marketAge', `${fmt(market.market_data_age, 2)}s`);
+                setText('marketAgeSummary', `${fmt(market.market_data_age, 2)}s`);
+                setText('marketAgeBadge', `${fmt(market.market_data_age, 2)}s`);
+                setText('marketSource', String(market.market_data_source || 'none').toUpperCase());
+                setText('marketSourceSummary', String(market.market_data_source || 'none').toUpperCase());
+                setText('marketSourceBadge', String(market.market_data_source || 'none').toUpperCase());
+                setText('feedSummaryTop', `${market.market_data_status || 'N/A'} / ${fmt(market.market_data_age, 2)}s age`);
+
+                setText('activePosition', hasPosition ? 'YES' : 'NO');
                 setText('openOrders', String(data.open_orders.count || 0));
                 setText('tradeNotional', `${fmt(data.config.trade_notional_usdc, 2)} USDC`);
-                setText('dailyPnl', fmt(data.stats.daily_pnl, 4));
-                setText('totalPnl', fmt(data.stats.total_pnl, 4));
-                setText('consecutiveLosses', String(data.stats.consecutive_losses || 0));
-                setText('tradesToday', String(data.stats.trades_today || 0));
+                setText('dailyPnl', fmt(stats.daily_pnl, 4));
+                setText('totalPnl', fmt(stats.total_pnl, 4));
+                setText('consecutiveLosses', String(stats.consecutive_losses || 0));
+                setText('tradesToday', String(stats.trades_today || 0));
                 setText('availableBalance', fmt(data.balances.available, 4));
                 setText('equityBalance', fmt(data.balances.equity, 4));
-                setText('marketAge', `${fmt(data.market.market_data_age, 2)}s`);
-                setText('marketAgeSummary', `${fmt(data.market.market_data_age, 2)}s`);
-                setText('marketSource', String(data.market.market_data_source || 'none').toUpperCase());
-                setText('marketSourceSummary', String(data.market.market_data_source || 'none').toUpperCase());
-                const diag = data.market_diagnostics || {};
+                setText('deploymentSummary', `${data.open_orders.count || 0} Order${(data.open_orders.count || 0) === 1 ? '' : 's'}`);
+                setText('deploymentSubcopy', hasPosition ? 'Active position is being managed.' : 'No active position in this environment.');
+                setText('riskHeadline', `${fmt(stats.daily_pnl, 4)} USDC`);
+                setText('riskSubcopy', `Equity ${fmt(data.balances.equity, 4)} / losses ${stats.consecutive_losses || 0}`);
+
                 setText('wsThreadAlive', diag.ws_thread_alive ? 'ALIVE' : 'DEAD');
+                setText('marketLoopAlive', diag.loop_thread_alive ? 'ALIVE' : 'DEAD');
                 setText('wsReconnects', String(diag.reconnect_count || 0));
                 setText('wsReconnectSummary', String(diag.reconnect_count || 0));
                 setText('feedStatus', diag.status || 'N/A');
                 setText('feedThreadAlive', diag.ws_thread_alive ? 'TRUE' : 'FALSE');
+                setText('feedThreadAliveDetail', diag.ws_thread_alive ? 'TRUE' : 'FALSE');
+                setText('loopThreadAlive', diag.loop_thread_alive ? 'TRUE' : 'FALSE');
                 setText('feedReconnects', String(diag.reconnect_count || 0));
                 setText('feedLastOpen', formatTsLabel(diag.last_open_at_label));
                 setText('feedLastMessage', formatTsLabel(diag.last_message_at_label));
+                setText('feedLastMessageDetail', formatTsLabel(diag.last_message_at_label));
                 setText('feedLastClose', formatTsLabel(diag.last_close_at_label));
                 setText('feedCloseCode', diag.last_close_code || 'N/A');
-                setText('feedLastError', diag.last_ws_error || data.market.market_data_error || 'N/A');
+                setText('feedLastError', diag.last_ws_error || market.market_data_error || 'N/A');
+                setText('feedLastErrorDetail', diag.last_ws_error || market.market_data_error || 'N/A');
+                setText('loopHeartbeat', formatTsLabel(diag.last_loop_heartbeat_at_label));
+                setText('loopError', diag.last_loop_error || 'N/A');
 
                 const lastSignal = data.last_signal || {};
                 const signalText = lastSignal.timestamp
                     ? `${lastSignal.timestamp}\nmid=${fmt(lastSignal.mid, 5)} | spread=${pct(lastSignal.spread_pct)} | r2m=${pct(lastSignal.return_2m)} | r60m=${pct(lastSignal.return_60m)} | bounce=${pct(lastSignal.bounce_from_2m_low)} | imbalance=${fmt(lastSignal.book_imbalance, 4)}\npassed=${lastSignal.entry_conditions_passed} | reason=${lastSignal.reason_not_taken}`
                     : 'Waiting for signal log...';
                 setText('lastSignal', signalText);
+                setText('reasonNotTaken', data.reason_last_trade_not_taken || 'Waiting for evaluation...');
 
                 const lastTrade = data.last_trade || {};
                 const tradeText = lastTrade.timestamp
                     ? `${lastTrade.timestamp}\nexit_reason=${lastTrade.exit_reason} | size=${fmt(lastTrade.size, 4)} | entry=${fmt(lastTrade.filled_price, 5)} | exit=${fmt(lastTrade.exit_price, 5)}\ngross=${fmt(lastTrade.gross_pnl, 4)} USDC | fees=${fmt(lastTrade.fees_paid, 4)} USDC | net=${fmt(lastTrade.net_pnl, 4)} USDC`
                     : 'No completed trades yet.';
                 setText('lastTrade', tradeText);
-                setText('reasonNotTaken', data.reason_last_trade_not_taken || '');
 
-                if (data.active_position.active) {
+                if (hasPosition) {
                     const p = data.active_position;
                     const targets = data.position_targets || {};
                     const detail = [
@@ -707,8 +957,8 @@
                     setText('positionDetail', 'No active position.');
                 }
 
-                if (data.stats.unsupported_external_position) {
-                    setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${data.stats.unsupported_external_position}`);
+                if (stats.unsupported_external_position) {
+                    setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${stats.unsupported_external_position}`);
                 }
 
                 document.getElementById('logBox').value = (data.logs || []).join('\n');
@@ -716,6 +966,7 @@
             } catch (error) {
                 setText('feedStatus', 'ERROR');
                 setText('feedLastError', error.message || 'State refresh failed.');
+                setText('feedLastErrorDetail', error.message || 'State refresh failed.');
             }
         }
 

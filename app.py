@@ -435,7 +435,6 @@ class MarketDataStore:
         with self.lock:
             if self.ws_app is ws_app and not self.last_close_at and not self.last_ws_error:
                 self.last_ws_error = 'Hyperliquid websocket run_forever exited without close callback.'
-
     def _build_snapshot(self, book_data, source):
         levels = book_data.get('levels') or [[], []]
         bids = levels[0] if len(levels) > 0 else []
