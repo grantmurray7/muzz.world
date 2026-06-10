@@ -352,6 +352,12 @@ class MarketDataStore:
         self.last_message_at = 0.0
         self.last_rest_snapshot_at = 0.0
         self.connected_at = 0.0
+        self.reconnect_count = 0
+        self.last_open_at = 0.0
+        self.last_close_at = 0.0
+        self.last_close_code = ''
+        self.last_close_reason = ''
+        self.last_ws_error = ''
 
     def ensure_rest_client(self):
         if Info is None or hl_constants is None or websocket is None:
@@ -437,6 +443,7 @@ class MarketDataStore:
             self.status = 'SUBSCRIBING'
             self.error = ''
             self.connected_at = time.time()
+            self.last_open_at = self.connected_at
         ws_app.send(json.dumps({'method': 'subscribe', 'subscription': {'type': 'l2Book', 'coin': MARKET_COIN}}))
 
     def _on_ws_message(self, _ws_app, raw_message):
@@ -453,9 +460,13 @@ class MarketDataStore:
         with self.lock:
             self.status = 'ERROR'
             self.error = f'Hyperliquid websocket error: {error}'
+            self.last_ws_error = str(error)
 
     def _on_ws_close(self, _ws_app, status_code, close_msg):
         with self.lock:
+            self.last_close_at = time.time()
+            self.last_close_code = '' if status_code is None else str(status_code)
+            self.last_close_reason = close_msg or ''
             if self.last_message_at:
                 self.status = 'DISCONNECTED'
             else:
@@ -473,6 +484,7 @@ class MarketDataStore:
             self.last_message_at = 0.0
             self.last_rest_snapshot_at = 0.0
             self.connected_at = 0.0
+            self.reconnect_count += 1
         snapshot_book = self.ensure_rest_client().l2_snapshot(MARKET_COIN)
         self._record_snapshot(self._build_snapshot(snapshot_book, source='rest_seed'), websocket_event=False)
         ws_url = 'ws' + hl_constants.MAINNET_API_URL[len('http') :] + '/ws'
@@ -541,6 +553,23 @@ class MarketDataStore:
                 effective_error = f'Only REST seed available ({rest_age:.1f}s old); no websocket book updates received.'
                 effective_snapshot['source'] = 'rest_seed_stale'
         return effective_snapshot, history, effective_status, effective_error
+
+    def get_diagnostics(self):
+        with self.lock:
+            return {
+                'status': self.status,
+                'error': self.error,
+                'last_message_at': self.last_message_at,
+                'last_rest_snapshot_at': self.last_rest_snapshot_at,
+                'connected_at': self.connected_at,
+                'reconnect_count': self.reconnect_count,
+                'last_open_at': self.last_open_at,
+                'last_close_at': self.last_close_at,
+                'last_close_code': self.last_close_code,
+                'last_close_reason': self.last_close_reason,
+                'last_ws_error': self.last_ws_error,
+                'ws_thread_alive': bool(self.ws_thread and self.ws_thread.is_alive()),
+            }
 
 
 market_data = MarketDataStore()
@@ -1696,12 +1725,21 @@ def trade_loop(namespace):
 
 def build_health_payload(namespace):
     snapshot, _, market_status, market_error = market_data.get_snapshot()
+    ws_diag = market_data.get_diagnostics()
     payload = {
         'database': 'OK',
         'hyperliquid_sdk': 'OK' if not HYPERLIQUID_IMPORT_ERROR else 'ERROR',
         'hyperliquid_api': 'N/A',
         'market_data': market_status,
         'market_data_source': snapshot.get('source', 'none') if snapshot else 'none',
+        'ws_thread_alive': ws_diag['ws_thread_alive'],
+        'ws_reconnect_count': ws_diag['reconnect_count'],
+        'ws_last_open_at': ws_diag['last_open_at'],
+        'ws_last_message_at': ws_diag['last_message_at'],
+        'ws_last_close_at': ws_diag['last_close_at'],
+        'ws_last_close_code': ws_diag['last_close_code'],
+        'ws_last_close_reason': ws_diag['last_close_reason'],
+        'ws_last_error': ws_diag['last_ws_error'],
         'engine': get_engine_status(namespace),
         'errors': [],
     }
@@ -1727,6 +1765,7 @@ def build_health_payload(namespace):
 
 def build_state_payload(namespace):
     snapshot, history, market_status, market_error = market_data.get_snapshot()
+    ws_diag = market_data.get_diagnostics()
     metrics = compute_market_metrics(snapshot, history) if snapshot else {
         'mid': 0.0,
         'best_bid': 0.0,
@@ -1777,6 +1816,21 @@ def build_state_payload(namespace):
             'market_data_source': snapshot.get('source', 'none') if snapshot else 'none',
             'market_data_error': market_error,
             'market_data_age': trim_float(metrics['market_data_age'], 2),
+        },
+        'market_diagnostics': {
+            'status': ws_diag['status'],
+            'error': ws_diag['error'],
+            'reconnect_count': ws_diag['reconnect_count'],
+            'ws_thread_alive': ws_diag['ws_thread_alive'],
+            'last_open_at': ws_diag['last_open_at'],
+            'last_open_at_label': format_timestamp(ws_diag['last_open_at']),
+            'last_message_at': ws_diag['last_message_at'],
+            'last_message_at_label': format_timestamp(ws_diag['last_message_at']),
+            'last_close_at': ws_diag['last_close_at'],
+            'last_close_at_label': format_timestamp(ws_diag['last_close_at']),
+            'last_close_code': ws_diag['last_close_code'],
+            'last_close_reason': ws_diag['last_close_reason'],
+            'last_ws_error': ws_diag['last_ws_error'],
         },
         'balances': {
             'available': trim_float(balances.get('available', 0.0), 6),

@@ -7,85 +7,203 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
+        :root {
+            --bg: #0f1722;
+            --panel: #17212b;
+            --panel-alt: #121923;
+            --border: #243445;
+            --muted: #94a3b8;
+            --text: #f3f4f6;
+            --pink: #ec4899;
+            --red: #dc2626;
+            --slate: #334155;
+        }
+        * { box-sizing: border-box; }
         body {
-            background: #10151d;
-            color: #f3f4f6;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 10px;
+            font-size: 13px;
+        }
+        .shell {
+            max-width: 1700px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
         .panel {
-            background: #18202a;
-            border: 1px solid #2b3948;
-            border-radius: 0.75rem;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
         }
+        .panel-pad { padding: 10px; }
+        .panel-tight { padding: 8px; }
         .stat {
-            background: #121923;
-            border: 1px solid #253243;
-            border-radius: 0.75rem;
-            padding: 0.9rem;
+            background: var(--panel-alt);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 8px 10px;
+            min-width: 0;
         }
         .label {
-            color: #94a3b8;
-            font-size: 0.72rem;
+            color: var(--muted);
+            font-size: 10px;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            font-weight: 700;
+            font-weight: 800;
+            line-height: 1.1;
         }
         .value {
-            font-size: 1.35rem;
+            font-size: 18px;
+            font-weight: 900;
+            line-height: 1.05;
+            margin-top: 3px;
+            word-break: break-word;
+        }
+        .value-sm {
+            font-size: 13px;
             font-weight: 800;
-            margin-top: 0.2rem;
+            line-height: 1.25;
+            margin-top: 3px;
+            word-break: break-word;
         }
         .warning {
-            background: rgba(220, 38, 38, 0.18);
+            background: rgba(220, 38, 38, 0.16);
             border: 1px solid rgba(248, 113, 113, 0.55);
             color: #fecaca;
         }
-        .btn-primary {
-            background: #ec4899;
-            color: white;
-        }
-        .btn-secondary {
-            background: #334155;
-            color: white;
-        }
-        .btn-danger {
-            background: #dc2626;
-            color: white;
-        }
         .btn {
-            border-radius: 0.6rem;
-            padding: 0.7rem 1rem;
-            font-weight: 800;
+            border-radius: 9px;
+            padding: 9px 11px;
+            font-weight: 900;
             text-transform: uppercase;
-            letter-spacing: 0.06em;
-            font-size: 0.8rem;
+            letter-spacing: 0.05em;
+            font-size: 11px;
+            line-height: 1;
+            white-space: nowrap;
         }
+        .btn-primary { background: var(--pink); color: white; }
+        .btn-secondary { background: var(--slate); color: white; }
+        .btn-danger { background: var(--red); color: white; }
         input, select {
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 0.5rem;
-            color: #f8fafc;
-            padding: 0.55rem 0.7rem;
             width: 100%;
+            background: #0f172a;
+            color: #f8fafc;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 7px 8px;
+            font-size: 12px;
+            line-height: 1.2;
         }
         textarea {
+            width: 100%;
             background: #0b1220;
             color: #d1d5db;
             border: 1px solid #223043;
-            border-radius: 0.65rem;
+            border-radius: 8px;
+            resize: none;
         }
         .mono {
-            font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .topbar-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .hero {
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) auto;
+            gap: 8px;
+            align-items: stretch;
+        }
+        .hero-main {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-content: flex-start;
+            justify-content: flex-end;
+            gap: 6px;
+            min-width: 360px;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .content-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr) minmax(420px, 1.05fr);
+            gap: 8px;
+            align-items: stretch;
+        }
+        .stack { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+        .scroll-panel { overflow: auto; min-height: 0; }
+        .compact-block { white-space: pre-wrap; font-size: 11px; line-height: 1.3; }
+        .mini-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .field { min-width: 0; }
+        .log-box { height: 210px; padding: 8px; font-size: 11px; line-height: 1.25; }
+        .divider-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .feed-lines { white-space: pre-wrap; font-size: 11px; line-height: 1.35; }
+
+        @media (min-width: 1280px) and (min-height: 760px) {
+            body { height: 100vh; overflow: hidden; padding: 8px; }
+            .shell { height: calc(100vh - 16px); }
+            .content-grid { flex: 1 1 auto; min-height: 0; }
+            .stack, .panel, .scroll-panel { min-height: 0; }
+            .config-panel { overflow: auto; }
+            .log-box { height: 100%; min-height: 160px; }
+        }
+        @media (max-width: 1450px) {
+            .metrics-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+            .content-grid { grid-template-columns: 1fr 1fr; }
+            .config-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 1100px) {
+            body { overflow: auto; }
+            .hero { grid-template-columns: 1fr; }
+            .hero-main { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .hero-actions { min-width: 0; justify-content: flex-start; }
+            .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .content-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 700px) {
+            .topbar { flex-direction: column; align-items: flex-start; }
+            .hero-main { grid-template-columns: 1fr 1fr; }
+            .metrics-grid, .mini-grid, .config-grid { grid-template-columns: 1fr; }
+            .btn { width: auto; }
         }
     </style>
 </head>
-<body class="min-h-screen p-4 md:p-6">
-    <div class="max-w-7xl mx-auto space-y-4">
-        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+<body>
+    <div class="shell">
+        <div class="topbar">
             <div>
-                <h1 class="text-3xl font-black tracking-tight">{{ page_label }} Trading Dashboard</h1>
-                <p class="text-sm text-gray-400 mono">HYPE perpetual | manual start required | separate environment state</p>
+                <h1 class="text-2xl font-black tracking-tight leading-none">{{ page_label }} Trading Dashboard</h1>
+                <p class="text-xs text-gray-400 mono mt-1">HYPE perpetual | manual start required | separate environment state</p>
             </div>
-            <div class="flex flex-wrap gap-2">
+            <div class="topbar-actions">
                 <a href="{{ trades_href }}" class="btn btn-secondary">Trades</a>
                 <a href="{{ results_href }}" class="btn btn-secondary">Results</a>
                 {% if page_label == 'REAL' %}
@@ -97,32 +215,20 @@
             </div>
         </div>
 
-        <div id="realWarning" class="panel warning p-4 hidden">
-            <div class="font-black uppercase tracking-wider text-sm">Real Trading Warning</div>
-            <div class="text-sm mt-1">REAL mode submits live Hyperliquid orders on mainnet. START requires typed confirmation.</div>
+        <div id="realWarning" class="panel panel-pad warning hidden">
+            <div class="font-black uppercase tracking-wider text-xs">Real Trading Warning</div>
+            <div class="text-xs mt-1">REAL mode submits live Hyperliquid orders on mainnet. START requires typed confirmation.</div>
         </div>
 
-        <div class="panel p-4">
-            <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 flex-1">
-                    <div class="stat">
-                        <div class="label">Environment</div>
-                        <div id="environmentLabel" class="value mono">{{ page_label }}</div>
-                    </div>
-                    <div class="stat">
-                        <div class="label">Bot State</div>
-                        <div id="botState" class="value mono">PAUSED</div>
-                    </div>
-                    <div class="stat">
-                        <div class="label">Engine</div>
-                        <div id="engineStatus" class="value mono text-base">Loading...</div>
-                    </div>
-                    <div class="stat">
-                        <div class="label">HYPE Mid Price</div>
-                        <div id="midPrice" class="value mono">0.0000</div>
-                    </div>
+        <div class="panel panel-pad">
+            <div class="hero">
+                <div class="hero-main">
+                    <div class="stat"><div class="label">Environment</div><div id="environmentLabel" class="value mono">{{ page_label }}</div></div>
+                    <div class="stat"><div class="label">Bot State</div><div id="botState" class="value mono">PAUSED</div></div>
+                    <div class="stat"><div class="label">Engine</div><div id="engineStatus" class="value-sm mono">Loading...</div></div>
+                    <div class="stat"><div class="label">HYPE Mid Price</div><div id="midPrice" class="value mono">0.0000</div></div>
                 </div>
-                <div class="flex flex-wrap gap-2 items-start">
+                <div class="hero-actions">
                     <button class="btn btn-primary" onclick="startBot()">Start</button>
                     <button class="btn btn-secondary" onclick="pauseBot()">Pause</button>
                     <button class="btn btn-danger" onclick="killBot()">Kill Switch</button>
@@ -134,16 +240,16 @@
             </div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div class="metrics-grid">
             <div class="stat"><div class="label">Spread %</div><div id="spreadPct" class="value mono">0.0000%</div></div>
             <div class="stat"><div class="label">2m Return</div><div id="return2m" class="value mono">0.0000%</div></div>
             <div class="stat"><div class="label">60m Return</div><div id="return60m" class="value mono">0.0000%</div></div>
             <div class="stat"><div class="label">Bounce From 2m Low</div><div id="bounce2m" class="value mono">0.0000%</div></div>
             <div class="stat"><div class="label">Book Imbalance</div><div id="bookImbalance" class="value mono">0.0000</div></div>
-            <div class="stat"><div class="label">Book Imbalance 10s Ago</div><div id="bookImbalanceOld" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Imbalance 10s Ago</div><div id="bookImbalanceOld" class="value mono">0.0000</div></div>
             <div class="stat"><div class="label">Active Position</div><div id="activePosition" class="value mono">NO</div></div>
             <div class="stat"><div class="label">Open Orders</div><div id="openOrders" class="value mono">0</div></div>
-            <div class="stat"><div class="label">Trade Notional</div><div id="tradeNotional" class="value mono">0.00 USDC</div></div>
+            <div class="stat"><div class="label">Trade Notional</div><div id="tradeNotional" class="value-sm mono">0.00 USDC</div></div>
             <div class="stat"><div class="label">Daily PnL</div><div id="dailyPnl" class="value mono">0.0000</div></div>
             <div class="stat"><div class="label">Total PnL</div><div id="totalPnl" class="value mono">0.0000</div></div>
             <div class="stat"><div class="label">Consecutive Losses</div><div id="consecutiveLosses" class="value mono">0</div></div>
@@ -151,84 +257,91 @@
             <div class="stat"><div class="label">Available Balance</div><div id="availableBalance" class="value mono">0.0000</div></div>
             <div class="stat"><div class="label">Equity</div><div id="equityBalance" class="value mono">0.0000</div></div>
             <div class="stat"><div class="label">Market Data Age</div><div id="marketAge" class="value mono">0.00s</div></div>
-            <div class="stat"><div class="label">Market Data Source</div><div id="marketSource" class="value mono">none</div></div>
+            <div class="stat"><div class="label">Market Data Source</div><div id="marketSource" class="value-sm mono">NONE</div></div>
+            <div class="stat"><div class="label">WS Thread</div><div id="wsThreadAlive" class="value-sm mono">UNKNOWN</div></div>
+            <div class="stat"><div class="label">WS Reconnects</div><div id="wsReconnects" class="value mono">0</div></div>
         </div>
 
-        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
-            <div class="panel p-4 xl:col-span-2 space-y-4">
-                <div>
+        <div class="content-grid">
+            <div class="stack">
+                <div class="panel panel-tight scroll-panel">
                     <div class="label">Last Signal</div>
-                    <div id="lastSignal" class="mt-2 text-sm mono text-gray-200">Waiting for signal log...</div>
+                    <div id="lastSignal" class="compact-block mono text-gray-200 mt-1">Waiting for signal log...</div>
                 </div>
-                <div>
+                <div class="panel panel-tight scroll-panel">
                     <div class="label">Last Trade</div>
-                    <div id="lastTrade" class="mt-2 text-sm mono text-gray-200">No completed trades yet.</div>
+                    <div id="lastTrade" class="compact-block mono text-gray-200 mt-1">No completed trades yet.</div>
                 </div>
-                <div>
+                <div class="panel panel-tight scroll-panel">
                     <div class="label">Reason Last Trade Was Not Taken</div>
-                    <div id="reasonNotTaken" class="mt-2 text-sm mono text-yellow-200">Waiting for evaluation...</div>
+                    <div id="reasonNotTaken" class="compact-block mono text-yellow-200 mt-1">Waiting for evaluation...</div>
                 </div>
-                <div>
+                <div class="panel panel-tight scroll-panel">
                     <div class="label">Position Detail</div>
-                    <div id="positionDetail" class="mt-2 text-sm mono text-gray-200">No active position.</div>
+                    <div id="positionDetail" class="compact-block mono text-gray-200 mt-1">No active position.</div>
                 </div>
             </div>
-            <div class="panel p-4 space-y-3">
-                <div class="label">Health</div>
-                <div id="healthBox" class="text-sm mono text-gray-200 space-y-1"></div>
-            </div>
-        </div>
 
-        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <div class="panel p-4">
-                <div class="flex items-center justify-between">
-                    <div class="label">Action Log</div>
-                    <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
+            <div class="stack">
+                <div class="panel panel-tight">
+                    <div class="label">Health</div>
+                    <div id="healthBox" class="feed-lines mono text-gray-200 mt-1"></div>
                 </div>
-                <textarea id="logBox" class="w-full h-80 mt-3 p-3 mono text-sm" readonly></textarea>
+                <div class="panel panel-tight">
+                    <div class="label">Market Feed</div>
+                    <div id="marketDiag" class="feed-lines mono text-gray-200 mt-1"></div>
+                </div>
+                <div class="panel panel-tight" style="flex:1 1 auto; min-height:0;">
+                    <div class="divider-title">
+                        <div class="label">Action Log</div>
+                        <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
+                    </div>
+                    <textarea id="logBox" class="log-box mono mt-2" readonly></textarea>
+                </div>
             </div>
-            <div class="panel p-4">
-                <div class="flex items-center justify-between">
+
+            <div class="panel panel-tight config-panel">
+                <div class="divider-title">
                     <div class="label">Environment Config</div>
                     <button class="btn btn-primary" onclick="saveConfig()">Save Config</button>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                    <div><div class="label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
-                    <div><div class="label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
-                    <div><div class="label">Daily Loss Limit</div><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
-                    <div><div class="label">Max Trades / Hour</div><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
-                    <div><div class="label">Consecutive Loss Limit</div><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
-                    <div><div class="label">Leverage</div><input id="cfg_leverage" type="number" step="0.1"></div>
-                    <div><div class="label">Maker Fee %</div><input id="cfg_maker_fee_pct" type="number" step="0.001"></div>
-                    <div><div class="label">Taker Fee %</div><input id="cfg_taker_fee_pct" type="number" step="0.001"></div>
-                    <div><div class="label">Take Profit %</div><input id="cfg_take_profit_pct" type="number" step="0.01"></div>
-                    <div><div class="label">Stop Loss %</div><input id="cfg_stop_loss_pct" type="number" step="0.01"></div>
-                    <div><div class="label">Time Stop Seconds</div><input id="cfg_time_stop_seconds" type="number" step="1"></div>
-                    <div><div class="label">Emergency Window Seconds</div><input id="cfg_emergency_window_seconds" type="number" step="1"></div>
-                    <div><div class="label">Emergency Drop %</div><input id="cfg_emergency_exit_drop_pct" type="number" step="0.01"></div>
-                    <div><div class="label">Entry Timeout Seconds</div><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
-                    <div><div class="label">Entry Cooldown Seconds</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
-                    <div><div class="label">Loss Cooldown Seconds</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
-                    <div><div class="label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
-                    <div><div class="label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
-                    <div><div class="label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
-                    <div><div class="label">Spread Max %</div><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
-                    <div><div class="label">Book Imbalance Minimum</div><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
+                <div class="config-grid mt-2">
+                    <div class="field"><div class="label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Daily Loss Limit</div><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Max Trades / Hour</div><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
+                    <div class="field"><div class="label">Consecutive Loss Limit</div><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
+                    <div class="field"><div class="label">Leverage</div><input id="cfg_leverage" type="number" step="0.1"></div>
+                    <div class="field"><div class="label">Maker Fee %</div><input id="cfg_maker_fee_pct" type="number" step="0.001"></div>
+                    <div class="field"><div class="label">Taker Fee %</div><input id="cfg_taker_fee_pct" type="number" step="0.001"></div>
+                    <div class="field"><div class="label">Take Profit %</div><input id="cfg_take_profit_pct" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Stop Loss %</div><input id="cfg_stop_loss_pct" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Time Stop Seconds</div><input id="cfg_time_stop_seconds" type="number" step="1"></div>
+                    <div class="field"><div class="label">Emergency Window Sec</div><input id="cfg_emergency_window_seconds" type="number" step="1"></div>
+                    <div class="field"><div class="label">Emergency Drop %</div><input id="cfg_emergency_exit_drop_pct" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Entry Timeout Seconds</div><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
+                    <div class="field"><div class="label">Entry Cooldown Sec</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
+                    <div class="field"><div class="label">Loss Cooldown Sec</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
+                    <div class="field"><div class="label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Spread Max %</div><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
+                    <div class="field"><div class="label">Book Imbalance Min</div><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
                     {% if page_label == 'SANDBOX' %}
-                    <div><div class="label">Starting Balance USDC</div><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
-                    <div><div class="label">Maker Entry Slippage %</div><input id="cfg_maker_entry_slippage_pct" type="number" step="0.001"></div>
-                    <div><div class="label">Maker Exit Slippage %</div><input id="cfg_maker_exit_slippage_pct" type="number" step="0.001"></div>
-                    <div><div class="label">Taker Exit Slippage %</div><input id="cfg_taker_exit_slippage_pct" type="number" step="0.001"></div>
+                    <div class="field"><div class="label">Starting Balance USDC</div><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
+                    <div class="field"><div class="label">Maker Entry Slippage %</div><input id="cfg_maker_entry_slippage_pct" type="number" step="0.001"></div>
+                    <div class="field"><div class="label">Maker Exit Slippage %</div><input id="cfg_maker_exit_slippage_pct" type="number" step="0.001"></div>
+                    <div class="field"><div class="label">Taker Exit Slippage %</div><input id="cfg_taker_exit_slippage_pct" type="number" step="0.001"></div>
                     {% endif %}
                 </div>
-                <div class="mt-3">
-                    <label class="inline-flex items-center gap-2 text-sm mono text-gray-200">
+                <div class="mt-2">
+                    <label class="inline-flex items-center gap-2 text-xs mono text-gray-200">
                         <input id="cfg_require_imbalance_improvement" type="checkbox" class="w-4 h-4">
                         Require book imbalance to be higher than 10 seconds ago
                     </label>
                 </div>
                 {% if page_label == 'REAL' %}
-                <p class="text-xs text-yellow-200 mono mt-3">REAL mode does not simulate slippage. It logs actual fill slippage from live fills.</p>
+                <p class="text-xs text-yellow-200 mono mt-2">REAL mode does not simulate slippage. It logs actual fill slippage from live fills.</p>
                 {% endif %}
             </div>
         </div>
@@ -281,6 +394,10 @@
             return payload;
         }
 
+        function formatTsLabel(raw, fallback = 'N/A') {
+            return raw && String(raw).trim() ? raw : fallback;
+        }
+
         async function fetchState() {
             const res = await fetch(`${apiBase}/state`);
             const data = await res.json();
@@ -306,6 +423,8 @@
             setText('equityBalance', fmt(data.balances.equity, 4));
             setText('marketAge', `${fmt(data.market.market_data_age, 2)}s`);
             setText('marketSource', String(data.market.market_data_source || 'none').toUpperCase());
+            setText('wsThreadAlive', data.market_diagnostics.ws_thread_alive ? 'ALIVE' : 'DEAD');
+            setText('wsReconnects', String(data.market_diagnostics.reconnect_count || 0));
 
             const lastSignal = data.last_signal || {};
             const signalText = lastSignal.timestamp
@@ -338,6 +457,21 @@
                 setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${data.stats.unsupported_external_position}`);
             }
 
+            const diag = data.market_diagnostics || {};
+            const marketDiagText = [
+                `status: ${diag.status || 'N/A'}`,
+                `thread_alive: ${diag.ws_thread_alive ? 'true' : 'false'}`,
+                `reconnect_count: ${diag.reconnect_count || 0}`,
+                `last_open: ${formatTsLabel(diag.last_open_at_label)}`,
+                `last_message: ${formatTsLabel(diag.last_message_at_label)}`,
+                `last_close: ${formatTsLabel(diag.last_close_at_label)}`,
+                `close_code: ${diag.last_close_code || 'N/A'}`,
+                `close_reason: ${diag.last_close_reason || 'N/A'}`,
+                `last_ws_error: ${diag.last_ws_error || 'N/A'}`,
+                `market_error: ${diag.error || data.market.market_data_error || 'N/A'}`
+            ].join('\n');
+            setText('marketDiag', marketDiagText);
+
             document.getElementById('logBox').value = (data.logs || []).join('\n');
             applyConfig(data.config || {});
         }
@@ -351,6 +485,14 @@
                 `hyperliquid_api: ${data.hyperliquid_api}`,
                 `market_data: ${data.market_data}`,
                 `market_data_source: ${data.market_data_source || 'none'}`,
+                `ws_thread_alive: ${data.ws_thread_alive ? 'true' : 'false'}`,
+                `ws_reconnect_count: ${data.ws_reconnect_count || 0}`,
+                `ws_last_open_at: ${data.ws_last_open_at || 'N/A'}`,
+                `ws_last_message_at: ${data.ws_last_message_at || 'N/A'}`,
+                `ws_last_close_at: ${data.ws_last_close_at || 'N/A'}`,
+                `ws_last_close_code: ${data.ws_last_close_code || 'N/A'}`,
+                `ws_last_close_reason: ${data.ws_last_close_reason || 'N/A'}`,
+                `ws_last_error: ${data.ws_last_error || 'N/A'}`,
                 `engine: ${data.engine}`,
                 ...(data.errors || []).map((entry) => `error: ${entry}`)
             ].join('<br>');
