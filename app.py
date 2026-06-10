@@ -18,6 +18,7 @@ try:
     from hyperliquid.exchange import Exchange
     from hyperliquid.info import Info
     from hyperliquid.utils import constants as hl_constants
+    import websocket
 
     HYPERLIQUID_IMPORT_ERROR = ''
 except Exception as exc:  # pragma: no cover - import availability depends on runtime image
@@ -25,6 +26,7 @@ except Exception as exc:  # pragma: no cover - import availability depends on ru
     Exchange = None
     Info = None
     hl_constants = None
+    websocket = None
     HYPERLIQUID_IMPORT_ERROR = str(exc)
 
 app = Flask(__name__)
@@ -344,28 +346,34 @@ class MarketDataStore:
         self.history = deque()
         self.status = 'BOOTING'
         self.error = ''
-        self.info = None
+        self.rest_info = None
+        self.ws_app = None
+        self.ws_thread = None
         self.last_message_at = 0.0
         self.last_rest_snapshot_at = 0.0
         self.connected_at = 0.0
-        self.subscription_id = None
 
     def ensure_rest_client(self):
-        if Info is None or hl_constants is None:
+        if Info is None or hl_constants is None or websocket is None:
             raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
-        if self.info is None:
-            self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
-        return self.info
+        if self.rest_info is None:
+            self.rest_info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
+        return self.rest_info
 
     def close_stream(self):
-        info = self.info
-        self.info = None
-        self.subscription_id = None
-        if not info:
+        ws_app = self.ws_app
+        ws_thread = self.ws_thread
+        self.ws_app = None
+        self.ws_thread = None
+        if not ws_app:
             return
         try:
-            if getattr(info, 'ws_manager', None):
-                info.ws_manager.stop()
+            ws_app.close()
+        except Exception:
+            pass
+        try:
+            if ws_thread and ws_thread.is_alive():
+                ws_thread.join(timeout=2)
         except Exception:
             pass
 
@@ -424,8 +432,39 @@ class MarketDataStore:
         snapshot = self._build_snapshot(book_data, source='websocket')
         self._record_snapshot(snapshot, websocket_event=True)
 
+    def _on_ws_open(self, ws_app):
+        with self.lock:
+            self.status = 'SUBSCRIBING'
+            self.error = ''
+            self.connected_at = time.time()
+        ws_app.send(json.dumps({'method': 'subscribe', 'subscription': {'type': 'l2Book', 'coin': MARKET_COIN}}))
+
+    def _on_ws_message(self, _ws_app, raw_message):
+        if raw_message == 'Websocket connection established.':
+            return
+        ws_msg = json.loads(raw_message)
+        if ws_msg.get('channel') == 'pong':
+            return
+        if ws_msg.get('channel') != 'l2Book':
+            return
+        self.on_book_message(ws_msg)
+
+    def _on_ws_error(self, _ws_app, error):
+        with self.lock:
+            self.status = 'ERROR'
+            self.error = f'Hyperliquid websocket error: {error}'
+
+    def _on_ws_close(self, _ws_app, status_code, close_msg):
+        with self.lock:
+            if self.last_message_at:
+                self.status = 'DISCONNECTED'
+            else:
+                self.status = 'ERROR'
+            if not self.error:
+                self.error = f'Hyperliquid websocket closed ({status_code}): {close_msg or "no message"}'
+
     def connect_stream(self):
-        if Info is None or hl_constants is None:
+        if Info is None or hl_constants is None or websocket is None:
             raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
         self.close_stream()
         with self.lock:
@@ -433,11 +472,22 @@ class MarketDataStore:
             self.error = ''
             self.last_message_at = 0.0
             self.last_rest_snapshot_at = 0.0
-            self.connected_at = time.time()
-        self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=False)
-        self.subscription_id = self.info.subscribe({'type': 'l2Book', 'coin': MARKET_COIN}, self.on_book_message)
-        snapshot_book = self.info.l2_snapshot(MARKET_COIN)
+            self.connected_at = 0.0
+        snapshot_book = self.ensure_rest_client().l2_snapshot(MARKET_COIN)
         self._record_snapshot(self._build_snapshot(snapshot_book, source='rest_seed'), websocket_event=False)
+        ws_url = 'ws' + hl_constants.MAINNET_API_URL[len('http') :] + '/ws'
+        self.ws_app = websocket.WebSocketApp(
+            ws_url,
+            on_open=self._on_ws_open,
+            on_message=self._on_ws_message,
+            on_error=self._on_ws_error,
+            on_close=self._on_ws_close,
+        )
+        self.ws_thread = Thread(
+            target=lambda: self.ws_app.run_forever(ping_interval=20, ping_timeout=10),
+            daemon=True,
+        )
+        self.ws_thread.start()
 
     def loop(self):
         while True:
@@ -448,6 +498,9 @@ class MarketDataStore:
                     with self.lock:
                         last_message_at = self.last_message_at
                         connected_at = self.connected_at
+                        ws_thread = self.ws_thread
+                    if ws_thread and not ws_thread.is_alive():
+                        raise RuntimeError('Hyperliquid websocket thread exited unexpectedly.')
                     if not last_message_at:
                         if connected_at and (time.time() - connected_at) > MARKET_STALE_AFTER_SECONDS:
                             raise RuntimeError('Hyperliquid websocket connected but no l2Book messages arrived.')
