@@ -59,6 +59,7 @@ MARKET_POLL_INTERVAL = 1.0
 TRADING_LOOP_INTERVAL = 1.0
 MARKET_HISTORY_SECONDS = 3900
 MARKET_STALE_AFTER_SECONDS = 20.0
+MARKET_REST_RECOVERY_INTERVAL_SECONDS = 5.0
 HYPERLIQUID_WS_URL = 'wss://api.hyperliquid.xyz/ws'
 RESULTS_TRADE_LIMIT = 500
 TRADE_LOG_LIMIT = 500
@@ -359,15 +360,20 @@ class MarketDataStore:
         self.rest_info = None
         self.ws_app = None
         self.ws_thread = None
+        self.loop_thread = None
         self.last_message_at = 0.0
         self.last_rest_snapshot_at = 0.0
+        self.last_rest_recovery_attempt_at = 0.0
         self.connected_at = 0.0
         self.reconnect_count = 0
+        self.rest_recovery_count = 0
         self.last_open_at = 0.0
         self.last_close_at = 0.0
         self.last_close_code = ''
         self.last_close_reason = ''
         self.last_ws_error = ''
+        self.last_loop_heartbeat_at = 0.0
+        self.last_loop_error = ''
 
     def ensure_rest_client(self):
         if Info is None or hl_constants is None:
@@ -397,6 +403,42 @@ class MarketDataStore:
                 ws_thread.join(timeout=2)
         except Exception:
             pass
+
+    def ensure_running(self):
+        with self.lock:
+            loop_thread = self.loop_thread
+            if loop_thread and loop_thread.is_alive():
+                return False
+            loop_thread = Thread(target=self.loop, daemon=True, name='market-data-loop')
+            self.loop_thread = loop_thread
+        loop_thread.start()
+        return True
+
+    def maybe_refresh_from_rest(self):
+        now = time.time()
+        with self.lock:
+            ws_thread_alive = bool(self.ws_thread and self.ws_thread.is_alive())
+            loop_thread_alive = bool(self.loop_thread and self.loop_thread.is_alive())
+            last_message_at = self.last_message_at
+            last_attempt = self.last_rest_recovery_attempt_at
+            if last_attempt and (now - last_attempt) < MARKET_REST_RECOVERY_INTERVAL_SECONDS:
+                return False
+            needs_refresh = (not last_message_at) or ((now - last_message_at) > MARKET_STALE_AFTER_SECONDS)
+            if not needs_refresh and ws_thread_alive and loop_thread_alive:
+                return False
+            self.last_rest_recovery_attempt_at = now
+        try:
+            snapshot_book = self.ensure_rest_client().l2_snapshot(MARKET_COIN)
+            snapshot = self._build_snapshot(snapshot_book, source='rest_recovery')
+            self._record_snapshot(snapshot, websocket_event=False)
+            with self.lock:
+                self.rest_recovery_count += 1
+            return True
+        except Exception as exc:
+            with self.lock:
+                self.error = f'Hyperliquid REST recovery failed: {exc}'
+                self.last_loop_error = str(exc)
+            return False
 
     def _build_snapshot(self, book_data, source):
         levels = book_data.get('levels') or [[], []]
@@ -524,10 +566,14 @@ class MarketDataStore:
     def loop(self):
         while True:
             try:
+                with self.lock:
+                    self.last_loop_heartbeat_at = time.time()
+                    self.last_loop_error = ''
                 self.connect_stream()
                 while True:
                     time.sleep(1)
                     with self.lock:
+                        self.last_loop_heartbeat_at = time.time()
                         last_message_at = self.last_message_at
                         connected_at = self.connected_at
                         ws_thread = self.ws_thread
@@ -544,11 +590,14 @@ class MarketDataStore:
                 with self.lock:
                     self.status = 'ERROR'
                     self.error = str(exc)
+                    self.last_loop_error = str(exc)
             finally:
                 self.close_stream()
             time.sleep(2)
 
     def get_snapshot(self):
+        self.ensure_running()
+        self.maybe_refresh_from_rest()
         with self.lock:
             snapshot = dict(self.snapshot)
             history = list(self.history)
@@ -581,13 +630,18 @@ class MarketDataStore:
                 'error': self.error,
                 'last_message_at': self.last_message_at,
                 'last_rest_snapshot_at': self.last_rest_snapshot_at,
+                'last_rest_recovery_attempt_at': self.last_rest_recovery_attempt_at,
                 'connected_at': self.connected_at,
                 'reconnect_count': self.reconnect_count,
+                'rest_recovery_count': self.rest_recovery_count,
                 'last_open_at': self.last_open_at,
                 'last_close_at': self.last_close_at,
                 'last_close_code': self.last_close_code,
                 'last_close_reason': self.last_close_reason,
                 'last_ws_error': self.last_ws_error,
+                'loop_thread_alive': bool(self.loop_thread and self.loop_thread.is_alive()),
+                'last_loop_heartbeat_at': self.last_loop_heartbeat_at,
+                'last_loop_error': self.last_loop_error,
                 'ws_thread_alive': bool(self.ws_thread and self.ws_thread.is_alive()),
             }
 
@@ -1752,14 +1806,18 @@ def build_health_payload(namespace):
         'hyperliquid_api': 'N/A',
         'market_data': market_status,
         'market_data_source': snapshot.get('source', 'none') if snapshot else 'none',
+        'market_loop_alive': ws_diag['loop_thread_alive'],
         'ws_thread_alive': ws_diag['ws_thread_alive'],
         'ws_reconnect_count': ws_diag['reconnect_count'],
+        'rest_recovery_count': ws_diag['rest_recovery_count'],
         'ws_last_open_at': ws_diag['last_open_at'],
         'ws_last_message_at': ws_diag['last_message_at'],
         'ws_last_close_at': ws_diag['last_close_at'],
         'ws_last_close_code': ws_diag['last_close_code'],
         'ws_last_close_reason': ws_diag['last_close_reason'],
         'ws_last_error': ws_diag['last_ws_error'],
+        'market_loop_last_heartbeat_at': ws_diag['last_loop_heartbeat_at'],
+        'market_loop_last_error': ws_diag['last_loop_error'],
         'engine': get_engine_status(namespace),
         'errors': [],
     }
@@ -1841,7 +1899,9 @@ def build_state_payload(namespace):
             'status': ws_diag['status'],
             'error': ws_diag['error'],
             'reconnect_count': ws_diag['reconnect_count'],
+            'rest_recovery_count': ws_diag['rest_recovery_count'],
             'ws_thread_alive': ws_diag['ws_thread_alive'],
+            'loop_thread_alive': ws_diag['loop_thread_alive'],
             'last_open_at': ws_diag['last_open_at'],
             'last_open_at_label': format_timestamp(ws_diag['last_open_at']),
             'last_message_at': ws_diag['last_message_at'],
@@ -1851,6 +1911,9 @@ def build_state_payload(namespace):
             'last_close_code': ws_diag['last_close_code'],
             'last_close_reason': ws_diag['last_close_reason'],
             'last_ws_error': ws_diag['last_ws_error'],
+            'last_loop_heartbeat_at': ws_diag['last_loop_heartbeat_at'],
+            'last_loop_heartbeat_at_label': format_timestamp(ws_diag['last_loop_heartbeat_at']),
+            'last_loop_error': ws_diag['last_loop_error'],
         },
         'balances': {
             'available': trim_float(balances.get('available', 0.0), 6),
