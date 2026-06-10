@@ -701,16 +701,7 @@ class MarketUniverseStore:
                 continue
             universe.append(coin)
             sz_decimals[coin] = int(asset.get('szDecimals', 0))
-            meta_by_coin[coin] = {
-                'category': (
-                    asset.get('category')
-                    or asset.get('type')
-                    or asset.get('sector')
-                    or asset.get('group')
-                    or asset.get('tag')
-                    or ''
-                ),
-            }
+            meta_by_coin[coin] = infer_perp_metadata(coin, asset)
         with self.lock:
             self.universe = universe
             self.sz_decimals = sz_decimals
@@ -905,7 +896,9 @@ class MarketUniverseStore:
                 '1m': 'short momentum',
                 'warmup': 'limited history',
             }.get(basis, '')
-            category = ((meta_by_coin.get(coin) or {}).get('category') or '').strip()
+            metadata = meta_by_coin.get(coin) or infer_perp_metadata(coin)
+            category = (metadata.get('category') or '').strip()
+            description = (metadata.get('description') or '').strip()
             ranked.append(
                 {
                     'coin': coin,
@@ -914,6 +907,7 @@ class MarketUniverseStore:
                     'score_basis': basis,
                     'score_basis_description': basis_description,
                     'category': category,
+                    'description': description,
                     'return_1m': trim_float(return_1m or 0.0, 4),
                     'return_5m': trim_float(return_5m or 0.0, 4),
                     'return_15m': trim_float(return_15m or 0.0, 4),
@@ -1074,7 +1068,7 @@ def infer_perp_metadata(coin, asset=None):
             'description': f'US {years}-year Treasury yield',
         }
 
-    if symbol.startswith('k') and len(symbol) > 1:
+    if symbol.startswith('K') and len(symbol) > 1:
         return {
             'category': 'Crypto',
             'description': f'{symbol[1:]} scaled crypto perp',
