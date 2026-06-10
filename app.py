@@ -1612,6 +1612,10 @@ def trade_loop(namespace):
             metrics = compute_market_metrics(snapshot, history)
             passed, reason, checks = evaluate_entry(namespace, snapshot, metrics)
             record_signal(namespace, snapshot, metrics, passed, reason, checks)
+            if metrics['market_data_age'] > MARKET_STALE_AFTER_SECONDS:
+                set_engine_status(namespace, f'MARKET_STALE: {metrics["market_data_age"]:.1f}s')
+                time.sleep(TRADING_LOOP_INTERVAL)
+                continue
             manage_open_order(namespace, snapshot)
             manage_position(namespace, snapshot)
             position = get_position(namespace)
@@ -1621,10 +1625,6 @@ def trade_loop(namespace):
                 continue
             if get_bot_state(namespace) != 'RUNNING':
                 set_engine_status(namespace, 'PAUSED_WAITING_FOR_START' if get_bot_state(namespace) == 'PAUSED' else 'KILLED')
-                time.sleep(TRADING_LOOP_INTERVAL)
-                continue
-            if metrics['market_data_age'] > MARKET_STALE_AFTER_SECONDS:
-                set_engine_status(namespace, f'MARKET_STALE: {metrics["market_data_age"]:.1f}s')
                 time.sleep(TRADING_LOOP_INTERVAL)
                 continue
             if not passed:
