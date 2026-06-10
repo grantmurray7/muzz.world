@@ -228,7 +228,7 @@ ARM_GAP_USD = 0.25
 REBOUND_BUY_USD = 0.05
 SELL_TARGET_USD = 0.35
 STOP_LOSS_USD = 0.08
-PRICE_HISTORY_LIMIT = LOOKBACK_SECONDS + 30
+PRICE_HISTORY_LIMIT = LOOKBACK_SECONDS + 300
 MAX_TRADE_USDT = 50.00
 TRADE_HISTORY_LIMIT = 200
 LOG_HISTORY_LIMIT = 250
@@ -239,6 +239,7 @@ MIN_POSITION_SOL = 0.01
 INSTANCE_ID = str(uuid.uuid4())[:8]
 FX_RATE_CACHE_TTL = 300
 BINANCE_HEALTH_CACHE_TTL = 15
+ANCHOR_MIN_AGE_SECONDS = LOOKBACK_SECONDS * 0.85
 
 GLOBAL_NS = 'global'
 LIVE_NS = 'live'
@@ -585,6 +586,27 @@ def find_anchor_price(samples, anchor_ts):
     return anchor_price
 
 
+def resolve_anchor_price(namespace, samples, now_ts):
+    anchor_ts = now_ts - LOOKBACK_SECONDS
+    anchor_price = find_anchor_price(samples, anchor_ts)
+    if anchor_price is not None:
+        ns_set(namespace, 'last_valid_anchor_price', anchor_price)
+        return anchor_price
+
+    if samples:
+        oldest_sample = samples[0]
+        if oldest_sample.get('ts', 0.0) <= now_ts - ANCHOR_MIN_AGE_SECONDS:
+            anchor_price = oldest_sample['price']
+            ns_set(namespace, 'last_valid_anchor_price', anchor_price)
+            return anchor_price
+
+    cached_anchor = read_float_state(namespace, 'last_valid_anchor_price')
+    if cached_anchor > 0 and len(samples) >= 4:
+        return cached_anchor
+
+    return None
+
+
 def pct_change(from_price, to_price):
     if from_price <= 0:
         return 0.0
@@ -880,7 +902,7 @@ def run_namespaced_trader(namespace, paper=False):
             if not position_active:
                 now = time.time()
                 samples = load_price_samples()
-                anchor_price = find_anchor_price(samples, now - LOOKBACK_SECONDS)
+                anchor_price = resolve_anchor_price(namespace, samples, now)
                 if len(samples) < 4 or anchor_price is None:
                     warm_seconds = min(len(samples), LOOKBACK_SECONDS)
                     ns_set(namespace, 'engine_status', 'WARMING_2M_ANCHOR')
