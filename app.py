@@ -663,6 +663,7 @@ class MarketUniverseStore:
         self.current_mids = {}
         self.universe = []
         self.sz_decimals = {}
+        self.meta_by_coin = {}
         self.last_message_at = 0.0
         self.last_meta_refresh_at = 0.0
         self.last_error = ''
@@ -692,15 +693,27 @@ class MarketUniverseStore:
         meta = self._post_info({'type': 'meta'})
         universe = []
         sz_decimals = {}
+        meta_by_coin = {}
         for asset in meta.get('universe') or []:
             coin = asset.get('name')
             if not coin:
                 continue
             universe.append(coin)
             sz_decimals[coin] = int(asset.get('szDecimals', 0))
+            meta_by_coin[coin] = {
+                'category': (
+                    asset.get('category')
+                    or asset.get('type')
+                    or asset.get('sector')
+                    or asset.get('group')
+                    or asset.get('tag')
+                    or ''
+                ),
+            }
         with self.lock:
             self.universe = universe
             self.sz_decimals = sz_decimals
+            self.meta_by_coin = meta_by_coin
             self.last_meta_refresh_at = now
 
     def ensure_running(self):
@@ -866,6 +879,7 @@ class MarketUniverseStore:
         with self.lock:
             histories = {coin: list(items) for coin, items in self.history.items()}
             mids = dict(self.current_mids)
+            meta_by_coin = dict(self.meta_by_coin)
             last_error = self.last_error
         ranked = []
         for coin, history in histories.items():
@@ -885,12 +899,20 @@ class MarketUniverseStore:
             if score is None:
                 score = warmup_return
                 basis = 'warmup'
+            basis_description = {
+                '5m': 'medium momentum',
+                '1m': 'short momentum',
+                'warmup': 'limited history',
+            }.get(basis, '')
+            category = ((meta_by_coin.get(coin) or {}).get('category') or '').strip()
             ranked.append(
                 {
                     'coin': coin,
                     'mid': trim_float(latest_mid, 6),
                     'score_pct': trim_float(score, 4),
                     'score_basis': basis,
+                    'score_basis_description': basis_description,
+                    'category': category,
                     'return_1m': trim_float(return_1m or 0.0, 4),
                     'return_5m': trim_float(return_5m or 0.0, 4),
                     'return_15m': trim_float(return_15m or 0.0, 4),
