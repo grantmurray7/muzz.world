@@ -3408,6 +3408,8 @@ def require_login():
         'sandbox_health_check',
         'get_trades',
         'sandbox_get_trades',
+        'get_declined_trades',
+        'sandbox_get_declined_trades',
         'get_results',
         'sandbox_get_results',
         'get_state',
