@@ -49,7 +49,8 @@ MARKET_COIN = 'HYPE'
 MARKET_POLL_INTERVAL = 1.0
 TRADING_LOOP_INTERVAL = 1.0
 MARKET_HISTORY_SECONDS = 3900
-MARKET_STALE_AFTER_SECONDS = 6.0
+MARKET_STALE_AFTER_SECONDS = 20.0
+HYPERLIQUID_WS_URL = 'wss://api.hyperliquid.xyz/ws'
 RESULTS_TRADE_LIMIT = 500
 TRADE_LOG_LIMIT = 500
 SIGNAL_LOG_LIMIT = 5000
@@ -360,11 +361,16 @@ class MarketDataStore:
         self.last_ws_error = ''
 
     def ensure_rest_client(self):
-        if Info is None or hl_constants is None or websocket is None:
+        if Info is None or hl_constants is None:
             raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
         if self.rest_info is None:
             self.rest_info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
         return self.rest_info
+
+    def ensure_ws_client(self):
+        if websocket is None:
+            raise RuntimeError(f'Hyperliquid websocket client unavailable: {HYPERLIQUID_IMPORT_ERROR}')
+        return websocket
 
     def close_stream(self):
         ws_app = self.ws_app
@@ -449,8 +455,15 @@ class MarketDataStore:
     def _on_ws_message(self, _ws_app, raw_message):
         if raw_message == 'Websocket connection established.':
             return
-        ws_msg = json.loads(raw_message)
+        try:
+            ws_msg = json.loads(raw_message)
+        except Exception:
+            return
         if ws_msg.get('channel') == 'pong':
+            return
+        if ws_msg.get('channel') == 'subscriptionResponse':
+            with self.lock:
+                self.status = 'SUBSCRIBED'
             return
         if ws_msg.get('channel') != 'l2Book':
             return
@@ -475,8 +488,7 @@ class MarketDataStore:
                 self.error = f'Hyperliquid websocket closed ({status_code}): {close_msg or "no message"}'
 
     def connect_stream(self):
-        if Info is None or hl_constants is None or websocket is None:
-            raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
+        ws_module = self.ensure_ws_client()
         self.close_stream()
         with self.lock:
             self.status = 'CONNECTING'
@@ -487,9 +499,8 @@ class MarketDataStore:
             self.reconnect_count += 1
         snapshot_book = self.ensure_rest_client().l2_snapshot(MARKET_COIN)
         self._record_snapshot(self._build_snapshot(snapshot_book, source='rest_seed'), websocket_event=False)
-        ws_url = 'ws' + hl_constants.MAINNET_API_URL[len('http') :] + '/ws'
-        self.ws_app = websocket.WebSocketApp(
-            ws_url,
+        self.ws_app = ws_module.WebSocketApp(
+            HYPERLIQUID_WS_URL,
             on_open=self._on_ws_open,
             on_message=self._on_ws_message,
             on_error=self._on_ws_error,
