@@ -259,6 +259,7 @@ def require_login():
         'get_state', 'sandbox_get_state',
         'toggle_bot', 'sandbox_toggle_bot',
         'manual_set_position', 'sandbox_manual_set_position',
+        'sandbox_reset_balance',
         'clear_logs', 'sandbox_clear_logs',
         'liquidate_to_usdt', 'sandbox_liquidate_to_usdt',
     }
@@ -619,6 +620,13 @@ def reset_position_state(namespace, setup='Position reset to cash mode'):
         stop_price='0',
         profit_usd='0',
         position_status=''
+    )
+
+
+def sandbox_can_reset_balance():
+    return (
+        ns_get(SANDBOX_NS, 'position_active') != 'true'
+        and read_text_state(SANDBOX_NS, 'strategy_mode') == 'BUY'
     )
 
 
@@ -1366,6 +1374,21 @@ def sandbox_manual_set_position():
             reset_position_state(SANDBOX_NS, setup='Sandbox manual reset to cash mode')
             log_activity('Sandbox manual track: position cleared to INACTIVE', namespace=SANDBOX_NS)
         return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/sandbox/api/reset_balance', methods=['POST'])
+def sandbox_reset_balance():
+    try:
+        if not sandbox_can_reset_balance():
+            return jsonify({'status': 'error', 'message': 'Sandbox balance can only be reset during buy setup.'}), 400
+        reset_position_state(SANDBOX_NS, setup='Sandbox balance reset to $15,000')
+        ns_set(SANDBOX_NS, 'balance_usdt', 15000.0)
+        ns_set(SANDBOX_NS, 'balance_sol', 0)
+        ns_set(SANDBOX_NS, 'engine_status', 'READY_IN_CASH')
+        log_activity('Sandbox balance reset to $15,000 by operator.', namespace=SANDBOX_NS)
+        return jsonify({'status': 'success', 'message': 'Sandbox USDT reset to $15,000.'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
