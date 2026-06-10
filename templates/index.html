@@ -57,21 +57,17 @@
             min-width: 220px;
         }
         .brand-logo {
-            height: 34px;
+            height: 48px;
             width: auto;
             display: block;
         }
         .brand-copy h1 {
             margin: 0;
-            font-size: 18px;
+            font-size: 16px;
             line-height: 1.05;
             font-weight: 700;
-            letter-spacing: -0.02em;
-        }
-        .brand-copy p {
-            margin: 3px 0 0;
-            font-size: 11px;
-            color: rgba(255,255,255,0.78);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
         }
         .nav-actions {
             display: flex;
@@ -369,8 +365,7 @@
             <div class="brand">
                 <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world logo">
                 <div class="brand-copy">
-                    <h1>{{ page_label }} Dashboard</h1>
-                    <p class="mono">HYPE perpetual | manual start required | separate environment state</p>
+                    <h1>{% if page_label == 'REAL' %}Live{% else %}Sandbox{% endif %}</h1>
                 </div>
             </div>
             <div class="nav-actions">
