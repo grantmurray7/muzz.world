@@ -281,22 +281,23 @@ DEFAULT_CONFIGS = {
         'max_open_positions': 4,
         'leverage': 1.0,
         'daily_loss_limit_usdc': 200.0,
-        'max_trades_per_hour': 6,
+        'max_trades_per_hour': 0,
         'consecutive_loss_limit': 4,
-        'cooldown_after_loss_seconds': 300,
-        'entry_cooldown_seconds': 300,
+        'cooldown_after_loss_seconds': 0,
+        'entry_cooldown_seconds': 0,
         'take_profit_pct': 0.25,
-        'stop_loss_pct': 0.18,
-        'time_stop_seconds': 420,
+        'stop_loss_pct': 0.15,
+        'time_stop_seconds': 120,
         'emergency_exit_drop_pct': 0.20,
         'emergency_window_seconds': 30,
         'entry_timeout_seconds': 10,
+        'return_1m_threshold_pct': 0.25,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
-        'return_60m_min_pct': -1.00,
+        'return_60m_min_pct': -99.0,
         'spread_pct_max': 0.025,
-        'book_imbalance_min': 0.52,
-        'require_imbalance_improvement': True,
+        'book_imbalance_min': 0.50,
+        'require_imbalance_improvement': False,
         'starting_balance_usdc': 10000.0,
     },
     REAL_NS: {
@@ -317,6 +318,7 @@ DEFAULT_CONFIGS = {
         'emergency_exit_drop_pct': 0.20,
         'emergency_window_seconds': 30,
         'entry_timeout_seconds': 10,
+        'return_1m_threshold_pct': 0.25,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
         'return_60m_min_pct': -1.00,
@@ -348,6 +350,7 @@ EDITABLE_CONFIG_FIELDS = {
     'emergency_exit_drop_pct',
     'emergency_window_seconds',
     'entry_timeout_seconds',
+    'return_1m_threshold_pct',
     'return_2m_threshold_pct',
     'bounce_from_2m_low_threshold_pct',
     'return_60m_min_pct',
@@ -866,7 +869,7 @@ class MarketUniverseStore:
             'history': history,
         }
 
-    def get_hot_perps(self, limit=10):
+    def get_hot_perps(self, limit=10, primary_basis='5m'):
         self.ensure_running()
         with self.lock:
             histories = {coin: list(items) for coin, items in self.history.items()}
@@ -883,15 +886,31 @@ class MarketUniverseStore:
             return_15m = self._return_for(history, 900)
             oldest_mid = history[0]['mid']
             warmup_return = pct_change(oldest_mid, latest_mid) if len(history) > 1 else 0.0
-            score = return_5m
-            basis = '5m'
-            if score is None:
-                score = return_1m
-                basis = '1m'
-            if score is None:
-                score = warmup_return
-                basis = 'warmup'
+            basis_candidates = []
+            for basis_name in (primary_basis, '5m', '1m', 'warmup'):
+                if basis_name not in basis_candidates:
+                    basis_candidates.append(basis_name)
+            score = None
+            basis = 'warmup'
+            for basis_name in basis_candidates:
+                if basis_name == '1m' and return_1m is not None:
+                    score = return_1m
+                    basis = '1m'
+                    break
+                if basis_name == '5m' and return_5m is not None:
+                    score = return_5m
+                    basis = '5m'
+                    break
+                if basis_name == '15m' and return_15m is not None:
+                    score = return_15m
+                    basis = '15m'
+                    break
+                if basis_name == 'warmup':
+                    score = warmup_return
+                    basis = 'warmup'
+                    break
             basis_description = {
+                '15m': 'trend momentum',
                 '5m': 'medium momentum',
                 '1m': 'short momentum',
                 'warmup': 'limited history',
@@ -2528,15 +2547,21 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
         reasons.append('open order already working for coin')
     if (len(positions) + count_entry_orders(namespace)) >= int(config.get('max_open_positions', 1)):
         reasons.append('max open positions reached')
-    if metrics['return_5m'] <= 0.25:
-        reasons.append(f"return_5m {metrics['return_5m']:.4f}% below momentum floor")
-    checks.append({'name': 'return_5m > 0.25%', 'passed': metrics['return_5m'] > 0.25})
-    if metrics['return_15m'] <= 0.40:
-        reasons.append(f"return_15m {metrics['return_15m']:.4f}% below momentum floor")
-    checks.append({'name': 'return_15m > 0.40%', 'passed': metrics['return_15m'] > 0.40})
-    if metrics['return_60m'] <= float(config['return_60m_min_pct']):
-        reasons.append(f"return_60m {metrics['return_60m']:.4f}% below minimum")
-    checks.append({'name': 'return_60m above minimum', 'passed': metrics['return_60m'] > float(config['return_60m_min_pct'])})
+    if namespace == SANDBOX_NS:
+        one_min_threshold = float(config.get('return_1m_threshold_pct', 0.25))
+        if metrics['return_1m'] <= one_min_threshold:
+            reasons.append(f"return_1m {metrics['return_1m']:.4f}% below trigger")
+        checks.append({'name': f'return_1m > {one_min_threshold:.2f}%', 'passed': metrics['return_1m'] > one_min_threshold})
+    else:
+        if metrics['return_5m'] <= 0.25:
+            reasons.append(f"return_5m {metrics['return_5m']:.4f}% below momentum floor")
+        checks.append({'name': 'return_5m > 0.25%', 'passed': metrics['return_5m'] > 0.25})
+        if metrics['return_15m'] <= 0.40:
+            reasons.append(f"return_15m {metrics['return_15m']:.4f}% below momentum floor")
+        checks.append({'name': 'return_15m > 0.40%', 'passed': metrics['return_15m'] > 0.40})
+        if metrics['return_60m'] <= float(config['return_60m_min_pct']):
+            reasons.append(f"return_60m {metrics['return_60m']:.4f}% below minimum")
+        checks.append({'name': 'return_60m above minimum', 'passed': metrics['return_60m'] > float(config['return_60m_min_pct'])})
     if metrics['spread_pct'] > float(config['spread_pct_max']):
         reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
     checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
@@ -2544,16 +2569,16 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
         reasons.append(f"book_imbalance {metrics['book_imbalance']:.4f} below min")
     checks.append({'name': 'book imbalance healthy', 'passed': metrics['book_imbalance'] >= max(0.5, float(config['book_imbalance_min']) - 0.02)})
     last_entry_at = read_float(stats.get('last_entry_fill_at'), 0.0)
-    if last_entry_at and (time.time() - last_entry_at) < int(config['entry_cooldown_seconds']):
+    if int(config.get('entry_cooldown_seconds', 0)) > 0 and last_entry_at and (time.time() - last_entry_at) < int(config['entry_cooldown_seconds']):
         reasons.append('entry cooldown active')
     if stats.get('daily_pnl', 0.0) <= -abs(float(config['daily_loss_limit_usdc'])):
         reasons.append('daily loss limit hit')
     if int(stats.get('consecutive_losses', 0)) >= int(config['consecutive_loss_limit']):
         reasons.append('consecutive loss limit hit')
-    if get_hourly_trade_count(namespace) >= int(config['max_trades_per_hour']):
+    if int(config.get('max_trades_per_hour', 0)) > 0 and get_hourly_trade_count(namespace) >= int(config['max_trades_per_hour']):
         reasons.append('max trades per hour reached')
     last_loss_at = read_float(stats.get('last_loss_at'), 0.0)
-    if last_loss_at and (time.time() - last_loss_at) < int(config['cooldown_after_loss_seconds']):
+    if int(config.get('cooldown_after_loss_seconds', 0)) > 0 and last_loss_at and (time.time() - last_loss_at) < int(config['cooldown_after_loss_seconds']):
         reasons.append('loss cooldown active')
     return len(reasons) == 0, build_rejection_reason(reasons), checks
 
@@ -3070,7 +3095,8 @@ def attempt_entries(namespace):
     slots_left = max(0, int(config.get('max_open_positions', 1)) - active_slots)
     if slots_left <= 0:
         return
-    candidates = market_universe.get_hot_perps(limit=12).get('leaders', [])
+    primary_basis = '1m' if namespace == SANDBOX_NS else '5m'
+    candidates = market_universe.get_hot_perps(limit=12, primary_basis=primary_basis).get('leaders', [])
     for candidate in candidates:
         if slots_left <= 0:
             return
@@ -3214,7 +3240,8 @@ def build_state_payload(namespace):
         save_balances(namespace, balances)
     config = get_config(namespace)
     focus_market = build_market_focus()
-    hot_perps = market_universe.get_hot_perps(limit=10)
+    hot_primary_basis = '1m' if namespace == SANDBOX_NS else '5m'
+    hot_perps = market_universe.get_hot_perps(limit=10, primary_basis=hot_primary_basis)
     open_orders = get_open_orders(namespace)
     active_position = open_positions[0] if open_positions else {'active': False}
     payload = {
