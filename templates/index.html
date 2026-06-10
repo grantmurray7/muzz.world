@@ -151,6 +151,7 @@
             <div class="stat"><div class="label">Available Balance</div><div id="availableBalance" class="value mono">0.0000</div></div>
             <div class="stat"><div class="label">Equity</div><div id="equityBalance" class="value mono">0.0000</div></div>
             <div class="stat"><div class="label">Market Data Age</div><div id="marketAge" class="value mono">0.00s</div></div>
+            <div class="stat"><div class="label">Market Data Source</div><div id="marketSource" class="value mono">none</div></div>
         </div>
 
         <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -304,6 +305,7 @@
             setText('availableBalance', fmt(data.balances.available, 4));
             setText('equityBalance', fmt(data.balances.equity, 4));
             setText('marketAge', `${fmt(data.market.market_data_age, 2)}s`);
+            setText('marketSource', String(data.market.market_data_source || 'none').toUpperCase());
 
             const lastSignal = data.last_signal || {};
             const signalText = lastSignal.timestamp
@@ -348,6 +350,7 @@
                 `hyperliquid_sdk: ${data.hyperliquid_sdk}`,
                 `hyperliquid_api: ${data.hyperliquid_api}`,
                 `market_data: ${data.market_data}`,
+                `market_data_source: ${data.market_data_source || 'none'}`,
                 `engine: ${data.engine}`,
                 ...(data.errors || []).map((entry) => `error: ${entry}`)
             ].join('<br>');

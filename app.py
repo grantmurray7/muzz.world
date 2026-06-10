@@ -346,6 +346,8 @@ class MarketDataStore:
         self.error = ''
         self.info = None
         self.last_message_at = 0.0
+        self.last_rest_snapshot_at = 0.0
+        self.connected_at = 0.0
         self.subscription_id = None
 
     def ensure_rest_client(self):
@@ -367,7 +369,7 @@ class MarketDataStore:
         except Exception:
             pass
 
-    def _build_snapshot(self, book_data):
+    def _build_snapshot(self, book_data, source):
         levels = book_data.get('levels') or [[], []]
         bids = levels[0] if len(levels) > 0 else []
         asks = levels[1] if len(levels) > 1 else []
@@ -387,6 +389,7 @@ class MarketDataStore:
             event_ts = float(raw_time) / 1000.0
         return {
             'ts': event_ts,
+            'source': source,
             'best_bid': best_bid,
             'best_ask': best_ask,
             'mid': mid,
@@ -396,16 +399,21 @@ class MarketDataStore:
             'book_imbalance': book_imbalance,
         }
 
-    def _record_snapshot(self, snapshot):
+    def _record_snapshot(self, snapshot, websocket_event):
         with self.lock:
             self.snapshot = snapshot
             self.history.append(snapshot)
             cutoff = snapshot['ts'] - MARKET_HISTORY_SECONDS
             while self.history and self.history[0]['ts'] < cutoff:
                 self.history.popleft()
-            self.status = 'LIVE'
             self.error = ''
-            self.last_message_at = time.time()
+            now = time.time()
+            if websocket_event:
+                self.status = 'LIVE'
+                self.last_message_at = now
+            else:
+                self.status = 'SNAPSHOT_ONLY'
+                self.last_rest_snapshot_at = now
 
     def on_book_message(self, book_msg):
         if not isinstance(book_msg, dict):
@@ -413,8 +421,8 @@ class MarketDataStore:
         book_data = book_msg.get('data') or {}
         if book_data.get('coin') != MARKET_COIN:
             return
-        snapshot = self._build_snapshot(book_data)
-        self._record_snapshot(snapshot)
+        snapshot = self._build_snapshot(book_data, source='websocket')
+        self._record_snapshot(snapshot, websocket_event=True)
 
     def connect_stream(self):
         if Info is None or hl_constants is None:
@@ -424,10 +432,12 @@ class MarketDataStore:
             self.status = 'CONNECTING'
             self.error = ''
             self.last_message_at = 0.0
+            self.last_rest_snapshot_at = 0.0
+            self.connected_at = time.time()
         self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=False)
         self.subscription_id = self.info.subscribe({'type': 'l2Book', 'coin': MARKET_COIN}, self.on_book_message)
         snapshot_book = self.info.l2_snapshot(MARKET_COIN)
-        self._record_snapshot(self._build_snapshot(snapshot_book))
+        self._record_snapshot(self._build_snapshot(snapshot_book, source='rest_seed'), websocket_event=False)
 
     def loop(self):
         while True:
@@ -437,7 +447,10 @@ class MarketDataStore:
                     time.sleep(1)
                     with self.lock:
                         last_message_at = self.last_message_at
+                        connected_at = self.connected_at
                     if not last_message_at:
+                        if connected_at and (time.time() - connected_at) > MARKET_STALE_AFTER_SECONDS:
+                            raise RuntimeError('Hyperliquid websocket connected but no l2Book messages arrived.')
                         continue
                     age = time.time() - last_message_at
                     if age > MARKET_STALE_AFTER_SECONDS:
@@ -1616,6 +1629,7 @@ def build_health_payload(namespace):
         'hyperliquid_sdk': 'OK' if not HYPERLIQUID_IMPORT_ERROR else 'ERROR',
         'hyperliquid_api': 'N/A',
         'market_data': market_data.status,
+        'market_data_source': (market_data.snapshot or {}).get('source', 'none'),
         'engine': get_engine_status(namespace),
         'errors': [],
     }
@@ -1688,6 +1702,7 @@ def build_state_payload(namespace):
             'book_imbalance': trim_float(metrics['book_imbalance'], 6),
             'book_imbalance_10s_ago': trim_float(metrics['book_imbalance_10s_ago'], 6),
             'market_data_status': market_status,
+            'market_data_source': snapshot.get('source', 'none') if snapshot else 'none',
             'market_data_error': market_error,
             'market_data_age': trim_float(metrics['market_data_age'], 2),
         },
