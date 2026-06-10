@@ -3,103 +3,93 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>muzz.world - Trade History</title>
+    <title>{{ page_label }} Trades</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
-        :root {
-            --accent-pink: rgb(237, 125, 175);
-        }
-        body { background-color: #2d3139; color: #ffffff; padding: 1.5rem; }
-        .card { background-color: #1f2226; border: 1px solid #434954; }
-        .table-row { border-bottom: 1px solid #343a44; }
-        .accent-btn { background: var(--accent-pink); color: #fff; }
+        body { background: #10151d; color: #f3f4f6; }
+        .panel { background: #18202a; border: 1px solid #2b3948; border-radius: 0.75rem; }
+        .label { color: #94a3b8; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+        table { width: 100%; }
+        th, td { padding: 0.75rem 0.5rem; border-bottom: 1px solid #253243; text-align: left; }
+        th { color: #94a3b8; font-size: 0.72rem; text-transform: uppercase; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .btn { background: #334155; color: white; border-radius: 0.6rem; padding: 0.7rem 1rem; font-weight: 800; text-transform: uppercase; font-size: 0.8rem; }
     </style>
 </head>
-<body class="font-sans antialiased">
-    <div class="flex items-end justify-between mb-5 gap-4">
-        <div>
-            <div class="flex items-center gap-3 mb-1">
-                <h1 class="text-4xl font-black tracking-tight leading-none">trade history</h1>
-                {% if page_label %}
-                <span class="font-mono text-sm font-black uppercase tracking-widest text-pink-300">{{ page_label }}</span>
-                {% endif %}
+<body class="min-h-screen p-4 md:p-6">
+    <div class="max-w-7xl mx-auto space-y-4">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+                <h1 class="text-3xl font-black tracking-tight">{{ page_label }} Trade Log</h1>
+                <p class="text-sm text-gray-400 mono">Completed round-trip trades with fees and net PnL</p>
             </div>
-            <p class="text-sm text-gray-400 font-mono mt-1">muzz.world execution ledger</p>
-        </div>
-        <div class="flex items-center gap-3 font-mono">
-            <div class="text-right">
-                <span class="text-xs text-gray-400 block uppercase font-bold">Total Trades</span>
-                <span id="tradeCount" class="text-2xl font-black text-green-400">0</span>
+            <div class="flex flex-wrap gap-2">
+                <a href="{{ dashboard_href }}" class="btn">Dashboard</a>
+                <a href="{{ results_href }}" class="btn">Results</a>
             </div>
-            <a href="{{ dashboard_href or '/' }}" class="accent-btn font-mono font-bold py-2.5 px-5 rounded text-sm uppercase tracking-wider transition shadow whitespace-nowrap">Dashboard</a>
         </div>
-    </div>
 
-    <div class="card rounded p-4">
-        <div class="overflow-x-auto">
-            <table class="w-full font-mono text-sm">
+        <div class="panel p-4 overflow-x-auto">
+            <table class="mono text-sm">
                 <thead>
-                    <tr class="text-left text-gray-400 uppercase tracking-wider text-xs border-b border-gray-700">
-                        <th class="pb-3 pr-4">#</th>
-                        <th class="pb-3 pr-4">Time</th>
-                        <th class="pb-3 pr-4">Side</th>
-                        <th class="pb-3 pr-4 text-right">SOL</th>
-                        <th class="pb-3 pr-4 text-right">Price</th>
-                        <th class="pb-3 pr-4 text-right">USDT</th>
-                        <th class="pb-3 pr-4">Source</th>
-                        <th class="pb-3 pr-4">Env</th>
-                        <th class="pb-3">Note</th>
+                    <tr>
+                        <th>ID</th>
+                        <th>Timestamp</th>
+                        <th>Exit Reason</th>
+                        <th>Maker/Taker</th>
+                        <th>Size</th>
+                        <th>Entry</th>
+                        <th>Exit</th>
+                        <th>Fees</th>
+                        <th>Net PnL</th>
+                        <th>Balance After</th>
                     </tr>
                 </thead>
                 <tbody id="tradeRows">
-                    <tr><td colspan="9" class="py-5 text-gray-500">Loading trade history...</td></tr>
+                    <tr><td colspan="10" class="text-gray-400">Loading trades...</td></tr>
                 </tbody>
             </table>
         </div>
     </div>
 
     <script>
-        const apiBase = '{{ api_base or "/api" }}';
-
-        async function fetchTrades() {
-            try {
-                const response = await fetch(`${apiBase}/trades`);
-                const data = await response.json();
-                document.getElementById('tradeCount').innerText = data.trade_count || 0;
-
-                const tradeRows = document.getElementById('tradeRows');
-                tradeRows.innerHTML = '';
-
-                if (!data.trades || data.trades.length === 0) {
-                    tradeRows.innerHTML = '<tr><td colspan="9" class="py-5 text-gray-500">No trades recorded yet.</td></tr>';
-                    return;
-                }
-
-                data.trades.forEach(trade => {
-                    const row = document.createElement('tr');
-                    row.className = 'table-row';
-                    const sideClass = trade.side === 'BUY' ? 'text-green-400' : 'text-red-400';
-                    row.innerHTML = `
-                        <td class="py-3 pr-4 text-gray-400">${trade.id}</td>
-                        <td class="py-3 pr-4 whitespace-nowrap">${trade.time || ''}</td>
-                        <td class="py-3 pr-4 font-black ${sideClass}">${trade.side}</td>
-                        <td class="py-3 pr-4 text-right">${Number(trade.quantity || 0).toFixed(4)}</td>
-                        <td class="py-3 pr-4 text-right">$${Number(trade.price || 0).toFixed(2)}</td>
-                        <td class="py-3 pr-4 text-right">$${Number(trade.notional_usdt || 0).toFixed(2)}</td>
-                        <td class="py-3 pr-4">${trade.source || ''}</td>
-                        <td class="py-3 pr-4 text-gray-400">${trade.environment || ''}</td>
-                        <td class="py-3 text-gray-300">${trade.note || ''}</td>
-                    `;
-                    tradeRows.appendChild(row);
-                });
-            } catch (err) {
-                document.getElementById('tradeRows').innerHTML = '<tr><td colspan="9" class="py-5 text-red-400">Failed loading trade history.</td></tr>';
-            }
+        const apiBase = '{{ api_base }}';
+        function fmt(value, digits = 4) {
+            return Number(value || 0).toFixed(digits);
         }
 
-        setInterval(fetchTrades, 10000);
-        fetchTrades();
+        async function loadTrades() {
+            const res = await fetch(`${apiBase}/trades`);
+            const data = await res.json();
+            const rows = document.getElementById('tradeRows');
+            rows.innerHTML = '';
+            if (!data.trades || data.trades.length === 0) {
+                rows.innerHTML = '<tr><td colspan="10" class="text-gray-400">No completed trades yet.</td></tr>';
+                return;
+            }
+            data.trades.forEach((trade) => {
+                const row = document.createElement('tr');
+                const pnl = Number(trade.net_pnl || 0);
+                const color = pnl >= 0 ? 'style="color:#4ade80"' : 'style="color:#f87171"';
+                row.innerHTML = `
+                    <td>${trade.id || ''}</td>
+                    <td>${trade.timestamp || ''}</td>
+                    <td>${trade.exit_reason || ''}</td>
+                    <td>${trade.maker_or_taker || ''}</td>
+                    <td>${fmt(trade.size, 4)}</td>
+                    <td>${fmt(trade.filled_price, 5)}</td>
+                    <td>${fmt(trade.exit_price, 5)}</td>
+                    <td>${fmt(trade.fees_paid, 4)}</td>
+                    <td ${color}>${fmt(trade.net_pnl, 4)}</td>
+                    <td>${fmt(trade.balance_after_trade, 4)}</td>
+                `;
+                rows.appendChild(row);
+            });
+        }
+
+        loadTrades();
+        setInterval(loadTrades, 5000);
     </script>
 </body>
 </html>

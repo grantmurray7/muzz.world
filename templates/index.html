@@ -3,680 +3,431 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>muzz.world - the funk SOL brother</title>
+    <title>{{ page_label }} Dashboard</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <style>
-        :root {
-            --accent-pink: rgb(237, 125, 175);
-            --accent-pink-soft: rgba(237, 125, 175, 0.18);
-            --panel: #1f2226;
-            --panel-border: #434954;
-            --soft: #ffffff;
-        }
         body {
-            background-color: #2d3139;
-            color: #ffffff;
-            padding: 0.75rem;
-            font-size: 1rem;
+            background: #10151d;
+            color: #f3f4f6;
         }
-        .card {
-            background-color: var(--panel);
-            border: 1px solid var(--panel-border);
+        .panel {
+            background: #18202a;
+            border: 1px solid #2b3948;
+            border-radius: 0.75rem;
+        }
+        .stat {
+            background: #121923;
+            border: 1px solid #253243;
+            border-radius: 0.75rem;
+            padding: 0.9rem;
+        }
+        .label {
+            color: #94a3b8;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+        }
+        .value {
+            font-size: 1.35rem;
+            font-weight: 800;
+            margin-top: 0.2rem;
+        }
+        .warning {
+            background: rgba(220, 38, 38, 0.18);
+            border: 1px solid rgba(248, 113, 113, 0.55);
+            color: #fecaca;
+        }
+        .btn-primary {
+            background: #ec4899;
+            color: white;
+        }
+        .btn-secondary {
+            background: #334155;
+            color: white;
+        }
+        .btn-danger {
+            background: #dc2626;
+            color: white;
+        }
+        .btn {
             border-radius: 0.6rem;
+            padding: 0.7rem 1rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-size: 0.8rem;
         }
-        .accent-btn {
-            background: var(--accent-pink);
-            color: #ffffff;
-            border: 1px solid rgba(255,255,255,0.08);
+        input, select {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 0.5rem;
+            color: #f8fafc;
+            padding: 0.55rem 0.7rem;
+            width: 100%;
         }
-        .accent-btn:hover {
-            filter: brightness(1.06);
-            color: #ffffff;
+        textarea {
+            background: #0b1220;
+            color: #d1d5db;
+            border: 1px solid #223043;
+            border-radius: 0.65rem;
         }
-        .accent-btn:focus {
-            outline: none;
-            box-shadow: 0 0 0 3px var(--accent-pink-soft);
-        }
-        .accent-btn:disabled {
-            opacity: 0.45;
-            cursor: not-allowed;
-            filter: none;
-        }
-        .metric-pink, .spot-pink { color: var(--accent-pink) !important; }
-        .dashboard-logo { display: block; width: 155px; max-width: 30vw; height: auto; }
-        .mode-dim { opacity: 0.22; transition: opacity 0.3s ease; pointer-events: none; }
-        .mode-active { opacity: 1; transition: opacity 0.3s ease; }
-        .mono { font-family: monospace; }
-        .soft { color: var(--soft); }
-        .compact-card { padding: 1rem 1.05rem; }
-        .section-title { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
-        .section-copy { margin-top: 0.18rem; font-size: 0.88rem; color: #ffffff; }
-        .summary-value { font-size: 2.1rem; line-height: 1; font-weight: 900; }
-        .summary-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin-bottom: 0.9rem; }
-        .summary-copy { flex: 1 1 auto; min-width: 0; }
-        .summary-stat { min-width: 130px; text-align: right; }
-        .summary-stat-label { display: block; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #ffffff; }
-        .summary-stat-value { display: block; margin-top: 0.22rem; font-size: 2.2rem; line-height: 1; font-weight: 900; color: #ffffff; }
-        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem 1rem; }
-        .info-box { background: rgba(0,0,0,0.22); border: 1px solid #343a44; border-radius: 0.5rem; padding: 0.55rem 0.75rem; }
-        .info-row { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; padding: 0.38rem 0; border-top: 1px solid rgba(67,73,84,0.55); }
-        .info-row:first-child { border-top: 0; padding-top: 0; }
-        .info-label { color: #ffffff; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem; font-weight: 700; }
-        .info-value { color: #ffffff; font-weight: 800; font-size: 0.96rem; text-align: right; }
-        .signal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
-        .signal-box { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; background: rgba(0,0,0,0.22); border: 1px solid #343a44; border-radius: 0.5rem; padding: 0.72rem 0.85rem; }
-        .signal-label { color: #ffffff; font-size: 0.9rem; font-weight: 800; line-height: 1.1; }
-        .signal-value { color: #ffffff; font-size: 1rem; font-weight: 800; line-height: 1.1; text-align: right; white-space: nowrap; }
-        .signal-box.blank { opacity: 0; pointer-events: none; }
-        .meter-shell { margin-top: 0.8rem; }
-        .meter-track { position: relative; height: 14px; border-radius: 999px; overflow: hidden; background: linear-gradient(90deg, rgba(255,107,107,0.22) 0%, rgba(255,107,107,0.12) 38%, rgba(82,229,164,0.12) 62%, rgba(82,229,164,0.28) 100%); border: 1px solid #343a44; }
-        .meter-fill { position: absolute; inset: 0 auto 0 0; width: 50%; background: linear-gradient(90deg, rgba(255,107,107,0.55), rgba(237,125,175,0.72), rgba(82,229,164,0.78)); }
-        .meter-marker { position: absolute; top: -3px; width: 3px; height: 18px; background: #ffffff; box-shadow: 0 0 0 1px rgba(0,0,0,0.25); }
-        .meter-legend { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; margin-top: 0.38rem; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #ffffff; }
-        .diag-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.55rem; }
-        .diag-item { background: rgba(0,0,0,0.22); border: 1px solid #343a44; border-radius: 0.5rem; padding: 0.55rem 0.7rem; min-width: 0; }
-        .diag-item .label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; font-weight: 700; }
-        .diag-item .value { margin-top: 0.14rem; font-size: 0.82rem; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .status-ok { color: #52e5a4; }
-        .status-fail { color: #ff6b6b; }
-        .status-warn { color: #fbbf24; }
-        .sandbox-label { letter-spacing: 0.38em; }
-        #logBox { height: 44vh; overflow-y: auto; font-size: 0.74rem; line-height: 0.98rem; }
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #1f2226; }
-        ::-webkit-scrollbar-thumb { background: #434954; border-radius: 4px; }
-        @media (min-width: 768px) {
-            body { padding: 1.2rem; }
-            .desktop-grid { display: grid; grid-template-columns: minmax(360px, 0.96fr) minmax(540px, 1.35fr); gap: 1rem; align-items: start; }
-            .signal-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-        }
-        @media (max-width: 900px) {
-            .diag-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        }
-        @media (max-width: 520px) {
-            .summary-head { flex-direction: column; align-items: stretch; }
-            .summary-stat { text-align: left; min-width: 0; }
-            .signal-grid { grid-template-columns: 1fr; }
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         }
     </style>
 </head>
-<body class="font-sans antialiased">
-    <div class="flex items-center justify-between gap-4 mb-4 px-1 min-h-[92px]">
-        <div class="flex items-center flex-shrink-0 self-center h-full gap-3">
-            <a href="{{ '/' if page_label else '/sandbox' }}" aria-label="Switch dashboard mode">
-                <img class="dashboard-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world">
-            </a>
-            {% if page_label %}
-            <span class="font-mono text-sm font-black uppercase text-pink-300 sandbox-label">{{ page_label }}</span>
-            {% endif %}
-        </div>
-        <div class="flex-1 flex items-center justify-center self-center gap-2 font-mono h-full">
-            <button id="toggleTradeBtn" onclick="handleToggleRequest()" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition duration-150 whitespace-nowrap">
-                SYNCHRONIZING...
-            </button>
-            {% if page_label %}
-            <button id="resetSandboxBalanceBtn" onclick="resetSandboxBalance()" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition whitespace-nowrap hidden" disabled>
-                RESET 15K
-            </button>
-            {% endif %}
-            <a href="{{ trades_href or '/trades' }}" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition whitespace-nowrap">
-                TRADES: <span id="tradeCount">0</span>
-            </a>
-            <a href="/logout" class="accent-btn font-mono font-bold py-2.5 px-4 rounded text-sm uppercase tracking-wider transition whitespace-nowrap">
-                LOGOUT
-            </a>
-        </div>
-        <div class="flex items-center self-center flex-shrink-0 space-x-4 text-sm font-mono h-full">
-            <div class="text-right leading-tight text-base">
-                <span id="totalNetUsd" class="metric-pink font-black">$0.00</span>
-                <span class="metric-pink mx-1.5">|</span>
-                <span id="totalNetGbp" class="metric-pink font-black">£0.00</span>
+<body class="min-h-screen p-4 md:p-6">
+    <div class="max-w-7xl mx-auto space-y-4">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+                <h1 class="text-3xl font-black tracking-tight">{{ page_label }} Trading Dashboard</h1>
+                <p class="text-sm text-gray-400 mono">HYPE perpetual | manual start required | separate environment state</p>
             </div>
-            <span id="engineBadge" class="px-3 py-1 rounded text-sm font-mono font-bold bg-gray-600 text-gray-200">OFFLINE</span>
-        </div>
-    </div>
-
-    <div class="desktop-grid">
-        <div class="space-y-3">
-            <div class="card compact-card py-2 px-4 flex justify-between items-center mono">
-                <span class="uppercase font-bold tracking-wider text-sm">Spot Benchmark</span>
-                <div>
-                    <span class="mr-1.5 text-sm soft">SOL/USDT</span>
-                    <span id="solPrice" class="font-black text-2xl spot-pink">$0.000</span>
-                </div>
-            </div>
-
-            <div id="usdtSide" class="card compact-card border-t-4 border-pink-400">
-                <div class="summary-head">
-                    <div class="summary-copy">
-                        <p class="section-title mono text-white">Buy Setup</p>
-                        <p id="setupText" class="section-copy mono">Waiting for state...</p>
-                    </div>
-                    <div class="summary-stat">
-                        <span class="summary-stat-label mono">Available Liquidity</span>
-                        <span id="balUsdt" class="summary-stat-value">$0.00</span>
-                    </div>
-                </div>
-
-                <div class="signal-grid mono">
-                    <div class="signal-box">
-                        <span class="signal-label">2m Anchor</span>
-                        <span id="anchorPrice" class="signal-value">N/A</span>
-                    </div>
-                    {% if strategy_profile == 'dollar' %}
-                    <div class="signal-box">
-                        <span class="signal-label">Anchor Gap</span>
-                        <span id="anchorGap" class="signal-value">$0.00</span>
-                    </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Armed Low</span>
-                        <span id="armedLow" class="signal-value">N/A</span>
-                    </div>
-                    {% else %}
-                    <div class="signal-box">
-                        <span class="signal-label">Anchor Gap</span>
-                        <span id="anchorDelta" class="signal-value">0.00%</span>
-                    </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Uplift 1</span>
-                        <span id="upliftOne" class="signal-value">0.00%</span>
-                    </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Uplift 2</span>
-                        <span id="upliftTwo" class="signal-value">0.00%</span>
-                    </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Uplift 3</span>
-                        <span id="upliftThree" class="signal-value">0.00%</span>
-                    </div>
-                    {% endif %}
-                </div>
-
-                <div class="meter-shell mono">
-                    <div class="flex items-center justify-between text-xs uppercase tracking-wider mb-1">
-                        <span class="soft">{% if strategy_profile == 'dollar' %}Buy Meter{% else %}Signal Meter{% endif %}</span>
-                        <span id="buyMeterHeadline" class="text-white font-bold">{% if strategy_profile == 'dollar' %}Waiting for arm{% else %}Watching uplifts{% endif %}</span>
-                    </div>
-                    <div class="meter-track">
-                        <div id="buyMeterFill" class="meter-fill"></div>
-                        <div id="buyMeterMarker" class="meter-marker" style="left: 0%;"></div>
-                    </div>
-                    <div class="meter-legend">
-                        {% if strategy_profile == 'dollar' %}
-                        <span>Arm $0.25</span>
-                        <span id="buyMeterMidLabel">Rebound flat</span>
-                        <span>Buy +$0.05</span>
-                        {% else %}
-                        <span>Uplift 1</span>
-                        <span id="buyMeterMidLabel">0 of 3 ready</span>
-                        <span>Uplift 3</span>
-                        {% endif %}
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2 pt-3 mt-3 border-t border-gray-800">
-                    <button onclick="manualSetPosition()" class="accent-btn font-mono py-2 px-2 rounded text-sm uppercase font-bold tracking-wide transition">
-                        Track Entry Price
-                    </button>
-                    <button onclick="executeManualBuy()" class="accent-btn font-mono py-2 px-2 rounded text-sm uppercase font-black tracking-wide transition shadow">
-                        Market Buy SOL
-                    </button>
-                </div>
-            </div>
-
-            <div id="solSide" class="card compact-card border-t-4 border-blue-400">
-                <div class="summary-head">
-                    <div class="summary-copy">
-                        <p class="section-title mono text-white">Open Position</p>
-                        <p class="section-copy mono">{% if strategy_profile == 'dollar' %}Hold for +$0.35 target or -$0.08 stop.{% else %}Hold until +0.60%. No hard stop.{% endif %}</p>
-                    </div>
-                    <div class="summary-stat">
-                        <span class="summary-stat-label mono">Held Tokens</span>
-                        <span id="balSol" class="summary-stat-value">0.0000</span>
-                    </div>
-                </div>
-
-                <div class="signal-grid mono">
-                    <div class="signal-box">
-                        <span class="signal-label">Entry</span>
-                        <span id="openingPurchasePrice" class="signal-value">N/A</span>
-                    </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Target Exit</span>
-                        <span id="targetSellPrice" class="signal-value">N/A</span>
-                    </div>
-                    {% if strategy_profile == 'dollar' %}
-                    <div class="signal-box">
-                        <span class="signal-label">Stop Exit</span>
-                        <span id="stopPrice" class="signal-value">N/A</span>
-                    </div>
-                    {% endif %}
-                    <div class="signal-box">
-                        <span class="signal-label">P/L</span>
-                        <span id="marginDeltaGap" class="signal-value">N/A</span>
-                    </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Seconds Open</span>
-                        <span id="secondsOpen" class="signal-value">0s</span>
-                    </div>
-                    <div class="signal-box">
-                        <span class="signal-label">Status</span>
-                        <span id="positionStatus" class="signal-value">Waiting</span>
-                    </div>
-                </div>
-
-                <div class="meter-shell mono">
-                    <div class="flex items-center justify-between text-xs uppercase tracking-wider mb-1">
-                        <span class="soft">Hold Meter</span>
-                        <span id="meterHeadline" class="text-white font-bold">Awaiting position</span>
-                    </div>
-                    <div class="meter-track">
-                        <div id="holdMeterFill" class="meter-fill"></div>
-                        <div id="holdMeterMarker" class="meter-marker" style="left: 50%;"></div>
-                    </div>
-                    <div class="meter-legend">
-                        <span>Entry</span>
-                        <span id="meterMidLabel">Current Flat</span>
-                        <span>{% if strategy_profile == 'dollar' %}Target +$0.35{% else %}Target +0.60%{% endif %}</span>
-                    </div>
-                </div>
-
-                <div class="pt-3 mt-3 border-t border-gray-700">
-                    <button onclick="liquidateStack()" class="accent-btn w-full border border-transparent text-white font-mono py-2.5 px-3 rounded text-sm uppercase font-bold tracking-wide transition">
-                        Convert Stack to USDT
-                    </button>
-                </div>
+            <div class="flex flex-wrap gap-2">
+                <a href="{{ trades_href }}" class="btn btn-secondary">Trades</a>
+                <a href="{{ results_href }}" class="btn btn-secondary">Results</a>
+                {% if page_label == 'REAL' %}
+                <a href="/sandbox" class="btn btn-secondary">Sandbox</a>
+                {% else %}
+                <a href="/" class="btn btn-secondary">Real</a>
+                {% endif %}
+                <a href="/logout" class="btn btn-secondary">Logout</a>
             </div>
         </div>
 
-        <div class="space-y-3">
-            <div class="card p-3 rounded">
-                <div class="flex items-center justify-between mb-2 px-1">
-                    <p class="text-xs text-gray-400 font-bold uppercase tracking-wider font-mono">Real-Time Execution Terminal Log</p>
-                    <button onclick="clearLogs()" class="bg-gray-700 hover:bg-gray-600 text-white font-mono py-1 px-2 rounded text-xs uppercase font-bold tracking-wide transition">
-                        Wipe Logs
-                    </button>
-                </div>
-                <div id="logBox" class="bg-black bg-opacity-40 p-2.5 rounded font-mono text-gray-200 overflow-y-auto space-y-1 border border-gray-800">
-                    <p class="text-gray-500 text-xs leading-tight">Trade actions, sell reasons, manual overrides, and errors will appear here.</p>
-                </div>
-            </div>
+        <div id="realWarning" class="panel warning p-4 hidden">
+            <div class="font-black uppercase tracking-wider text-sm">Real Trading Warning</div>
+            <div class="text-sm mt-1">REAL mode submits live Hyperliquid orders on mainnet. START requires typed confirmation.</div>
+        </div>
 
-            <div class="card compact-card">
-                <div class="diag-strip mono">
-                    <div class="diag-item">
-                        <div class="label">Database</div>
-                        <div id="debugDatabase" class="value">...</div>
+        <div class="panel p-4">
+            <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 flex-1">
+                    <div class="stat">
+                        <div class="label">Environment</div>
+                        <div id="environmentLabel" class="value mono">{{ page_label }}</div>
                     </div>
-                    <div class="diag-item">
-                        <div class="label">Binance</div>
-                        <div id="debugBinance" class="value">...</div>
+                    <div class="stat">
+                        <div class="label">Bot State</div>
+                        <div id="botState" class="value mono">PAUSED</div>
                     </div>
-                    <div class="diag-item">
-                        <div class="label">Market Data</div>
-                        <div id="debugMarketData" class="value">...</div>
-                    </div>
-                    <div class="diag-item">
-                        <div class="label">Websocket</div>
-                        <div id="websocketStatus" class="value">...</div>
-                    </div>
-                    <div class="diag-item">
+                    <div class="stat">
                         <div class="label">Engine</div>
-                        <div id="engineStatus" class="value">...</div>
+                        <div id="engineStatus" class="value mono text-base">Loading...</div>
+                    </div>
+                    <div class="stat">
+                        <div class="label">HYPE Mid Price</div>
+                        <div id="midPrice" class="value mono">0.0000</div>
                     </div>
                 </div>
-                <div id="errorConsole" class="mt-2 text-xs font-mono text-red-400 hidden bg-red-950 bg-opacity-40 p-2 rounded border border-red-900"></div>
+                <div class="flex flex-wrap gap-2 items-start">
+                    <button class="btn btn-primary" onclick="startBot()">Start</button>
+                    <button class="btn btn-secondary" onclick="pauseBot()">Pause</button>
+                    <button class="btn btn-danger" onclick="killBot()">Kill Switch</button>
+                    <button class="btn btn-secondary" onclick="manualClose()">Manual Close</button>
+                    {% if page_label == 'SANDBOX' %}
+                    <button class="btn btn-secondary" onclick="resetSandbox()">Reset Sandbox</button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div class="stat"><div class="label">Spread %</div><div id="spreadPct" class="value mono">0.0000%</div></div>
+            <div class="stat"><div class="label">2m Return</div><div id="return2m" class="value mono">0.0000%</div></div>
+            <div class="stat"><div class="label">60m Return</div><div id="return60m" class="value mono">0.0000%</div></div>
+            <div class="stat"><div class="label">Bounce From 2m Low</div><div id="bounce2m" class="value mono">0.0000%</div></div>
+            <div class="stat"><div class="label">Book Imbalance</div><div id="bookImbalance" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Book Imbalance 10s Ago</div><div id="bookImbalanceOld" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Active Position</div><div id="activePosition" class="value mono">NO</div></div>
+            <div class="stat"><div class="label">Open Orders</div><div id="openOrders" class="value mono">0</div></div>
+            <div class="stat"><div class="label">Trade Notional</div><div id="tradeNotional" class="value mono">0.00 USDC</div></div>
+            <div class="stat"><div class="label">Daily PnL</div><div id="dailyPnl" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Total PnL</div><div id="totalPnl" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Consecutive Losses</div><div id="consecutiveLosses" class="value mono">0</div></div>
+            <div class="stat"><div class="label">Trades Today</div><div id="tradesToday" class="value mono">0</div></div>
+            <div class="stat"><div class="label">Available Balance</div><div id="availableBalance" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Equity</div><div id="equityBalance" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Market Data Age</div><div id="marketAge" class="value mono">0.00s</div></div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div class="panel p-4 xl:col-span-2 space-y-4">
+                <div>
+                    <div class="label">Last Signal</div>
+                    <div id="lastSignal" class="mt-2 text-sm mono text-gray-200">Waiting for signal log...</div>
+                </div>
+                <div>
+                    <div class="label">Last Trade</div>
+                    <div id="lastTrade" class="mt-2 text-sm mono text-gray-200">No completed trades yet.</div>
+                </div>
+                <div>
+                    <div class="label">Reason Last Trade Was Not Taken</div>
+                    <div id="reasonNotTaken" class="mt-2 text-sm mono text-yellow-200">Waiting for evaluation...</div>
+                </div>
+                <div>
+                    <div class="label">Position Detail</div>
+                    <div id="positionDetail" class="mt-2 text-sm mono text-gray-200">No active position.</div>
+                </div>
+            </div>
+            <div class="panel p-4 space-y-3">
+                <div class="label">Health</div>
+                <div id="healthBox" class="text-sm mono text-gray-200 space-y-1"></div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div class="panel p-4">
+                <div class="flex items-center justify-between">
+                    <div class="label">Action Log</div>
+                    <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
+                </div>
+                <textarea id="logBox" class="w-full h-80 mt-3 p-3 mono text-sm" readonly></textarea>
+            </div>
+            <div class="panel p-4">
+                <div class="flex items-center justify-between">
+                    <div class="label">Environment Config</div>
+                    <button class="btn btn-primary" onclick="saveConfig()">Save Config</button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                    <div><div class="label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
+                    <div><div class="label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
+                    <div><div class="label">Daily Loss Limit</div><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
+                    <div><div class="label">Max Trades / Hour</div><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
+                    <div><div class="label">Consecutive Loss Limit</div><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
+                    <div><div class="label">Leverage</div><input id="cfg_leverage" type="number" step="0.1"></div>
+                    <div><div class="label">Maker Fee %</div><input id="cfg_maker_fee_pct" type="number" step="0.001"></div>
+                    <div><div class="label">Taker Fee %</div><input id="cfg_taker_fee_pct" type="number" step="0.001"></div>
+                    <div><div class="label">Take Profit %</div><input id="cfg_take_profit_pct" type="number" step="0.01"></div>
+                    <div><div class="label">Stop Loss %</div><input id="cfg_stop_loss_pct" type="number" step="0.01"></div>
+                    <div><div class="label">Time Stop Seconds</div><input id="cfg_time_stop_seconds" type="number" step="1"></div>
+                    <div><div class="label">Emergency Window Seconds</div><input id="cfg_emergency_window_seconds" type="number" step="1"></div>
+                    <div><div class="label">Emergency Drop %</div><input id="cfg_emergency_exit_drop_pct" type="number" step="0.01"></div>
+                    <div><div class="label">Entry Timeout Seconds</div><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
+                    <div><div class="label">Entry Cooldown Seconds</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
+                    <div><div class="label">Loss Cooldown Seconds</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
+                    <div><div class="label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
+                    <div><div class="label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
+                    <div><div class="label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
+                    <div><div class="label">Spread Max %</div><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
+                    <div><div class="label">Book Imbalance Minimum</div><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
+                    {% if page_label == 'SANDBOX' %}
+                    <div><div class="label">Starting Balance USDC</div><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
+                    <div><div class="label">Maker Entry Slippage %</div><input id="cfg_maker_entry_slippage_pct" type="number" step="0.001"></div>
+                    <div><div class="label">Maker Exit Slippage %</div><input id="cfg_maker_exit_slippage_pct" type="number" step="0.001"></div>
+                    <div><div class="label">Taker Exit Slippage %</div><input id="cfg_taker_exit_slippage_pct" type="number" step="0.001"></div>
+                    {% endif %}
+                </div>
+                <div class="mt-3">
+                    <label class="inline-flex items-center gap-2 text-sm mono text-gray-200">
+                        <input id="cfg_require_imbalance_improvement" type="checkbox" class="w-4 h-4">
+                        Require book imbalance to be higher than 10 seconds ago
+                    </label>
+                </div>
+                {% if page_label == 'REAL' %}
+                <p class="text-xs text-yellow-200 mono mt-3">REAL mode does not simulate slippage. It logs actual fill slippage from live fills.</p>
+                {% endif %}
             </div>
         </div>
     </div>
 
     <script>
-        let currentBotRunningState = null;
-        const apiBase = '{{ api_base or "/api" }}';
-        const strategyProfile = '{{ strategy_profile or "percent" }}';
-        const upliftThresholdPct = 0.02;
-        const buyArmUsd = 0.25;
-        const buyReboundUsd = 0.05;
-        const sellTargetPct = 0.60;
-        const sellTargetUsd = 0.35;
-        const stopLossUsd = 0.08;
+        const apiBase = '{{ api_base }}';
+        const isReal = '{{ page_label }}' === 'REAL';
+        const configFields = [
+            'trade_notional_usdc', 'max_notional_usdc', 'daily_loss_limit_usdc', 'max_trades_per_hour',
+            'consecutive_loss_limit', 'leverage', 'maker_fee_pct', 'taker_fee_pct', 'take_profit_pct',
+            'stop_loss_pct', 'time_stop_seconds', 'emergency_window_seconds', 'emergency_exit_drop_pct',
+            'entry_timeout_seconds', 'entry_cooldown_seconds', 'cooldown_after_loss_seconds',
+            'return_2m_threshold_pct', 'bounce_from_2m_low_threshold_pct', 'return_60m_min_pct',
+            'spread_pct_max', 'book_imbalance_min', 'starting_balance_usdc',
+            'maker_entry_slippage_pct', 'maker_exit_slippage_pct', 'taker_exit_slippage_pct'
+        ];
 
-        function money(value) {
-            return `$${Number(value || 0).toFixed(2)}`;
+        function fmt(value, digits = 4) {
+            return Number(value || 0).toFixed(digits);
         }
 
-        function formatSpotPrice(rawValue) {
-            const raw = String(rawValue ?? '0').trim();
-            if (!raw) return '$0.00';
-
-            const numeric = Number(raw);
-            if (!Number.isFinite(numeric)) return '$0.00';
-
-            return `$${numeric.toFixed(3)}`;
+        function pct(value, digits = 4) {
+            return `${fmt(value, digits)}%`;
         }
 
-        function pct(value) {
-            return `${Number(value || 0).toFixed(2)}%`;
+        function setText(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
         }
 
-        function updateBuyMeter(strategy) {
-            const marker = document.getElementById('buyMeterMarker');
-            const fill = document.getElementById('buyMeterFill');
-            const headline = document.getElementById('buyMeterHeadline');
-            const midLabel = document.getElementById('buyMeterMidLabel');
-            if (strategyProfile !== 'dollar') {
-                const uplifts = [
-                    Number(strategy.uplift_1 || 0),
-                    Number(strategy.uplift_2 || 0),
-                    Number(strategy.uplift_3 || 0)
-                ];
-                const completed = uplifts.filter(value => value >= upliftThresholdPct).length;
-                const progress = Math.max(0, Math.min(100, (completed / 3) * 100));
-                marker.style.left = `${progress}%`;
-                fill.style.width = `${progress}%`;
-                headline.innerText = `Uplifts ${completed}/3 above +${upliftThresholdPct.toFixed(2)}%`;
-                midLabel.innerText = completed === 3 ? 'Ready to buy' : `${3 - completed} uplift${completed === 2 ? '' : 's'} to go`;
-                return;
-            }
-
-            const anchorGapUsd = Number(strategy.anchor_gap_usd || 0);
-            const reboundProgressUsd = Number(strategy.rebound_progress_usd || 0);
-            const progress = Math.max(0, Math.min(100, Number(strategy.buy_progress_pct || 0)));
-            marker.style.left = `${progress}%`;
-            fill.style.width = `${progress}%`;
-
-            if (anchorGapUsd < buyArmUsd) {
-                headline.innerText = `Gap ${money(anchorGapUsd)} / ${money(buyArmUsd)}`;
-                midLabel.innerText = 'Waiting for arm';
-            } else if (reboundProgressUsd < buyReboundUsd) {
-                headline.innerText = `Rebound ${money(reboundProgressUsd)} / ${money(buyReboundUsd)}`;
-                midLabel.innerText = `${progress.toFixed(0)}% to buy`;
-            } else {
-                headline.innerText = 'Buy condition met';
-                midLabel.innerText = 'Ready to buy';
-            }
+        function applyConfig(config) {
+            configFields.forEach((field) => {
+                const el = document.getElementById(`cfg_${field}`);
+                if (!el || !(field in config)) return;
+                el.value = config[field];
+            });
+            const checkbox = document.getElementById('cfg_require_imbalance_improvement');
+            if (checkbox) checkbox.checked = !!config.require_imbalance_improvement;
         }
 
-        function updateHoldMeter(positionActive, profitUsd, profitPct) {
-            const marker = document.getElementById('holdMeterMarker');
-            const fill = document.getElementById('holdMeterFill');
-            const headline = document.getElementById('meterHeadline');
-            const midLabel = document.getElementById('meterMidLabel');
-
-            if (!positionActive) {
-                marker.style.left = '0%';
-                fill.style.width = '0%';
-                headline.innerText = 'Awaiting position';
-                midLabel.innerText = 'Current Flat';
-                return;
-            }
-
-            if (strategyProfile !== 'dollar') {
-                const progress = Math.max(0, Math.min(100, (profitPct / sellTargetPct) * 100));
-                marker.style.left = `${progress}%`;
-                fill.style.width = `${progress}%`;
-                headline.innerText = `${profitPct >= 0 ? '+' : ''}${pct(profitPct).replace('%', '')}% live`;
-                midLabel.innerText = profitPct >= sellTargetPct ? 'Cash-out zone' : `${progress.toFixed(0)}% of target`;
-                return;
-            }
-
-            const progress = Math.max(0, Math.min(100, ((profitUsd + stopLossUsd) / (sellTargetUsd + stopLossUsd)) * 100));
-            marker.style.left = `${progress}%`;
-            fill.style.width = `${progress}%`;
-            headline.innerText = `${profitUsd >= 0 ? '+' : ''}${money(profitUsd).replace('$', '')} live`;
-
-            if (profitUsd >= sellTargetUsd) {
-                midLabel.innerText = 'Cash-out zone';
-            } else if (profitUsd <= -stopLossUsd) {
-                midLabel.innerText = 'Stop zone';
-            } else if (profitUsd >= 0) {
-                midLabel.innerText = `${progress.toFixed(0)}% of target`;
-            } else {
-                midLabel.innerText = 'Below entry';
-            }
-        }
-
-        function updateSandboxResetButton(data, strategy) {
-            const resetBtn = document.getElementById('resetSandboxBalanceBtn');
-            if (!resetBtn) return;
-            const canReset = strategyProfile === 'dollar' && !data.position_active && String(strategy.mode || '') === 'BUY';
-            resetBtn.classList.toggle('hidden', !canReset);
-            resetBtn.disabled = !canReset;
+        function buildConfigPayload() {
+            const payload = {};
+            configFields.forEach((field) => {
+                const el = document.getElementById(`cfg_${field}`);
+                if (el && el.value !== '') payload[field] = el.value;
+            });
+            const checkbox = document.getElementById('cfg_require_imbalance_improvement');
+            if (checkbox) payload.require_imbalance_improvement = checkbox.checked;
+            return payload;
         }
 
         async function fetchState() {
-            try {
-                const response = await fetch(`${apiBase}/state`);
-                const data = await response.json();
-                const currentSpotRaw = data.current_sol_price || '0';
-                const strategy = data.strategy || {};
-                const profitUsd = Number(strategy.profit_usd || 0);
-                const profitPct = Number(strategy.profit_pct || 0);
+            const res = await fetch(`${apiBase}/state`);
+            const data = await res.json();
+            document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
+            setText('environmentLabel', data.environment);
+            setText('botState', data.bot_state);
+            setText('engineStatus', data.engine_status);
+            setText('midPrice', fmt(data.market.mid, 5));
+            setText('spreadPct', pct(data.market.spread_pct));
+            setText('return2m', pct(data.market.return_2m));
+            setText('return60m', pct(data.market.return_60m));
+            setText('bounce2m', pct(data.market.bounce_from_2m_low));
+            setText('bookImbalance', fmt(data.market.book_imbalance, 4));
+            setText('bookImbalanceOld', fmt(data.market.book_imbalance_10s_ago, 4));
+            setText('activePosition', data.active_position.active ? 'YES' : 'NO');
+            setText('openOrders', String(data.open_orders.count || 0));
+            setText('tradeNotional', `${fmt(data.config.trade_notional_usdc, 2)} USDC`);
+            setText('dailyPnl', fmt(data.stats.daily_pnl, 4));
+            setText('totalPnl', fmt(data.stats.total_pnl, 4));
+            setText('consecutiveLosses', String(data.stats.consecutive_losses || 0));
+            setText('tradesToday', String(data.stats.trades_today || 0));
+            setText('availableBalance', fmt(data.balances.available, 4));
+            setText('equityBalance', fmt(data.balances.equity, 4));
+            setText('marketAge', `${fmt(data.market.market_data_age, 2)}s`);
 
-                document.getElementById('balUsdt').innerText = money(data.balance_usdt);
-                document.getElementById('balSol').innerText = Number(data.balance_sol || 0).toFixed(4);
-                document.getElementById('solPrice').innerText = formatSpotPrice(currentSpotRaw);
-                document.getElementById('tradeCount').innerText = data.trade_count || 0;
-                document.getElementById('totalNetUsd').innerText = money(data.total_portfolio_usd);
-                document.getElementById('totalNetGbp').innerText = `£${Number(data.total_portfolio_gbp || 0).toFixed(2)}`;
-                document.getElementById('setupText').innerText = strategy.setup || 'Waiting for state...';
-                document.getElementById('anchorPrice').innerText = strategy.anchor_price > 0 ? money(strategy.anchor_price) : 'N/A';
-                if (strategyProfile === 'dollar') {
-                    document.getElementById('anchorGap').innerText = money(strategy.anchor_gap_usd);
-                    document.getElementById('armedLow').innerText = strategy.armed_low > 0 ? money(strategy.armed_low) : 'N/A';
-                } else {
-                    document.getElementById('anchorDelta').innerText = pct(strategy.anchor_delta);
-                    document.getElementById('upliftOne').innerText = pct(strategy.uplift_1);
-                    document.getElementById('upliftTwo').innerText = pct(strategy.uplift_2);
-                    document.getElementById('upliftThree').innerText = pct(strategy.uplift_3);
-                }
-                document.getElementById('openingPurchasePrice').innerText = Number(data.purchase_price || 0) > 0 ? money(data.purchase_price) : 'N/A';
-                document.getElementById('targetSellPrice').innerText = strategy.target_price > 0 ? money(strategy.target_price) : 'N/A';
-                if (strategyProfile === 'dollar') {
-                    document.getElementById('stopPrice').innerText = strategy.stop_price > 0 ? money(strategy.stop_price) : 'N/A';
-                }
-                document.getElementById('positionStatus').innerText = strategy.position_status || 'Waiting';
-                document.getElementById('secondsOpen').innerText = `${strategy.seconds_open || 0}s`;
-                document.getElementById('websocketStatus').innerText = `${data.websocket_status || 'UNKNOWN'} | ${Number(data.market_data_age || 0).toFixed(1)}s`;
+            const lastSignal = data.last_signal || {};
+            const signalText = lastSignal.timestamp
+                ? `${lastSignal.timestamp}\nmid=${fmt(lastSignal.mid, 5)} | spread=${pct(lastSignal.spread_pct)} | r2m=${pct(lastSignal.return_2m)} | r60m=${pct(lastSignal.return_60m)} | bounce=${pct(lastSignal.bounce_from_2m_low)} | imbalance=${fmt(lastSignal.book_imbalance, 4)}\npassed=${lastSignal.entry_conditions_passed} | reason=${lastSignal.reason_not_taken}`
+                : 'Waiting for signal log...';
+            setText('lastSignal', signalText);
 
-                const engStatus = document.getElementById('engineStatus');
-                engStatus.innerText = data.engine_status;
-                if (String(data.engine_status).includes('ERROR') || String(data.engine_status).includes('LOCKOUT')) {
-                    engStatus.className = 'value status-fail';
-                } else if (String(data.engine_status).includes('PAUSED') || String(data.engine_status).includes('WAITING') || String(data.engine_status).includes('RETRYING') || String(data.engine_status).includes('WARMING')) {
-                    engStatus.className = 'value status-warn';
-                } else {
-                    engStatus.className = 'value status-ok';
-                }
+            const lastTrade = data.last_trade || {};
+            const tradeText = lastTrade.timestamp
+                ? `${lastTrade.timestamp}\nexit_reason=${lastTrade.exit_reason} | size=${fmt(lastTrade.size, 4)} | entry=${fmt(lastTrade.filled_price, 5)} | exit=${fmt(lastTrade.exit_price, 5)} | net=${fmt(lastTrade.net_pnl, 4)} USDC`
+                : 'No completed trades yet.';
+            setText('lastTrade', tradeText);
+            setText('reasonNotTaken', data.reason_last_trade_not_taken || '');
 
-                const toggleBtn = document.getElementById('toggleTradeBtn');
-                currentBotRunningState = data.bot_running;
-                const badge = document.getElementById('engineBadge');
-                if (data.bot_running) {
-                    toggleBtn.innerText = 'PAUSE';
-                    badge.innerText = '{{ page_label if page_label else "LIVE" }} ACTIVE';
-                    badge.className = 'px-2.5 py-1 rounded text-xs font-mono font-bold bg-green-900 text-green-300';
-                } else {
-                    toggleBtn.innerText = 'START';
-                    badge.innerText = '{{ page_label if page_label else "LIVE" }} PAUSED';
-                    badge.className = 'px-2.5 py-1 rounded text-xs font-mono font-bold bg-yellow-900 text-yellow-300';
-                }
-
-                const usdtSide = document.getElementById('usdtSide');
-                const solSide = document.getElementById('solSide');
-                if (data.position_active) {
-                    usdtSide.className = 'card compact-card border-t-4 border-pink-400 mode-dim';
-                    solSide.className = 'card compact-card border-t-4 border-blue-400 mode-active';
-                } else {
-                    usdtSide.className = 'card compact-card border-t-4 border-pink-400 mode-active';
-                    solSide.className = 'card compact-card border-t-4 border-blue-400 mode-dim';
-                }
-
-                const plEl = document.getElementById('marginDeltaGap');
-                if (data.position_active) {
-                    if (strategyProfile === 'dollar') {
-                        plEl.innerText = `${profitUsd >= 0 ? '+' : '-'}${money(Math.abs(profitUsd)).replace('$', '$')} / +$0.35`;
-                        plEl.className = `signal-value ${profitUsd >= 0 ? 'text-green-400' : 'text-red-400'}`;
-                    } else {
-                        plEl.innerText = `${profitPct >= 0 ? '+' : ''}${pct(profitPct)} / +0.60%`;
-                        plEl.className = `signal-value ${profitPct >= 0 ? 'text-green-400' : 'text-red-400'}`;
-                    }
-                } else {
-                    plEl.innerText = 'N/A';
-                    plEl.className = 'signal-value';
-                }
-
-                updateBuyMeter(strategy);
-                updateHoldMeter(data.position_active, profitUsd, profitPct);
-                updateSandboxResetButton(data, strategy);
-
-                const logBox = document.getElementById('logBox');
-                logBox.innerHTML = '';
-                if (!data.logs || data.logs.length === 0) {
-                    const p = document.createElement('p');
-                    p.className = 'text-gray-500 text-xs leading-tight';
-                    p.innerText = 'No trade or error events recorded yet.';
-                    logBox.appendChild(p);
-                } else {
-                    data.logs.forEach(log => {
-                        const p = document.createElement('p');
-                        p.className = 'text-xs leading-tight';
-                        p.innerText = log;
-                        logBox.appendChild(p);
-                    });
-                }
-            } catch (err) {
-                console.error('Dashboard out of sync:', err);
+            if (data.active_position.active) {
+                const p = data.active_position;
+                const targets = data.position_targets || {};
+                const detail = [
+                    `size=${fmt(p.size, 4)} HYPE | entry=${fmt(p.entry_price, 5)} | submitted=${fmt(p.submitted_price, 5)}`,
+                    `gross_unrealized=${fmt(p.gross_unrealized_pnl, 4)} USDC | gross_pct=${pct(p.gross_unrealized_pnl_pct)} | seconds_open=${p.seconds_open}`,
+                    `mfe=${pct(p.max_favourable_excursion)} | mae=${pct(p.max_adverse_excursion)} | entry_type=${p.entry_maker_or_taker}`,
+                    `tp=${fmt(targets.take_profit_price || 0, 5)} | stop=${fmt(targets.stop_loss_price || 0, 5)} | time_stop=${targets.time_stop_seconds || 0}s`
+                ].join('\n');
+                setText('positionDetail', detail);
+            } else {
+                setText('positionDetail', 'No active position.');
             }
+
+            if (data.stats.unsupported_external_position) {
+                setText('positionDetail', `${document.getElementById('positionDetail').textContent}\n${data.stats.unsupported_external_position}`);
+            }
+
+            document.getElementById('logBox').value = (data.logs || []).join('\n');
+            applyConfig(data.config || {});
         }
 
-        async function handleToggleRequest() {
-            if (currentBotRunningState === null) return;
-            await toggleBot(!currentBotRunningState);
+        async function fetchHealth() {
+            const res = await fetch(`${apiBase}/health`);
+            const data = await res.json();
+            document.getElementById('healthBox').innerHTML = [
+                `database: ${data.database}`,
+                `hyperliquid_sdk: ${data.hyperliquid_sdk}`,
+                `hyperliquid_api: ${data.hyperliquid_api}`,
+                `market_data: ${data.market_data}`,
+                `engine: ${data.engine}`,
+                ...(data.errors || []).map((entry) => `error: ${entry}`)
+            ].join('<br>');
         }
 
-        async function toggleBot(runState) {
-            try {
-                await fetch(`${apiBase}/toggle`, {
+        async function startBot() {
+            if (isReal) {
+                const confirmText = prompt('Type START REAL to enable live trading.');
+                if (confirmText === null) return;
+                const res = await fetch(`${apiBase}/start`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ run: runState })
+                    body: JSON.stringify({ confirm_text: confirmText })
                 });
-                fetchState();
-            } catch (err) {
-                console.error('Failed toggling state:', err);
+                const data = await res.json();
+                if (!res.ok) alert(data.message || 'Failed to start REAL mode.');
+            } else {
+                await fetch(`${apiBase}/start`, { method: 'POST' });
             }
+            await refreshAll();
         }
 
-        async function fetchDiagnostics() {
-            try {
-                const response = await fetch(`${apiBase}/health`);
-                const health = await response.json();
-
-                const setStatus = (elId, val) => {
-                    const el = document.getElementById(elId);
-                    const displayValue = String(val || 'UNKNOWN');
-                    el.innerText = displayValue;
-
-                    if (displayValue.includes('OK') || displayValue.includes('LIVE') || displayValue.includes('PAPER MODE')) {
-                        el.className = 'value status-ok';
-                    } else if (displayValue.includes('WAITING') || displayValue.includes('STALE') || displayValue.includes('CONNECTING')) {
-                        el.className = 'value status-warn';
-                    } else {
-                        el.className = 'value status-fail';
-                    }
-                };
-
-                setStatus('debugDatabase', health.database);
-                setStatus('debugBinance', health.binance_api);
-                setStatus('debugMarketData', health.market_data);
-
-                const errConsole = document.getElementById('errorConsole');
-                if (health.errors.length > 0) {
-                    errConsole.innerHTML = health.errors.join('<br>');
-                    errConsole.classList.remove('hidden');
-                } else {
-                    errConsole.classList.add('hidden');
-                }
-            } catch (err) {
-                console.error('Failed executing diagnostics:', err);
-            }
+        async function pauseBot() {
+            await fetch(`${apiBase}/pause`, { method: 'POST' });
+            await refreshAll();
         }
 
-        async function manualSetPosition() {
-            const price = prompt('Enter your SOL purchase price to activate tracking (or leave blank/type 0 to clear):');
-            if (price === null) return;
-            try {
-                await fetch(`${apiBase}/manual_set`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ price: price ? parseFloat(price) : 0 })
-                });
-                fetchState();
-            } catch (err) {
-                console.error('Failed setting manual position:', err);
+        async function killBot() {
+            let payload = {};
+            if (isReal) {
+                const closePosition = confirm('KILL SWITCH: cancel all open orders and close the open REAL position too? Click OK to close, Cancel to leave position open.');
+                payload = { close_position: closePosition };
             }
+            await fetch(`${apiBase}/kill`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            await refreshAll();
         }
 
-        async function executeManualBuy() {
-            const size = prompt('Enter the precise amount of USDT to deploy for an immediate Market BUY order (e.g. 25.00):');
-            if (!size || parseFloat(size) < 5.0) {
-                if (size) alert('Order aborted. Minimum Binance transaction size is 5 USDT.');
+        async function manualClose() {
+            const res = await fetch(`${apiBase}/manual_close`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) alert(data.message || 'Manual close failed.');
+            await refreshAll();
+        }
+
+        async function resetSandbox() {
+            const res = await fetch(`${apiBase}/reset`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) alert(data.message || 'Sandbox reset failed.');
+            await refreshAll();
+        }
+
+        async function saveConfig() {
+            const res = await fetch(`${apiBase}/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildConfigPayload())
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(data.message || 'Config save failed.');
                 return;
             }
-            try {
-                const response = await fetch(`${apiBase}/manual_buy`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ usdt_amount: parseFloat(size) })
-                });
-                const res = await response.json();
-                alert(res.message);
-                fetchState();
-            } catch (err) {
-                console.error('Manual market buy error:', err);
-            }
-        }
-
-        async function resetSandboxBalance() {
-            if (!confirm('Reset sandbox cash balance to $15,000? This only works in buy setup.')) return;
-            try {
-                const response = await fetch(`${apiBase}/reset_balance`, { method: 'POST' });
-                const result = await response.json();
-                alert(result.message || 'Sandbox balance updated.');
-                fetchState();
-            } catch (err) {
-                console.error('Failed resetting sandbox balance:', err);
-            }
-        }
-
-        async function liquidateStack() {
-            if (!confirm('Confirm immediate market liquidation of full SOL balance to USDT?')) return;
-            try {
-                const response = await fetch(`${apiBase}/liquidate`, { method: 'POST' });
-                const result = await response.json();
-                alert(result.message);
-                fetchState();
-            } catch (err) {
-                console.error('Failed executing manual liquidation:', err);
-            }
+            await refreshAll();
         }
 
         async function clearLogs() {
-            if (!confirm('Wipe the terminal log history?')) return;
-            try {
-                await fetch(`${apiBase}/logs/clear`, { method: 'POST' });
-                fetchState();
-            } catch (err) {
-                console.error('Failed wiping logs:', err);
-            }
+            await fetch(`${apiBase}/logs/clear`, { method: 'POST' });
+            await refreshAll();
         }
 
-        setInterval(fetchState, 3000);
-        setInterval(fetchDiagnostics, 15000);
-        fetchState();
-        fetchDiagnostics();
+        async function refreshAll() {
+            await Promise.all([fetchState(), fetchHealth()]);
+        }
+
+        refreshAll();
+        setInterval(refreshAll, 3000);
     </script>
 </body>
 </html>

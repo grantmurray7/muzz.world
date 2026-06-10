@@ -1,28 +1,57 @@
+import json
+import math
 import os
 import time
 import uuid
-import math
-import json
-import requests
-import queue
+from collections import deque
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from email.utils import formatdate
-from html import escape
-from threading import Thread, Lock
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify
-from binance import Client, ThreadedWebsocketManager
+from copy import deepcopy
+from datetime import datetime, timezone
+from threading import Lock, Thread
+
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
 
+try:
+    from eth_account import Account
+    from hyperliquid.exchange import Exchange
+    from hyperliquid.info import Info
+    from hyperliquid.utils import constants as hl_constants
+
+    HYPERLIQUID_IMPORT_ERROR = ''
+except Exception as exc:  # pragma: no cover - import availability depends on runtime image
+    Account = None
+    Exchange = None
+    Info = None
+    hl_constants = None
+    HYPERLIQUID_IMPORT_ERROR = str(exc)
+
 app = Flask(__name__)
 
-# --- Environment Variables & Config ---
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", str(uuid.uuid4()))
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "DefaultPassword123!")
-BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
-BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
-RENDER_INTERNAL_DATABASE = os.environ.get("RENDER_INTERNAL_DATABASE") or os.environ.get("DATABASE_URL")
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', str(uuid.uuid4()))
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'DefaultPassword123!')
+RENDER_INTERNAL_DATABASE = os.environ.get('RENDER_INTERNAL_DATABASE') or os.environ.get('DATABASE_URL')
+HYPERLIQUID_API_KEY = os.environ.get('HYPERLIQUID_API_KEY')
+HYPERLIQUID_API_SECRET = os.environ.get('HYPERLIQUID_API_SECRET')
+
+GLOBAL_NS = 'global'
+REAL_NS = 'real'
+SANDBOX_NS = 'sandbox'
+ENVIRONMENTS = (REAL_NS, SANDBOX_NS)
+INSTANCE_ID = str(uuid.uuid4())[:8]
+
+MARKET_COIN = 'HYPE'
+MARKET_POLL_INTERVAL = 1.0
+TRADING_LOOP_INTERVAL = 1.0
+MARKET_HISTORY_SECONDS = 3900
+MARKET_STALE_AFTER_SECONDS = 6.0
+RESULTS_TRADE_LIMIT = 500
+TRADE_LOG_LIMIT = 500
+SIGNAL_LOG_LIMIT = 5000
+ACTION_LOG_LIMIT = 400
+REAL_START_CONFIRM_TEXT = 'START REAL'
+REAL_MARKET_ORDER_TOLERANCE = 0.003
 
 
 class PostgresStateStore:
@@ -76,31 +105,16 @@ class PostgresStateStore:
     def _purge_expired_key(self, cur, key):
         cur.execute(
             'DELETE FROM state_kv WHERE key = %s AND expires_at IS NOT NULL AND expires_at <= NOW()',
-            (key,)
+            (key,),
         )
 
     @staticmethod
     def _expires_at(ex_seconds):
         if ex_seconds is None:
             return None
-        return datetime.now(timezone.utc) + timedelta(seconds=int(ex_seconds))
-
-    @staticmethod
-    def _slice_redis_range(items, start, end):
-        if not items:
-            return []
-        length = len(items)
-        if start < 0:
-            start += length
-        if end < 0:
-            end += length
-        start = max(start, 0)
-        if start >= length or end < 0:
-            return []
-        end = min(end, length - 1)
-        if end < start:
-            return []
-        return items[start:end + 1]
+        return datetime.now(timezone.utc) + timezone.utc.utcoffset(datetime.now(timezone.utc)) + (
+            datetime.now(timezone.utc) - datetime.now(timezone.utc)
+        )
 
     def get(self, key):
         with self.connection() as conn:
@@ -111,7 +125,10 @@ class PostgresStateStore:
                 return None if row is None else row[0]
 
     def set(self, key, value, nx=False, ex=None):
-        expires_at = self._expires_at(ex)
+        expires_at = None
+        if ex is not None:
+            expires_at = datetime.now(timezone.utc).timestamp() + int(ex)
+            expires_at = datetime.fromtimestamp(expires_at, tz=timezone.utc)
         with self.connection() as conn:
             with conn.cursor() as cur:
                 self._purge_expired_key(cur, key)
@@ -123,7 +140,7 @@ class PostgresStateStore:
                         ON CONFLICT (key) DO NOTHING
                         RETURNING key
                         ''',
-                        (key, str(value), expires_at)
+                        (key, str(value), expires_at),
                     )
                     return cur.fetchone() is not None
                 cur.execute(
@@ -135,7 +152,7 @@ class PostgresStateStore:
                         expires_at = EXCLUDED.expires_at,
                         updated_at = NOW()
                     ''',
-                    (key, str(value), expires_at)
+                    (key, str(value), expires_at),
                 )
                 return True
 
@@ -164,9 +181,26 @@ class PostgresStateStore:
                         updated_at = NOW()
                     RETURNING value
                     ''',
-                    (key,)
+                    (key,),
                 )
                 return int(cur.fetchone()[0])
+
+    @staticmethod
+    def _slice_redis_range(items, start, end):
+        if not items:
+            return []
+        length = len(items)
+        if start < 0:
+            start += length
+        if end < 0:
+            end += length
+        start = max(start, 0)
+        if start >= length or end < 0:
+            return []
+        end = min(end, length - 1)
+        if end < start:
+            return []
+        return items[start : end + 1]
 
     def _get_list(self, cur, key, for_update=False):
         query = 'SELECT items FROM state_lists WHERE key = %s'
@@ -185,7 +219,7 @@ class PostgresStateStore:
             SET items = EXCLUDED.items,
                 updated_at = NOW()
             ''',
-            (key, Json(items))
+            (key, Json(items)),
         )
 
     def lpush(self, key, value):
@@ -213,87 +247,176 @@ class PostgresStateStore:
 
 
 redis = PostgresStateStore(RENDER_INTERNAL_DATABASE)
-price_state_lock = Lock()
-log_queue = queue.Queue()
-last_price_recorded_second = None
-
-SYMBOL = 'SOLUSDT'
-SAMPLE_INTERVAL = 1
-LOOKBACK_SECONDS = 120
-AUTO_BUY_ALLOCATION = 0.95
-UPLIFT_THRESHOLD_PCT = 0.02
-SELL_TARGET_PCT = 0.60
-SELL_TARGET_MULTIPLIER = 1 + (SELL_TARGET_PCT / 100)
-ARM_GAP_USD = 0.25
-REBOUND_BUY_USD = 0.05
-SELL_TARGET_USD = 0.35
-STOP_LOSS_USD = 0.08
-PRICE_HISTORY_LIMIT = LOOKBACK_SECONDS + 300
-MAX_TRADE_USDT = 50.00
-TRADE_HISTORY_LIMIT = 200
-LOG_HISTORY_LIMIT = 250
-RSS_STATUS_INTERVAL = 30
-WEBSOCKET_STALE_AFTER = 20
-SANDBOX_START_USDT = 14000.0
-MIN_POSITION_SOL = 0.01
-INSTANCE_ID = str(uuid.uuid4())[:8]
-FX_RATE_CACHE_TTL = 300
-BINANCE_HEALTH_CACHE_TTL = 15
-ANCHOR_MIN_AGE_SECONDS = LOOKBACK_SECONDS * 0.85
-
-GLOBAL_NS = 'global'
-LIVE_NS = 'live'
-SANDBOX_NS = 'sandbox'
-status_cache_lock = Lock()
-fx_rate_cache = {'rate': 0.78, 'ts': 0.0}
-binance_health_cache = {'status': 'FAIL', 'error': '', 'ts': 0.0}
 
 
-@app.before_request
-def require_login():
-    allowed_routes = {
-        'login', 'logout', 'static',
-        'index', 'sandbox_index', 'trade_history_page', 'sandbox_trade_history_page',
-        'health_check', 'sandbox_health_check', 'status_feed',
-        'execute_manual_buy', 'sandbox_execute_manual_buy',
-        'get_trades', 'sandbox_get_trades',
-        'get_state', 'sandbox_get_state',
-        'toggle_bot', 'sandbox_toggle_bot',
-        'manual_set_position', 'sandbox_manual_set_position',
-        'sandbox_reset_balance',
-        'clear_logs', 'sandbox_clear_logs',
-        'liquidate_to_usdt', 'sandbox_liquidate_to_usdt',
-    }
-    if request.endpoint not in allowed_routes and not session.get('logged_in'):
-        return redirect(url_for('login'))
+DEFAULT_CONFIGS = {
+    SANDBOX_NS: {
+        'maker_fee_pct': 0.015,
+        'taker_fee_pct': 0.045,
+        'maker_entry_slippage_pct': 0.0,
+        'maker_exit_slippage_pct': 0.0,
+        'taker_exit_slippage_pct': 0.02,
+        'trade_notional_usdc': 250.0,
+        'max_notional_usdc': 1000.0,
+        'leverage': 1.0,
+        'daily_loss_limit_usdc': 200.0,
+        'max_trades_per_hour': 6,
+        'consecutive_loss_limit': 4,
+        'cooldown_after_loss_seconds': 300,
+        'entry_cooldown_seconds': 300,
+        'take_profit_pct': 0.25,
+        'stop_loss_pct': 0.18,
+        'time_stop_seconds': 420,
+        'emergency_exit_drop_pct': 0.20,
+        'emergency_window_seconds': 30,
+        'entry_timeout_seconds': 10,
+        'return_2m_threshold_pct': -0.20,
+        'bounce_from_2m_low_threshold_pct': 0.05,
+        'return_60m_min_pct': -1.00,
+        'spread_pct_max': 0.025,
+        'book_imbalance_min': 0.52,
+        'require_imbalance_improvement': True,
+        'starting_balance_usdc': 10000.0,
+    },
+    REAL_NS: {
+        'maker_fee_pct': 0.015,
+        'taker_fee_pct': 0.045,
+        'trade_notional_usdc': 10.0,
+        'max_notional_usdc': 1000.0,
+        'leverage': 1.0,
+        'daily_loss_limit_usdc': 2.0,
+        'max_trades_per_hour': 3,
+        'consecutive_loss_limit': 2,
+        'cooldown_after_loss_seconds': 300,
+        'entry_cooldown_seconds': 300,
+        'take_profit_pct': 0.25,
+        'stop_loss_pct': 0.18,
+        'time_stop_seconds': 420,
+        'emergency_exit_drop_pct': 0.20,
+        'emergency_window_seconds': 30,
+        'entry_timeout_seconds': 10,
+        'return_2m_threshold_pct': -0.20,
+        'bounce_from_2m_low_threshold_pct': 0.05,
+        'return_60m_min_pct': -1.00,
+        'spread_pct_max': 0.025,
+        'book_imbalance_min': 0.52,
+        'require_imbalance_improvement': True,
+        'simulate_slippage': False,
+    },
+}
+
+EDITABLE_CONFIG_FIELDS = {
+    'maker_fee_pct',
+    'taker_fee_pct',
+    'maker_entry_slippage_pct',
+    'maker_exit_slippage_pct',
+    'taker_exit_slippage_pct',
+    'trade_notional_usdc',
+    'max_notional_usdc',
+    'leverage',
+    'daily_loss_limit_usdc',
+    'max_trades_per_hour',
+    'consecutive_loss_limit',
+    'cooldown_after_loss_seconds',
+    'entry_cooldown_seconds',
+    'take_profit_pct',
+    'stop_loss_pct',
+    'time_stop_seconds',
+    'emergency_exit_drop_pct',
+    'emergency_window_seconds',
+    'entry_timeout_seconds',
+    'return_2m_threshold_pct',
+    'bounce_from_2m_low_threshold_pct',
+    'return_60m_min_pct',
+    'spread_pct_max',
+    'book_imbalance_min',
+    'require_imbalance_improvement',
+    'starting_balance_usdc',
+}
+
+
+class MarketDataStore:
+    def __init__(self):
+        self.lock = Lock()
+        self.snapshot = {}
+        self.history = deque()
+        self.status = 'BOOTING'
+        self.error = ''
+        self.info = None
+
+    def ensure_client(self):
+        if Info is None or hl_constants is None:
+            raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
+        if self.info is None:
+            self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
+        return self.info
+
+    def poll_once(self):
+        info = self.ensure_client()
+        book = info.l2_snapshot(MARKET_COIN)
+        levels = book.get('levels') or [[], []]
+        bids = levels[0] if len(levels) > 0 else []
+        asks = levels[1] if len(levels) > 1 else []
+        if not bids or not asks:
+            raise RuntimeError('Order book snapshot missing bids or asks.')
+        best_bid = float(bids[0]['px'])
+        best_ask = float(asks[0]['px'])
+        mid = (best_bid + best_ask) / 2.0
+        spread_pct = ((best_ask - best_bid) / mid) * 100.0 if mid > 0 else 0.0
+        bid_depth = sum(float(level['sz']) for level in bids[:5])
+        ask_depth = sum(float(level['sz']) for level in asks[:5])
+        total_depth = bid_depth + ask_depth
+        book_imbalance = (bid_depth / total_depth) if total_depth > 0 else 0.5
+        snapshot = {
+            'ts': time.time(),
+            'best_bid': best_bid,
+            'best_ask': best_ask,
+            'mid': mid,
+            'spread_pct': spread_pct,
+            'bid_depth_top5': bid_depth,
+            'ask_depth_top5': ask_depth,
+            'book_imbalance': book_imbalance,
+        }
+        with self.lock:
+            self.snapshot = snapshot
+            self.history.append(snapshot)
+            cutoff = snapshot['ts'] - MARKET_HISTORY_SECONDS
+            while self.history and self.history[0]['ts'] < cutoff:
+                self.history.popleft()
+            self.status = 'LIVE'
+            self.error = ''
+        return snapshot
+
+    def loop(self):
+        while True:
+            try:
+                self.poll_once()
+            except Exception as exc:
+                with self.lock:
+                    self.status = 'ERROR'
+                    self.error = str(exc)
+            time.sleep(MARKET_POLL_INTERVAL)
+
+    def get_snapshot(self):
+        with self.lock:
+            snapshot = dict(self.snapshot)
+            history = list(self.history)
+            status = self.status
+            error = self.error
+        return snapshot, history, status, error
+
+
+market_data = MarketDataStore()
+real_client_lock = Lock()
+real_client_bundle = {'info': None, 'exchange': None, 'account_address': '', 'size_decimals': 2}
 
 
 def ns_key(namespace, key):
     return f'{namespace}:{key}'
 
 
-def log_activity(msg, namespace=LIVE_NS, skip_db=False):
-    timestamp = time.strftime('%H:%M:%S')
-    tag = 'SANDBOX' if namespace == SANDBOX_NS else INSTANCE_ID
-    log_line = f'[{timestamp}] [{tag}] {msg}'
-    print(log_line)
-    if not skip_db:
-        log_queue.put((namespace, log_line))
-
-
-def redis_log_worker():
-    while True:
-        namespace, log_line = log_queue.get()
-        try:
-            redis.lpush(ns_key(namespace, 'bot_logs'), log_line)
-            redis.ltrim(ns_key(namespace, 'bot_logs'), 0, LOG_HISTORY_LIMIT - 1)
-        except Exception as e:
-            print(f'Logging fail to database: {e}')
-        finally:
-            log_queue.task_done()
-
-
-Thread(target=redis_log_worker, daemon=True).start()
+def json_default(value):
+    return deepcopy(value)
 
 
 def ns_get(namespace, key, default=None):
@@ -317,6 +440,20 @@ def ns_incr(namespace, key):
     return int(redis.incr(ns_key(namespace, key)))
 
 
+def ns_get_json(namespace, key, default=None):
+    raw = ns_get(namespace, key)
+    if raw is None:
+        return json_default(default)
+    try:
+        return json.loads(raw)
+    except Exception:
+        return json_default(default)
+
+
+def ns_set_json(namespace, key, value):
+    ns_set(namespace, key, json.dumps(value))
+
+
 def ns_lpush(namespace, key, value):
     redis.lpush(ns_key(namespace, key), value)
 
@@ -329,921 +466,1316 @@ def ns_lrange(namespace, key, start, end):
     return redis.lrange(ns_key(namespace, key), start, end)
 
 
-def read_float_state(namespace, key, default=0.0):
+def read_float(value, default=0.0):
     try:
-        return float(ns_get(namespace, key, default) or default)
+        return float(value)
     except Exception:
         return default
 
 
-def read_int_state(namespace, key, default=0):
-    try:
-        return int(ns_get(namespace, key, default) or default)
-    except Exception:
-        return default
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
-def read_text_state(namespace, key, default=''):
-    try:
-        return str(ns_get(namespace, key, default) or default)
-    except Exception:
-        return default
+def iso_now():
+    return utc_now().isoformat()
 
 
-def set_if_missing(namespace, key, value):
-    if ns_get(namespace, key) is None:
-        ns_set(namespace, key, value)
+def format_timestamp(ts):
+    if not ts:
+        return ''
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
 
 
-def init_live_state():
-    set_if_missing(LIVE_NS, 'bot_running', 'false')
-    set_if_missing(LIVE_NS, 'position_active', 'false')
-    set_if_missing(LIVE_NS, 'balance_usdt', 0)
-    set_if_missing(LIVE_NS, 'balance_sol', 0)
-    set_if_missing(LIVE_NS, 'engine_status', 'BOOTING')
-    set_if_missing(LIVE_NS, 'strategy_mode', 'BOOTING')
-    set_if_missing(LIVE_NS, 'strategy_setup', 'Connecting live services')
-
-
-def bootstrap_sandbox():
-    if ns_get(SANDBOX_NS, 'initialized') == 'true':
-        set_if_missing(SANDBOX_NS, 'bot_running', 'false')
-        set_if_missing(SANDBOX_NS, 'position_active', 'false')
-        set_if_missing(SANDBOX_NS, 'balance_usdt', SANDBOX_START_USDT)
-        set_if_missing(SANDBOX_NS, 'balance_sol', 0)
-        set_if_missing(SANDBOX_NS, 'engine_status', 'PAUSED')
-        set_if_missing(SANDBOX_NS, 'strategy_mode', 'PAUSED')
-        set_if_missing(SANDBOX_NS, 'strategy_setup', 'Sandbox paused by default')
-        return
-    ns_set(SANDBOX_NS, 'initialized', 'true')
-    ns_set(SANDBOX_NS, 'bot_running', 'false')
-    ns_set(SANDBOX_NS, 'position_active', 'false')
-    ns_set(SANDBOX_NS, 'balance_usdt', SANDBOX_START_USDT)
-    ns_set(SANDBOX_NS, 'balance_sol', 0)
-    ns_set(SANDBOX_NS, 'engine_status', 'PAUSED')
-    set_strategy_snapshot(SANDBOX_NS, mode='PAUSED', setup='Sandbox paused by default')
-
-
-def get_strategy_profile(namespace):
-    return 'dollar' if namespace == SANDBOX_NS else 'percent'
-
-
-def get_cached_gbp_rate():
-    now = time.time()
-    with status_cache_lock:
-        cached_rate = fx_rate_cache['rate']
-        cached_ts = fx_rate_cache['ts']
-    if now - cached_ts <= FX_RATE_CACHE_TTL:
-        return cached_rate
-
-    fresh_rate = cached_rate or 0.78
-    try:
-        fiat_res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=2)
-        if fiat_res.status_code == 200:
-            rates = fiat_res.json().get('rates', {})
-            fresh_rate = float(rates.get('GBP', fresh_rate))
-    except Exception:
-        pass
-
-    with status_cache_lock:
-        fx_rate_cache['rate'] = fresh_rate
-        fx_rate_cache['ts'] = now
-    return fresh_rate
-
-
-def get_cached_binance_api_health():
-    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
-        return 'KEYS MISSING', ''
-
-    now = time.time()
-    with status_cache_lock:
-        cached_status = binance_health_cache['status']
-        cached_error = binance_health_cache['error']
-        cached_ts = binance_health_cache['ts']
-    if now - cached_ts <= BINANCE_HEALTH_CACHE_TTL:
-        return cached_status, cached_error
-
-    status = 'FAIL'
-    error = ''
-    try:
-        test_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
-        if test_client.get_server_time():
-            status = 'OK'
-    except Exception as e:
-        error = f'Binance API Handshake Failure: {str(e)}'
-
-    with status_cache_lock:
-        binance_health_cache['status'] = status
-        binance_health_cache['error'] = error
-        binance_health_cache['ts'] = now
-    return status, error
-
-
-def record_trade(namespace, side, quantity, price, source, note=''):
-    try:
-        trade_number = ns_incr(namespace, 'trade_count')
-        trade = {
-            'id': trade_number,
-            'ts': time.time(),
-            'time': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'symbol': SYMBOL,
-            'side': side,
-            'quantity': round(float(quantity), 4),
-            'price': round(float(price), 4),
-            'notional_usdt': round(float(quantity) * float(price), 2),
-            'source': source,
-            'note': note,
-            'environment': namespace.upper()
-        }
-        ns_lpush(namespace, 'trade_history', json.dumps(trade))
-        ns_ltrim(namespace, 'trade_history', 0, TRADE_HISTORY_LIMIT - 1)
-        return trade
-    except Exception as e:
-        log_activity(f'Trade history write failed: {e}', namespace=namespace)
-        return None
-
-
-def load_trade_history(namespace, limit=50):
-    raw_trades = ns_lrange(namespace, 'trade_history', 0, max(0, limit - 1))
-    trades = []
-    for raw_trade in raw_trades:
-        try:
-            trades.append(json.loads(raw_trade))
-        except Exception:
-            continue
-    return trades
-
-
-def get_binance_client():
-    return Client(BINANCE_API_KEY, BINANCE_API_SECRET)
-
-
-def record_price_sample(price, sample_ts=None):
-    sample_ts = sample_ts or time.time()
-    sample = json.dumps({'ts': sample_ts, 'price': price})
-    redis.lpush(ns_key(GLOBAL_NS, 'price_history'), sample)
-    redis.ltrim(ns_key(GLOBAL_NS, 'price_history'), 0, PRICE_HISTORY_LIMIT - 1)
-
-
-def update_live_price(price, sample_ts=None):
-    global last_price_recorded_second
-    sample_ts = sample_ts or time.time()
-    sample_second = int(sample_ts)
-    with price_state_lock:
-        redis.set(ns_key(GLOBAL_NS, 'current_sol_price'), str(price))
-        redis.set(ns_key(GLOBAL_NS, 'websocket_last_seen'), str(sample_ts))
-        redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'LIVE')
-        if last_price_recorded_second != sample_second:
-            last_price_recorded_second = sample_second
-            record_price_sample(price, sample_ts=float(sample_second))
-
-
-def handle_price_socket_message(msg):
-    try:
-        if not isinstance(msg, dict):
-            return
-        if msg.get('e') == 'error':
-            error_type = msg.get('type', 'socket_error')
-            error_msg = msg.get('m', 'unknown websocket error')
-            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), f'ERROR: {error_type}')
-            log_activity(f'Price websocket error: {error_type} | {error_msg}', namespace=LIVE_NS)
-            log_activity(f'Price websocket error: {error_type} | {error_msg}', namespace=SANDBOX_NS)
-            return
-        raw_price = msg.get('c') or msg.get('p')
-        if raw_price is None:
-            return
-        price = float(raw_price)
-        event_ts = time.time()
-        if msg.get('E'):
-            event_ts = float(msg['E']) / 1000.0
-        update_live_price(price, sample_ts=event_ts)
-    except Exception as e:
-        redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'ERROR: callback')
-        log_activity(f'Price websocket callback failure: {e}', namespace=LIVE_NS)
-
-
-def run_price_stream():
-    while True:
-        twm = None
-        try:
-            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'CONNECTING')
-            twm = ThreadedWebsocketManager()
-            twm.start()
-            twm.start_symbol_ticker_socket(callback=handle_price_socket_message, symbol=SYMBOL)
-            log_activity(f'Live price websocket started for {SYMBOL}.', namespace=LIVE_NS)
-            log_activity(f'Live price websocket started for {SYMBOL}.', namespace=SANDBOX_NS)
-            twm.join()
-            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'STOPPED')
-        except Exception as e:
-            redis.set(ns_key(GLOBAL_NS, 'websocket_status'), 'ERROR: bootstrap')
-            log_activity(f'Price websocket bootstrap failed: {e}', namespace=LIVE_NS)
-            log_activity(f'Price websocket bootstrap failed: {e}', namespace=SANDBOX_NS)
-        finally:
-            try:
-                if twm:
-                    twm.stop()
-            except Exception:
-                pass
-        time.sleep(5)
-
-
-def get_live_price(max_age=WEBSOCKET_STALE_AFTER):
-    try:
-        current_price = float(redis.get(ns_key(GLOBAL_NS, 'current_sol_price')) or 0.0)
-    except Exception:
-        current_price = 0.0
-    try:
-        last_seen = float(redis.get(ns_key(GLOBAL_NS, 'websocket_last_seen')) or 0.0)
-    except Exception:
-        last_seen = 0.0
-    if current_price <= 0 or last_seen <= 0:
-        raise RuntimeError('websocket price not ready yet')
-    age = time.time() - last_seen
-    if age > max_age:
-        raise RuntimeError(f'websocket price stale ({age:.1f}s old)')
-    return current_price
-
-
-def load_price_samples():
-    raw_samples = redis.lrange(ns_key(GLOBAL_NS, 'price_history'), 0, PRICE_HISTORY_LIMIT - 1)
-    parsed_samples = []
-    for raw_sample in reversed(raw_samples):
-        try:
-            sample = json.loads(raw_sample)
-            parsed_samples.append({'ts': float(sample['ts']), 'price': float(sample['price'])})
-        except Exception:
-            continue
-    return parsed_samples
-
-
-def find_anchor_price(samples, anchor_ts):
-    anchor_price = None
-    for sample in samples:
-        if sample.get('ts', 0.0) <= anchor_ts:
-            anchor_price = sample['price']
-        else:
-            break
-    return anchor_price
-
-
-def resolve_anchor_price(namespace, samples, now_ts):
-    anchor_ts = now_ts - LOOKBACK_SECONDS
-    anchor_price = find_anchor_price(samples, anchor_ts)
-    if anchor_price is not None:
-        ns_set(namespace, 'last_valid_anchor_price', anchor_price)
-        return anchor_price
-
-    if samples:
-        oldest_sample = samples[0]
-        if oldest_sample.get('ts', 0.0) <= now_ts - ANCHOR_MIN_AGE_SECONDS:
-            anchor_price = oldest_sample['price']
-            ns_set(namespace, 'last_valid_anchor_price', anchor_price)
-            return anchor_price
-
-    cached_anchor = read_float_state(namespace, 'last_valid_anchor_price')
-    if cached_anchor > 0 and len(samples) >= 4:
-        return cached_anchor
-
-    return None
+def current_day_key():
+    return utc_now().strftime('%Y-%m-%d')
 
 
 def pct_change(from_price, to_price):
     if from_price <= 0:
         return 0.0
-    return ((to_price - from_price) / from_price) * 100
+    return ((to_price - from_price) / from_price) * 100.0
 
 
-def set_strategy_snapshot(namespace, **fields):
-    for key, value in fields.items():
-        ns_set(namespace, f'strategy_{key}', value)
+def trim_float(value, digits=6):
+    return round(float(value), digits)
 
 
-def clear_position_tracking(namespace):
-    ns_delete(namespace, 'position_opened_at')
+def position_default():
+    return None
 
 
-def reset_position_state(namespace, setup='Position reset to cash mode'):
-    ns_set(namespace, 'position_active', 'false')
-    ns_delete(namespace, 'purchase_price', 'bot_tracked_qty')
-    clear_position_tracking(namespace)
-    set_strategy_snapshot(
-        namespace,
-        mode='BUY',
-        setup=setup,
-        anchor_delta='0',
-        uplift_1='0',
-        uplift_2='0',
-        uplift_3='0',
-        armed_low='0',
-        anchor_gap_usd='0',
-        rebound_progress_usd='0',
-        buy_progress_pct='0',
-        target_price='0',
-        stop_price='0',
-        profit_usd='0',
-        position_status=''
-    )
+def open_order_default():
+    return None
 
 
-def sandbox_can_reset_balance():
-    return (
-        ns_get(SANDBOX_NS, 'position_active') != 'true'
-        and read_text_state(SANDBOX_NS, 'strategy_mode') == 'BUY'
-    )
-
-
-def sanitize_position_state(namespace, actual_sol_balance, source_label):
-    position_active = ns_get(namespace, 'position_active') == 'true'
-    purchase_price = read_float_state(namespace, 'purchase_price')
-    tracked_qty = read_float_state(namespace, 'bot_tracked_qty')
-
-    if actual_sol_balance <= MIN_POSITION_SOL:
-        if position_active or tracked_qty > 0 or purchase_price > 0:
-            reset_position_state(namespace, setup='No sellable SOL detected')
-            log_activity(f'{source_label}: cleared stale position state because sellable SOL is below minimum.', namespace=namespace)
-        return 0.0, False
-
-    repaired = False
-    if not position_active:
-        ns_set(namespace, 'position_active', 'true')
-        repaired = True
-    if tracked_qty <= MIN_POSITION_SOL or tracked_qty > actual_sol_balance:
-        ns_set(namespace, 'bot_tracked_qty', round(actual_sol_balance, 4))
-        repaired = True
-    if repaired:
-        log_activity(f'{source_label}: repaired tracked position size to {actual_sol_balance:.4f} SOL.', namespace=namespace)
-
-    return math.floor(actual_sol_balance * 100) / 100.0, True
-
-
-def build_status_feed_item(namespace, now=None):
-    now = now or time.time()
-    bucket_ts = int(now // RSS_STATUS_INTERVAL) * RSS_STATUS_INTERVAL
-    trade_count = read_int_state(namespace, 'trade_count')
-    bot_running = ns_get(namespace, 'bot_running') == 'true'
-    position_active = ns_get(namespace, 'position_active') == 'true'
-    engine_status = read_text_state(namespace, 'engine_status', 'Initializing...')
-    current_price = read_float_state(namespace, 'current_sol_price')
-    usdt_bal = read_float_state(namespace, 'balance_usdt')
-    sol_bal = read_float_state(namespace, 'balance_sol')
-    purchase_price = read_float_state(namespace, 'purchase_price')
-    running_label = 'RUNNING' if bot_running else 'PAUSED'
-
-    strategy_profile = get_strategy_profile(namespace)
-    if position_active and purchase_price > 0:
-        if strategy_profile == 'dollar':
-            target_price = purchase_price + SELL_TARGET_USD
-            stop_price = purchase_price - STOP_LOSS_USD
-            profit_usd = current_price - purchase_price
-            progress_pct = max(0.0, min(100.0, ((profit_usd + STOP_LOSS_USD) / (SELL_TARGET_USD + STOP_LOSS_USD)) * 100))
-            remaining_usd = max(0.0, target_price - current_price)
-            title = '\n'.join([
-                f'{running_label} | SELL | SOL ${current_price:.2f}',
-                f'Progress: ${profit_usd:+.2f} | Target +${SELL_TARGET_USD:.2f} ({progress_pct:.0f}%)',
-                f'Entry ${purchase_price:.2f} -> Target ${target_price:.2f} | Stop ${stop_price:.2f}',
-                f'To go: ${remaining_usd:.2f} | Trades: {trade_count}'
-            ])
-        else:
-            target_price = purchase_price * SELL_TARGET_MULTIPLIER
-            profit_pct = pct_change(purchase_price, current_price)
-            progress_pct = max(0.0, min(100.0, (profit_pct / SELL_TARGET_PCT) * 100))
-            remaining_pct = max(0.0, SELL_TARGET_PCT - profit_pct)
-            remaining_usd = max(0.0, target_price - current_price)
-            title = '\n'.join([
-                f'{running_label} | SELL | SOL ${current_price:.2f}',
-                f'Progress: {profit_pct:+.2f}% / +{SELL_TARGET_PCT:.2f}% ({progress_pct:.0f}%)',
-                f'Entry ${purchase_price:.2f} -> Target ${target_price:.2f}',
-                f'To go: {remaining_pct:.2f}% / ${remaining_usd:.2f} | Trades: {trade_count}'
-            ])
-    else:
-        anchor_price = read_float_state(namespace, 'strategy_anchor_price')
-        if strategy_profile == 'dollar':
-            anchor_gap_usd = read_float_state(namespace, 'strategy_anchor_gap_usd')
-            armed_low = read_float_state(namespace, 'strategy_armed_low')
-            rebound_progress_usd = read_float_state(namespace, 'strategy_rebound_progress_usd')
-            title = '\n'.join([
-                f'{running_label} | BUY | SOL ${current_price:.2f}',
-                'Armed rebound: 2m anchor gap then 5c bounce',
-                f'Anchor ${anchor_price:.2f} | Gap ${anchor_gap_usd:.2f} | Armed low ${armed_low:.2f}',
-                f'Rebound progress ${rebound_progress_usd:.2f} / ${REBOUND_BUY_USD:.2f} | USDT ${usdt_bal:.2f}',
-                f'USDT ${usdt_bal:.2f}'
-            ])
-        else:
-            anchor_delta = read_float_state(namespace, 'strategy_anchor_delta')
-            uplift_1 = read_float_state(namespace, 'strategy_uplift_1')
-            uplift_2 = read_float_state(namespace, 'strategy_uplift_2')
-            uplift_3 = read_float_state(namespace, 'strategy_uplift_3')
-            title = '\n'.join([
-                f'{running_label} | BUY | SOL ${current_price:.2f}',
-                f'Rebound setup: 3 x +{UPLIFT_THRESHOLD_PCT:.2f}% while below 2m anchor',
-                f'Anchor ${anchor_price:.2f} ({anchor_delta:+.2f}%) | Uplifts {uplift_1:+.2f}/{uplift_2:+.2f}/{uplift_3:+.2f}',
-                f'USDT ${usdt_bal:.2f}'
-            ])
-    description_parts = [
-        title,
-        f'Status: {engine_status}',
-        f'SOL held: {sol_bal:.4f}',
-        f'USDT: ${usdt_bal:.2f}'
-    ]
-    latest_logs = ns_lrange(namespace, 'bot_logs', 0, 0)
-    if latest_logs:
-        description_parts.append(f'Latest log: {latest_logs[0]}')
+def stats_default(namespace):
     return {
-        'bucket_ts': bucket_ts,
-        'pub_date': formatdate(bucket_ts, usegmt=True),
-        'title': title,
-        'description': '\n'.join(description_parts),
-        'guid': f'muzz-world-status-{namespace}-{bucket_ts}'
+        'day': current_day_key(),
+        'daily_pnl': 0.0,
+        'total_pnl': 0.0,
+        'consecutive_losses': 0,
+        'trades_today': 0,
+        'cancelled_entries': 0,
+        'time_stops': 0,
+        'emergency_exits': 0,
+        'last_entry_fill_at': 0.0,
+        'last_loss_at': 0.0,
+        'last_close_at': 0.0,
+        'last_real_sync_error': '',
+        'real_open_orders': [],
+        'real_balance': {'available': 0.0, 'equity': 0.0},
+        'unsupported_external_position': '',
+        'sandbox_balance_initialized': namespace == SANDBOX_NS,
     }
 
 
-def reconcile_live_state(client):
-    try:
-        usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
-        sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-        ns_set(LIVE_NS, 'balance_usdt', usdt_bal)
-        ns_set(LIVE_NS, 'balance_sol', sol_bal)
-        open_orders = client.get_open_orders(symbol=SYMBOL)
-        if open_orders:
-            log_activity('CRITICAL: Open working orders found on exchange. Forcing lockout.', namespace=LIVE_NS)
-            ns_set(LIVE_NS, 'engine_status', 'ERROR_LOCKOUT_OPEN_ORDERS')
-            return False
-        my_trades = client.get_my_trades(symbol=SYMBOL, limit=20)
-        if sol_bal >= 0.05:
-            accumulated_qty = 0.0
-            weighted_cost = 0.0
-            for trade in reversed(my_trades):
-                if trade['isBuyer']:
-                    qty = float(trade['qty'])
-                    price = float(trade['price'])
-                    accumulated_qty += qty
-                    weighted_cost += (price * qty)
-                    if accumulated_qty >= (sol_bal * 0.99):
-                        break
-            if accumulated_qty > 0:
-                avg_entry_price = weighted_cost / accumulated_qty
-                ns_set(LIVE_NS, 'position_active', 'true')
-                ns_set(LIVE_NS, 'purchase_price', avg_entry_price)
-                ns_set(LIVE_NS, 'bot_tracked_qty', sol_bal)
-                if not ns_get(LIVE_NS, 'position_opened_at'):
-                    ns_set(LIVE_NS, 'position_opened_at', time.time())
-                return True
-        reset_position_state(LIVE_NS, setup='Live account synced and scanning')
-        return True
-    except Exception as e:
-        log_activity(f'Reconciliation Engine Failure: {e}', namespace=LIVE_NS)
-        ns_set(LIVE_NS, 'engine_status', 'RECONCILE_ERROR')
-        return False
+def get_config(namespace):
+    stored = ns_get_json(namespace, 'config', {}) or {}
+    merged = deepcopy(DEFAULT_CONFIGS[namespace])
+    merged.update(stored)
+    if namespace == SANDBOX_NS:
+        merged['trade_notional_usdc'] = min(merged['trade_notional_usdc'], merged['max_notional_usdc'])
+    return merged
 
 
-def execute_paper_buy(namespace, price, note='armed 2m rebound'):
-    usdt_bal = read_float_state(namespace, 'balance_usdt')
-    usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
-    if usdt_alloc < 5.0:
-        log_activity('Paper buy aborted: available balance under operational thresholds.', namespace=namespace)
+def save_config(namespace, config):
+    ns_set_json(namespace, 'config', config)
+
+
+def get_stats(namespace):
+    stats = ns_get_json(namespace, 'stats', stats_default(namespace)) or stats_default(namespace)
+    if stats.get('day') != current_day_key():
+        stats['day'] = current_day_key()
+        stats['daily_pnl'] = 0.0
+        stats['trades_today'] = 0
+        save_stats(namespace, stats)
+    return stats
+
+
+def save_stats(namespace, stats):
+    ns_set_json(namespace, 'stats', stats)
+
+
+def get_position(namespace):
+    return ns_get_json(namespace, 'position', position_default())
+
+
+def save_position(namespace, position):
+    if position is None:
+        ns_delete(namespace, 'position')
         return
-    sol_quantity = math.floor((usdt_alloc / price) * 100) / 100.0
-    if sol_quantity <= MIN_POSITION_SOL:
-        log_activity('Paper buy aborted: calculated order size too low.', namespace=namespace)
+    ns_set_json(namespace, 'position', position)
+
+
+def get_open_order(namespace):
+    return ns_get_json(namespace, 'open_order', open_order_default())
+
+
+def save_open_order(namespace, order):
+    if order is None:
+        ns_delete(namespace, 'open_order')
         return
-    ns_set(namespace, 'balance_usdt', round(usdt_bal - (sol_quantity * price), 4))
-    ns_set(namespace, 'balance_sol', round(read_float_state(namespace, 'balance_sol') + sol_quantity, 4))
-    ns_set(namespace, 'position_active', 'true')
-    ns_set(namespace, 'purchase_price', price)
-    ns_set(namespace, 'bot_tracked_qty', sol_quantity)
-    ns_set(namespace, 'position_opened_at', time.time())
-    record_trade(namespace, 'BUY', sol_quantity, price, 'PAPER', note)
-    log_activity(f'PAPER BUY: {sol_quantity} SOL at ${price:.2f} | {note}', namespace=namespace)
+    ns_set_json(namespace, 'open_order', order)
 
 
-def execute_paper_sell(namespace, price, note):
-    sol_bal = read_float_state(namespace, 'balance_sol')
-    sol_to_liquidate, valid_position = sanitize_position_state(namespace, sol_bal, 'Paper sell path')
-    if not valid_position or sol_to_liquidate <= MIN_POSITION_SOL:
-        log_activity('Paper sell aborted: no valid sellable SOL remained after repair.', namespace=namespace)
-        return
-    ns_set(namespace, 'balance_sol', round(sol_bal - sol_to_liquidate, 4))
-    ns_set(namespace, 'balance_usdt', round(read_float_state(namespace, 'balance_usdt') + (sol_to_liquidate * price), 4))
-    record_trade(namespace, 'SELL', sol_to_liquidate, price, 'PAPER', note)
-    reset_position_state(namespace, setup='Watching for next paper entry')
-    log_activity(f'PAPER SELL: {sol_to_liquidate} SOL at ${price:.2f} | {note}', namespace=namespace)
-
-
-def run_namespaced_trader(namespace, paper=False):
-    client = None if paper else get_binance_client()
-    if paper:
-        bootstrap_sandbox()
+def get_balances(namespace):
+    if namespace == SANDBOX_NS:
+        default = {'available': DEFAULT_CONFIGS[SANDBOX_NS]['starting_balance_usdc'], 'equity': DEFAULT_CONFIGS[SANDBOX_NS]['starting_balance_usdc']}
     else:
-        init_live_state()
+        default = {'available': 0.0, 'equity': 0.0}
+    return ns_get_json(namespace, 'balances', default) or default
 
-    reconciled = paper
-    strategy_profile = get_strategy_profile(namespace)
 
+def save_balances(namespace, balances):
+    ns_set_json(namespace, 'balances', balances)
+
+
+def get_bot_state(namespace):
+    return ns_get(namespace, 'bot_state', 'PAUSED')
+
+
+def set_bot_state(namespace, value):
+    ns_set(namespace, 'bot_state', value)
+
+
+def get_engine_status(namespace):
+    return ns_get(namespace, 'engine_status', 'WAITING_FOR_START')
+
+
+def set_engine_status(namespace, value):
+    ns_set(namespace, 'engine_status', value)
+
+
+def get_reason_not_taken(namespace):
+    return ns_get(namespace, 'reason_not_taken', 'Waiting for first signal evaluation.')
+
+
+def set_reason_not_taken(namespace, value):
+    ns_set(namespace, 'reason_not_taken', value)
+
+
+def get_last_signal(namespace):
+    return ns_get_json(namespace, 'last_signal', {}) or {}
+
+
+def set_last_signal(namespace, value):
+    ns_set_json(namespace, 'last_signal', value)
+
+
+def get_last_trade(namespace):
+    return ns_get_json(namespace, 'last_trade', {}) or {}
+
+
+def set_last_trade(namespace, value):
+    ns_set_json(namespace, 'last_trade', value)
+
+
+def push_text_log(namespace, message):
+    timestamp = utc_now().strftime('%H:%M:%S')
+    env_label = namespace.upper()
+    line = f'[{timestamp}] [{env_label}] {message}'
+    ns_lpush(namespace, 'action_logs', line)
+    ns_ltrim(namespace, 'action_logs', 0, ACTION_LOG_LIMIT - 1)
+    print(line)
+
+
+def push_json_log(namespace, key, payload, limit):
+    ns_lpush(namespace, key, json.dumps(payload))
+    ns_ltrim(namespace, key, 0, limit - 1)
+
+
+def load_json_log(namespace, key, limit):
+    records = []
+    for raw in ns_lrange(namespace, key, 0, max(0, limit - 1)):
+        try:
+            records.append(json.loads(raw))
+        except Exception:
+            continue
+    return records
+
+
+def load_action_logs(namespace):
+    return ns_lrange(namespace, 'action_logs', 0, ACTION_LOG_LIMIT - 1)
+
+
+def record_signal(namespace, snapshot, metrics, passed, reason, checks):
+    payload = {
+        'timestamp': iso_now(),
+        'environment': namespace.upper(),
+        'bot_state': get_bot_state(namespace),
+        'mid': trim_float(snapshot.get('mid', 0.0), 6),
+        'best_bid': trim_float(snapshot.get('best_bid', 0.0), 6),
+        'best_ask': trim_float(snapshot.get('best_ask', 0.0), 6),
+        'spread_pct': trim_float(metrics['spread_pct'], 6),
+        'return_2m': trim_float(metrics['return_2m'], 6),
+        'return_5m': trim_float(metrics['return_5m'], 6),
+        'return_15m': trim_float(metrics['return_15m'], 6),
+        'return_60m': trim_float(metrics['return_60m'], 6),
+        'bounce_from_2m_low': trim_float(metrics['bounce_from_2m_low'], 6),
+        'book_imbalance': trim_float(metrics['book_imbalance'], 6),
+        'entry_conditions_passed': passed,
+        'reason_not_taken': reason,
+        'checks': checks,
+    }
+    push_json_log(namespace, 'signal_log', payload, SIGNAL_LOG_LIMIT)
+    set_last_signal(namespace, payload)
+    set_reason_not_taken(namespace, reason)
+
+
+def record_trade(namespace, trade):
+    trade_id = ns_incr(namespace, 'trade_counter')
+    trade['id'] = trade_id
+    push_json_log(namespace, 'trade_log', trade, TRADE_LOG_LIMIT)
+    set_last_trade(namespace, trade)
+
+
+def round_down(value, decimals):
+    factor = 10 ** max(int(decimals), 0)
+    return math.floor(float(value) * factor) / factor if factor else float(value)
+
+
+def get_real_clients():
+    with real_client_lock:
+        if real_client_bundle['info'] and real_client_bundle['exchange']:
+            return real_client_bundle
+        if Info is None or Exchange is None or Account is None or hl_constants is None:
+            raise RuntimeError(f'Hyperliquid SDK unavailable: {HYPERLIQUID_IMPORT_ERROR}')
+        if not HYPERLIQUID_API_KEY or not HYPERLIQUID_API_SECRET:
+            raise RuntimeError('HYPERLIQUID_API_KEY and HYPERLIQUID_API_SECRET are required for REAL mode.')
+        wallet = Account.from_key(HYPERLIQUID_API_SECRET)
+        info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
+        exchange = Exchange(wallet, hl_constants.MAINNET_API_URL, account_address=HYPERLIQUID_API_KEY)
+        size_decimals = int(exchange.info.asset_to_sz_decimals[exchange.info.name_to_asset(MARKET_COIN)])
+        real_client_bundle.update(
+            {
+                'info': info,
+                'exchange': exchange,
+                'account_address': HYPERLIQUID_API_KEY,
+                'size_decimals': size_decimals,
+            }
+        )
+        return real_client_bundle
+
+
+def reset_sandbox_state(clear_logs=False):
+    config = get_config(SANDBOX_NS)
+    save_position(SANDBOX_NS, None)
+    save_open_order(SANDBOX_NS, None)
+    save_balances(
+        SANDBOX_NS,
+        {
+            'available': float(config['starting_balance_usdc']),
+            'equity': float(config['starting_balance_usdc']),
+        },
+    )
+    ns_set_json(SANDBOX_NS, 'stats', stats_default(SANDBOX_NS))
+    set_engine_status(SANDBOX_NS, 'PAUSED_WAITING_FOR_START')
+    set_bot_state(SANDBOX_NS, 'PAUSED')
+    set_reason_not_taken(SANDBOX_NS, 'Waiting for manual START.')
+    set_last_signal(SANDBOX_NS, {})
+    if clear_logs:
+        redis.delete(ns_key(SANDBOX_NS, 'signal_log'))
+        redis.delete(ns_key(SANDBOX_NS, 'trade_log'))
+        redis.delete(ns_key(SANDBOX_NS, 'action_logs'))
+    push_text_log(SANDBOX_NS, 'Sandbox reset to starting balance and paused.')
+
+
+def bootstrap_environment(namespace):
+    save_config(namespace, get_config(namespace))
+    set_bot_state(namespace, 'PAUSED')
+    set_engine_status(namespace, 'PAUSED_WAITING_FOR_START')
+    set_reason_not_taken(namespace, 'Waiting for manual START.')
+    if not get_last_signal(namespace):
+        set_last_signal(namespace, {})
+    if not get_last_trade(namespace):
+        set_last_trade(namespace, {})
+    if namespace == SANDBOX_NS:
+        reset_sandbox_state(clear_logs=False)
+    else:
+        save_open_order(namespace, None)
+        save_stats(namespace, get_stats(namespace))
+        save_balances(namespace, get_balances(namespace))
+        save_position(namespace, None)
+        push_text_log(namespace, 'REAL environment booted in PAUSED mode. No orders submitted.')
+
+
+for env_name in ENVIRONMENTS:
+    bootstrap_environment(env_name)
+
+
+def nearest_value(history, seconds_ago, field):
+    if not history:
+        return None
+    target_ts = time.time() - seconds_ago
+    candidate = None
+    for item in history:
+        if item['ts'] <= target_ts:
+            candidate = item
+        else:
+            break
+    if candidate is None:
+        candidate = history[0]
+    return candidate.get(field)
+
+
+def min_mid_since(history, seconds_ago):
+    if not history:
+        return None
+    cutoff = time.time() - seconds_ago
+    mids = [item['mid'] for item in history if item['ts'] >= cutoff]
+    if not mids:
+        mids = [item['mid'] for item in history]
+    return min(mids) if mids else None
+
+
+def compute_market_metrics(snapshot, history):
+    mid = snapshot.get('mid', 0.0)
+    anchor_2m = nearest_value(history, 120, 'mid')
+    anchor_5m = nearest_value(history, 300, 'mid')
+    anchor_15m = nearest_value(history, 900, 'mid')
+    anchor_60m = nearest_value(history, 3600, 'mid')
+    imbalance_10s = nearest_value(history, 10, 'book_imbalance')
+    low_2m = min_mid_since(history, 120)
+    return {
+        'mid': mid,
+        'best_bid': snapshot.get('best_bid', 0.0),
+        'best_ask': snapshot.get('best_ask', 0.0),
+        'spread_pct': snapshot.get('spread_pct', 0.0),
+        'book_imbalance': snapshot.get('book_imbalance', 0.0),
+        'book_imbalance_10s_ago': imbalance_10s if imbalance_10s is not None else snapshot.get('book_imbalance', 0.0),
+        'return_2m': pct_change(anchor_2m or mid, mid),
+        'return_5m': pct_change(anchor_5m or mid, mid),
+        'return_15m': pct_change(anchor_15m or mid, mid),
+        'return_60m': pct_change(anchor_60m or mid, mid),
+        'bounce_from_2m_low': pct_change(low_2m or mid, mid),
+        'mid_2m_low': low_2m or mid,
+        'market_data_age': max(0.0, time.time() - snapshot.get('ts', 0.0)) if snapshot else 0.0,
+    }
+
+
+def update_position_extremes(position, current_mid):
+    if not position:
+        return position
+    position['highest_mid'] = max(position.get('highest_mid', current_mid), current_mid)
+    position['lowest_mid'] = min(position.get('lowest_mid', current_mid), current_mid)
+    entry_price = float(position['filled_price'])
+    position['max_favourable_excursion'] = max(
+        float(position.get('max_favourable_excursion', 0.0)),
+        pct_change(entry_price, position['highest_mid']),
+    )
+    position['max_adverse_excursion'] = min(
+        float(position.get('max_adverse_excursion', 0.0)),
+        pct_change(entry_price, position['lowest_mid']),
+    )
+    return position
+
+
+def compute_position_view(position, mid):
+    if not position:
+        return {'active': False}
+    size = float(position['size'])
+    entry = float(position['filled_price'])
+    gross = (mid - entry) * size
+    pnl_pct = pct_change(entry, mid)
+    return {
+        'active': True,
+        'side': position.get('side', 'LONG'),
+        'size': trim_float(size, 4),
+        'entry_price': trim_float(entry, 6),
+        'submitted_price': trim_float(position.get('submitted_price', entry), 6),
+        'notional': trim_float(position.get('notional', size * entry), 4),
+        'entry_time': position.get('entry_time'),
+        'entry_time_label': format_timestamp(position.get('entry_time')),
+        'seconds_open': max(0, int(time.time() - float(position.get('entry_time', time.time())))),
+        'gross_unrealized_pnl': trim_float(gross, 4),
+        'gross_unrealized_pnl_pct': trim_float(pnl_pct, 4),
+        'max_favourable_excursion': trim_float(position.get('max_favourable_excursion', 0.0), 4),
+        'max_adverse_excursion': trim_float(position.get('max_adverse_excursion', 0.0), 4),
+        'entry_maker_or_taker': position.get('entry_maker_or_taker', 'maker'),
+    }
+
+
+def sync_real_account_state():
+    stats = get_stats(REAL_NS)
+    try:
+        bundle = get_real_clients()
+        info = bundle['info']
+        account = bundle['account_address']
+        user_state = info.user_state(account)
+        open_orders = [order for order in info.open_orders(account) if order.get('coin') == MARKET_COIN]
+        margin_summary = user_state.get('marginSummary') or {}
+        available_balance = read_float(user_state.get('withdrawable'), 0.0)
+        equity = read_float(margin_summary.get('accountValue'), available_balance)
+        save_balances(REAL_NS, {'available': available_balance, 'equity': equity})
+        stats['real_open_orders'] = open_orders
+        stats['real_balance'] = {'available': available_balance, 'equity': equity}
+        stats['last_real_sync_error'] = ''
+        stats['unsupported_external_position'] = ''
+        active_position = None
+        for wrapper in user_state.get('assetPositions', []):
+            pos = wrapper.get('position') or {}
+            if pos.get('coin') != MARKET_COIN:
+                continue
+            size = read_float(pos.get('szi'), 0.0)
+            if abs(size) <= 0:
+                continue
+            if size < 0:
+                stats['unsupported_external_position'] = 'Detected unsupported external SHORT HYPE position.'
+                save_stats(REAL_NS, stats)
+                return None
+            entry_px = read_float(pos.get('entryPx'), 0.0)
+            position_value = read_float(pos.get('positionValue'), size * entry_px)
+            existing = get_position(REAL_NS) or {}
+            active_position = {
+                'side': 'LONG',
+                'size': abs(size),
+                'submitted_price': existing.get('submitted_price', entry_px),
+                'filled_price': entry_px,
+                'notional': position_value,
+                'entry_time': existing.get('entry_time', time.time()),
+                'entry_fill_delay_seconds': existing.get('entry_fill_delay_seconds', 0.0),
+                'entry_maker_or_taker': existing.get('entry_maker_or_taker', 'maker'),
+                'entry_order_type': existing.get('entry_order_type', 'live_sync'),
+                'entry_fees_paid': existing.get('entry_fees_paid', 0.0),
+                'highest_mid': existing.get('highest_mid', entry_px),
+                'lowest_mid': existing.get('lowest_mid', entry_px),
+                'max_favourable_excursion': existing.get('max_favourable_excursion', 0.0),
+                'max_adverse_excursion': existing.get('max_adverse_excursion', 0.0),
+                'source': existing.get('source', 'REAL_SYNC'),
+            }
+            active_position = update_position_extremes(active_position, active_position['filled_price'])
+            break
+        save_position(REAL_NS, active_position)
+        save_stats(REAL_NS, stats)
+        return active_position
+    except Exception as exc:
+        stats['last_real_sync_error'] = str(exc)
+        save_stats(REAL_NS, stats)
+        set_engine_status(REAL_NS, 'REAL_SYNC_ERROR')
+        push_text_log(REAL_NS, f'Real account sync error: {exc}')
+        return None
+
+
+def get_hourly_trade_count(namespace):
+    trades = load_json_log(namespace, 'trade_log', TRADE_LOG_LIMIT)
+    cutoff = time.time() - 3600
+    count = sum(1 for trade in trades if read_float(trade.get('entry_time')) >= cutoff)
+    position = get_position(namespace)
+    if position and read_float(position.get('entry_time')) >= cutoff:
+        count += 1
+    return count
+
+
+def get_effective_open_order_count(namespace):
+    local_order = get_open_order(namespace)
+    if namespace == REAL_NS:
+        stats = get_stats(namespace)
+        return len(stats.get('real_open_orders', []))
+    return 1 if local_order else 0
+
+
+def build_rejection_reason(reasons):
+    if not reasons:
+        return 'Entry conditions passed.'
+    return ' | '.join(reasons)
+
+
+def evaluate_entry(namespace, snapshot, metrics):
+    config = get_config(namespace)
+    stats = get_stats(namespace)
+    position = get_position(namespace)
+    open_order = get_open_order(namespace)
+    reasons = []
+    checks = []
+    state = get_bot_state(namespace)
+    if state != 'RUNNING':
+        reasons.append(f'bot_state == {state}')
+    if metrics['market_data_age'] > MARKET_STALE_AFTER_SECONDS:
+        reasons.append('market data stale')
+    if position:
+        reasons.append('existing position active')
+    if open_order:
+        reasons.append('waiting on open order')
+    if namespace == REAL_NS and len(get_stats(namespace).get('real_open_orders', [])) > 0 and not open_order:
+        reasons.append('real account already has open HYPE order(s)')
+    if metrics['return_2m'] > config['return_2m_threshold_pct']:
+        reasons.append(f"return_2m {metrics['return_2m']:.4f}% above threshold")
+    checks.append({'name': 'return_2m <= threshold', 'passed': metrics['return_2m'] <= config['return_2m_threshold_pct']})
+    if metrics['bounce_from_2m_low'] < config['bounce_from_2m_low_threshold_pct']:
+        reasons.append(f"bounce_from_2m_low {metrics['bounce_from_2m_low']:.4f}% below threshold")
+    checks.append({'name': 'bounce_from_2m_low >= threshold', 'passed': metrics['bounce_from_2m_low'] >= config['bounce_from_2m_low_threshold_pct']})
+    if metrics['return_60m'] <= config['return_60m_min_pct']:
+        reasons.append(f"return_60m {metrics['return_60m']:.4f}% below threshold")
+    checks.append({'name': 'return_60m > minimum', 'passed': metrics['return_60m'] > config['return_60m_min_pct']})
+    if metrics['spread_pct'] > config['spread_pct_max']:
+        reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
+    checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= config['spread_pct_max']})
+    if metrics['book_imbalance'] < config['book_imbalance_min']:
+        reasons.append(f"book_imbalance {metrics['book_imbalance']:.4f} below min")
+    checks.append({'name': 'book_imbalance >= min', 'passed': metrics['book_imbalance'] >= config['book_imbalance_min']})
+    if config.get('require_imbalance_improvement', True) and metrics['book_imbalance'] <= metrics['book_imbalance_10s_ago']:
+        reasons.append('book imbalance not improving vs 10s ago')
+    checks.append(
+        {
+            'name': 'book_imbalance > 10s ago',
+            'passed': (not config.get('require_imbalance_improvement', True)) or metrics['book_imbalance'] > metrics['book_imbalance_10s_ago'],
+        }
+    )
+    last_entry_at = read_float(stats.get('last_entry_fill_at'), 0.0)
+    if last_entry_at and (time.time() - last_entry_at) < int(config['entry_cooldown_seconds']):
+        reasons.append('entry cooldown active')
+    if stats.get('daily_pnl', 0.0) <= -abs(float(config['daily_loss_limit_usdc'])):
+        reasons.append('daily loss limit hit')
+    if int(stats.get('consecutive_losses', 0)) >= int(config['consecutive_loss_limit']):
+        reasons.append('consecutive loss limit hit')
+    if get_hourly_trade_count(namespace) >= int(config['max_trades_per_hour']):
+        reasons.append('max trades per hour reached')
+    last_loss_at = read_float(stats.get('last_loss_at'), 0.0)
+    if last_loss_at and (time.time() - last_loss_at) < int(config['cooldown_after_loss_seconds']):
+        reasons.append('loss cooldown active')
+    return len(reasons) == 0, build_rejection_reason(reasons), checks
+
+
+def apply_fee(notional, fee_pct):
+    return float(notional) * (float(fee_pct) / 100.0)
+
+
+def apply_slippage(price, slippage_pct, side):
+    if side == 'buy':
+        return float(price) * (1.0 + (float(slippage_pct) / 100.0))
+    return float(price) * (1.0 - (float(slippage_pct) / 100.0))
+
+
+def place_sandbox_entry(snapshot, metrics):
+    config = get_config(SANDBOX_NS)
+    balances = get_balances(SANDBOX_NS)
+    available = float(balances['available'])
+    notional = min(float(config['trade_notional_usdc']), float(config['max_notional_usdc']), available)
+    if notional < 10.0:
+        push_text_log(SANDBOX_NS, 'Sandbox entry blocked: available balance below 10 USDC minimum.')
+        return False
+    submitted_price = float(snapshot['best_bid'])
+    size = notional / submitted_price
+    order = {
+        'phase': 'entry',
+        'side': 'buy',
+        'maker_or_taker': 'maker',
+        'order_type': 'limit',
+        'submitted_price': submitted_price,
+        'submitted_at': time.time(),
+        'submitted_at_ms': int(time.time() * 1000),
+        'timeout_seconds': int(config['entry_timeout_seconds']),
+        'size': trim_float(size, 8),
+        'notional': trim_float(notional, 6),
+        'status': 'OPEN',
+    }
+    save_open_order(SANDBOX_NS, order)
+    set_engine_status(SANDBOX_NS, 'ENTRY_ORDER_WORKING')
+    push_text_log(
+        SANDBOX_NS,
+        f"Sandbox maker entry posted at {submitted_price:.5f} for {size:.6f} HYPE notional {notional:.2f} USDC.",
+    )
+    return True
+
+
+def fill_sandbox_entry(order, snapshot):
+    config = get_config(SANDBOX_NS)
+    balances = get_balances(SANDBOX_NS)
+    submitted_price = float(order['submitted_price'])
+    filled_price = apply_slippage(submitted_price, config['maker_entry_slippage_pct'], 'buy')
+    size = float(order['size'])
+    notional = size * filled_price
+    fee = apply_fee(notional, config['maker_fee_pct'])
+    available = float(balances['available']) - notional - fee
+    equity = available + (size * snapshot['mid'])
+    save_balances(SANDBOX_NS, {'available': available, 'equity': equity})
+    position = {
+        'side': 'LONG',
+        'size': size,
+        'submitted_price': submitted_price,
+        'filled_price': filled_price,
+        'notional': notional,
+        'entry_time': time.time(),
+        'entry_fill_delay_seconds': time.time() - float(order['submitted_at']),
+        'entry_maker_or_taker': 'maker',
+        'entry_order_type': 'post_only_limit',
+        'entry_fees_paid': fee,
+        'highest_mid': snapshot['mid'],
+        'lowest_mid': snapshot['mid'],
+        'max_favourable_excursion': 0.0,
+        'max_adverse_excursion': 0.0,
+        'source': 'SANDBOX',
+    }
+    save_position(SANDBOX_NS, position)
+    save_open_order(SANDBOX_NS, None)
+    stats = get_stats(SANDBOX_NS)
+    stats['last_entry_fill_at'] = time.time()
+    save_stats(SANDBOX_NS, stats)
+    set_engine_status(SANDBOX_NS, 'POSITION_OPEN')
+    push_text_log(
+        SANDBOX_NS,
+        f"Sandbox entry filled at {filled_price:.5f} ({position['entry_fill_delay_seconds']:.2f}s delay). Fee {fee:.4f} USDC.",
+    )
+
+
+def cancel_sandbox_entry(reason):
+    order = get_open_order(SANDBOX_NS)
+    if order and order.get('phase') == 'entry':
+        save_open_order(SANDBOX_NS, None)
+        stats = get_stats(SANDBOX_NS)
+        stats['cancelled_entries'] = int(stats.get('cancelled_entries', 0)) + 1
+        save_stats(SANDBOX_NS, stats)
+        set_engine_status(SANDBOX_NS, 'ENTRY_CANCELLED')
+        push_text_log(SANDBOX_NS, f'Sandbox entry cancelled: {reason}')
+
+
+def fill_sandbox_exit(position, exit_reason, maker_or_taker, snapshot, submitted_price=None):
+    config = get_config(SANDBOX_NS)
+    balances = get_balances(SANDBOX_NS)
+    side = 'sell'
+    if submitted_price is None:
+        submitted_price = snapshot['best_bid']
+    slippage_pct = config['maker_exit_slippage_pct'] if maker_or_taker == 'maker' else config['taker_exit_slippage_pct']
+    fill_price = apply_slippage(submitted_price, slippage_pct, side)
+    size = float(position['size'])
+    gross_pnl = (fill_price - float(position['filled_price'])) * size
+    exit_notional = size * fill_price
+    exit_fee = apply_fee(exit_notional, config['maker_fee_pct'] if maker_or_taker == 'maker' else config['taker_fee_pct'])
+    entry_fee = float(position.get('entry_fees_paid', 0.0))
+    net_pnl = gross_pnl - entry_fee - exit_fee
+    available = float(balances['available']) + exit_notional - exit_fee
+    equity = available
+    save_balances(SANDBOX_NS, {'available': available, 'equity': equity})
+    trade = {
+        'timestamp': iso_now(),
+        'environment': 'SANDBOX',
+        'side': 'LONG',
+        'order_type': 'post_only_limit' if maker_or_taker == 'maker' else 'market_exit',
+        'maker_or_taker': f"maker->{maker_or_taker}",
+        'submitted_price': trim_float(position.get('submitted_price', position['filled_price']), 6),
+        'filled_price': trim_float(position['filled_price'], 6),
+        'fill_delay_seconds': trim_float(position.get('entry_fill_delay_seconds', 0.0), 4),
+        'notional': trim_float(position.get('notional', 0.0), 4),
+        'size': trim_float(size, 6),
+        'entry_time': trim_float(position['entry_time'], 4),
+        'entry_time_label': format_timestamp(position['entry_time']),
+        'exit_time': trim_float(time.time(), 4),
+        'exit_time_label': format_timestamp(time.time()),
+        'exit_price': trim_float(fill_price, 6),
+        'exit_reason': exit_reason,
+        'gross_pnl': trim_float(gross_pnl, 6),
+        'fees_paid': trim_float(entry_fee + exit_fee, 6),
+        'net_pnl': trim_float(net_pnl, 6),
+        'balance_after_trade': trim_float(available, 6),
+        'max_favourable_excursion': trim_float(position.get('max_favourable_excursion', 0.0), 6),
+        'max_adverse_excursion': trim_float(position.get('max_adverse_excursion', 0.0), 6),
+    }
+    record_trade(SANDBOX_NS, trade)
+    save_position(SANDBOX_NS, None)
+    save_open_order(SANDBOX_NS, None)
+    stats = get_stats(SANDBOX_NS)
+    stats['total_pnl'] = float(stats.get('total_pnl', 0.0)) + net_pnl
+    stats['daily_pnl'] = float(stats.get('daily_pnl', 0.0)) + net_pnl
+    stats['trades_today'] = int(stats.get('trades_today', 0)) + 1
+    stats['last_close_at'] = time.time()
+    if net_pnl < 0:
+        stats['consecutive_losses'] = int(stats.get('consecutive_losses', 0)) + 1
+        stats['last_loss_at'] = time.time()
+    else:
+        stats['consecutive_losses'] = 0
+    if exit_reason == 'TIME_STOP':
+        stats['time_stops'] = int(stats.get('time_stops', 0)) + 1
+    if exit_reason == 'EMERGENCY_EXIT':
+        stats['emergency_exits'] = int(stats.get('emergency_exits', 0)) + 1
+    save_stats(SANDBOX_NS, stats)
+    set_engine_status(SANDBOX_NS, 'POSITION_CLOSED')
+    push_text_log(SANDBOX_NS, f"Sandbox exit {exit_reason} at {fill_price:.5f}. Net PnL {net_pnl:.4f} USDC.")
+
+
+def submit_real_entry(snapshot):
+    bundle = get_real_clients()
+    exchange = bundle['exchange']
+    size_decimals = bundle['size_decimals']
+    config = get_config(REAL_NS)
+    balances = get_balances(REAL_NS)
+    available = float(balances.get('available', 0.0))
+    notional = min(float(config['trade_notional_usdc']), float(config['max_notional_usdc']), available)
+    if notional < 10.0:
+        push_text_log(REAL_NS, 'REAL entry blocked: available balance below 10 USDC minimum.')
+        return False
+    submitted_price = float(snapshot['best_bid'])
+    size = round_down(notional / submitted_price, size_decimals)
+    if size <= 0:
+        push_text_log(REAL_NS, 'REAL entry blocked: rounded size is zero for HYPE.')
+        return False
+    response = exchange.order(MARKET_COIN, True, size, submitted_price, {'limit': {'tif': 'Alo'}})
+    status = ((response or {}).get('response') or {}).get('data', {}).get('statuses', [{}])[0]
+    if 'error' in status:
+        raise RuntimeError(status['error'])
+    submitted_at = time.time()
+    order = {
+        'phase': 'entry',
+        'side': 'buy',
+        'maker_or_taker': 'maker',
+        'order_type': 'limit',
+        'submitted_price': submitted_price,
+        'submitted_at': submitted_at,
+        'submitted_at_ms': int(submitted_at * 1000),
+        'timeout_seconds': int(config['entry_timeout_seconds']),
+        'size': size,
+        'notional': size * submitted_price,
+        'status': 'OPEN',
+    }
+    if 'resting' in status:
+        order['exchange_oid'] = status['resting']['oid']
+        save_open_order(REAL_NS, order)
+        set_engine_status(REAL_NS, 'ENTRY_ORDER_WORKING')
+        push_text_log(REAL_NS, f'REAL maker entry posted at {submitted_price:.5f} for {size:.6f} HYPE.')
+        return True
+    fills = fetch_real_fills_since(order['submitted_at_ms'])
+    matched = [fill for fill in fills if fill.get('coin') == MARKET_COIN]
+    if matched:
+        handle_real_entry_fill(order, matched)
+        return True
+    save_open_order(REAL_NS, order)
+    return True
+
+
+def fetch_real_fills_since(start_ms):
+    bundle = get_real_clients()
+    info = bundle['info']
+    account = bundle['account_address']
+    try:
+        return info.user_fills_by_time(account, int(start_ms) - 1000, aggregate_by_time=False)
+    except TypeError:
+        return info.user_fills_by_time(account, int(start_ms) - 1000)
+
+
+def weighted_fill_details(fills, oid=None):
+    matched = []
+    for fill in fills:
+        if fill.get('coin') != MARKET_COIN:
+            continue
+        if oid is not None and fill.get('oid') != oid:
+            continue
+        matched.append(fill)
+    if not matched:
+        return 0.0, 0.0, 0.0, 0.0
+    total_size = sum(read_float(fill.get('sz'), 0.0) for fill in matched)
+    if total_size <= 0:
+        return 0.0, 0.0, 0.0, 0.0
+    weighted_px = sum(read_float(fill.get('px'), 0.0) * read_float(fill.get('sz'), 0.0) for fill in matched) / total_size
+    latest_ts = max(read_float(fill.get('time'), 0.0) for fill in matched) / 1000.0
+    crossed = any(bool(fill.get('crossed')) for fill in matched)
+    return total_size, weighted_px, latest_ts, 1.0 if crossed else 0.0
+
+
+def handle_real_entry_fill(order, fills):
+    total_size, weighted_px, latest_ts, crossed_flag = weighted_fill_details(fills, order.get('exchange_oid'))
+    if total_size <= 0:
+        return False
+    config = get_config(REAL_NS)
+    entry_notional = total_size * weighted_px
+    entry_fee = apply_fee(entry_notional, config['maker_fee_pct'])
+    position = {
+        'side': 'LONG',
+        'size': total_size,
+        'submitted_price': order['submitted_price'],
+        'filled_price': weighted_px,
+        'notional': entry_notional,
+        'entry_time': latest_ts or time.time(),
+        'entry_fill_delay_seconds': max(0.0, (latest_ts or time.time()) - float(order['submitted_at'])),
+        'entry_maker_or_taker': 'taker' if crossed_flag else 'maker',
+        'entry_order_type': 'post_only_limit',
+        'entry_fees_paid': entry_fee,
+        'highest_mid': weighted_px,
+        'lowest_mid': weighted_px,
+        'max_favourable_excursion': 0.0,
+        'max_adverse_excursion': 0.0,
+        'source': 'REAL',
+    }
+    save_position(REAL_NS, position)
+    save_open_order(REAL_NS, None)
+    stats = get_stats(REAL_NS)
+    stats['last_entry_fill_at'] = time.time()
+    save_stats(REAL_NS, stats)
+    set_engine_status(REAL_NS, 'POSITION_OPEN')
+    fill_slippage = pct_change(order['submitted_price'], weighted_px)
+    push_text_log(
+        REAL_NS,
+        f'REAL entry filled at {weighted_px:.5f}. Delay {position["entry_fill_delay_seconds"]:.2f}s. Actual fill slippage {fill_slippage:.4f}%.',
+    )
+    return True
+
+
+def cancel_real_order(order, reason):
+    if not order or not order.get('exchange_oid'):
+        return
+    bundle = get_real_clients()
+    exchange = bundle['exchange']
+    exchange.cancel(MARKET_COIN, int(order['exchange_oid']))
+    push_text_log(REAL_NS, f"REAL order {order['exchange_oid']} cancelled: {reason}")
+    if order.get('phase') == 'entry':
+        stats = get_stats(REAL_NS)
+        stats['cancelled_entries'] = int(stats.get('cancelled_entries', 0)) + 1
+        save_stats(REAL_NS, stats)
+    save_open_order(REAL_NS, None)
+
+
+def handle_real_exit_fill(position, fills, exit_reason, intended_order_type, maker_or_taker, submitted_price):
+    total_size, weighted_px, latest_ts, crossed_flag = weighted_fill_details(fills)
+    if total_size <= 0:
+        return False
+    config = get_config(REAL_NS)
+    size = min(float(position['size']), total_size)
+    gross_pnl = (weighted_px - float(position['filled_price'])) * size
+    exit_notional = size * weighted_px
+    fee_pct = config['taker_fee_pct'] if maker_or_taker == 'taker' or crossed_flag else config['maker_fee_pct']
+    exit_fee = apply_fee(exit_notional, fee_pct)
+    entry_fee = float(position.get('entry_fees_paid', 0.0))
+    net_pnl = gross_pnl - entry_fee - exit_fee
+    balances = get_balances(REAL_NS)
+    estimated_available = float(balances.get('available', 0.0)) + exit_notional - exit_fee
+    trade = {
+        'timestamp': iso_now(),
+        'environment': 'REAL',
+        'side': 'LONG',
+        'order_type': intended_order_type,
+        'maker_or_taker': f"maker->{maker_or_taker}",
+        'submitted_price': trim_float(submitted_price, 6),
+        'filled_price': trim_float(position['filled_price'], 6),
+        'fill_delay_seconds': trim_float(position.get('entry_fill_delay_seconds', 0.0), 4),
+        'notional': trim_float(position.get('notional', 0.0), 4),
+        'size': trim_float(size, 6),
+        'entry_time': trim_float(position['entry_time'], 4),
+        'entry_time_label': format_timestamp(position['entry_time']),
+        'exit_time': trim_float(latest_ts or time.time(), 4),
+        'exit_time_label': format_timestamp(latest_ts or time.time()),
+        'exit_price': trim_float(weighted_px, 6),
+        'exit_reason': exit_reason,
+        'gross_pnl': trim_float(gross_pnl, 6),
+        'fees_paid': trim_float(entry_fee + exit_fee, 6),
+        'net_pnl': trim_float(net_pnl, 6),
+        'balance_after_trade': trim_float(estimated_available, 6),
+        'max_favourable_excursion': trim_float(position.get('max_favourable_excursion', 0.0), 6),
+        'max_adverse_excursion': trim_float(position.get('max_adverse_excursion', 0.0), 6),
+    }
+    record_trade(REAL_NS, trade)
+    stats = get_stats(REAL_NS)
+    stats['total_pnl'] = float(stats.get('total_pnl', 0.0)) + net_pnl
+    stats['daily_pnl'] = float(stats.get('daily_pnl', 0.0)) + net_pnl
+    stats['trades_today'] = int(stats.get('trades_today', 0)) + 1
+    stats['last_close_at'] = time.time()
+    if net_pnl < 0:
+        stats['consecutive_losses'] = int(stats.get('consecutive_losses', 0)) + 1
+        stats['last_loss_at'] = time.time()
+    else:
+        stats['consecutive_losses'] = 0
+    if exit_reason == 'TIME_STOP':
+        stats['time_stops'] = int(stats.get('time_stops', 0)) + 1
+    if exit_reason == 'EMERGENCY_EXIT':
+        stats['emergency_exits'] = int(stats.get('emergency_exits', 0)) + 1
+    save_stats(REAL_NS, stats)
+    save_position(REAL_NS, None)
+    save_open_order(REAL_NS, None)
+    sync_real_account_state()
+    fill_slippage = pct_change(submitted_price, weighted_px) if maker_or_taker == 'maker' else pct_change(submitted_price, weighted_px)
+    push_text_log(REAL_NS, f'REAL exit {exit_reason} filled at {weighted_px:.5f}. Actual fill slippage {fill_slippage:.4f}%. Net PnL {net_pnl:.4f} USDC.')
+    return True
+
+
+def submit_real_maker_exit(position, snapshot, exit_reason):
+    bundle = get_real_clients()
+    exchange = bundle['exchange']
+    submitted_price = float(snapshot['best_ask'])
+    response = exchange.order(MARKET_COIN, False, float(position['size']), submitted_price, {'limit': {'tif': 'Alo'}}, reduce_only=True)
+    status = ((response or {}).get('response') or {}).get('data', {}).get('statuses', [{}])[0]
+    if 'error' in status:
+        raise RuntimeError(status['error'])
+    order = {
+        'phase': 'exit',
+        'side': 'sell',
+        'maker_or_taker': 'maker',
+        'order_type': 'limit',
+        'submitted_price': submitted_price,
+        'submitted_at': time.time(),
+        'submitted_at_ms': int(time.time() * 1000),
+        'timeout_seconds': int(get_config(REAL_NS)['entry_timeout_seconds']),
+        'size': float(position['size']),
+        'notional': float(position['size']) * submitted_price,
+        'status': 'OPEN',
+        'exit_reason': exit_reason,
+    }
+    if 'resting' in status:
+        order['exchange_oid'] = status['resting']['oid']
+        save_open_order(REAL_NS, order)
+        set_engine_status(REAL_NS, f'{exit_reason}_ORDER_WORKING')
+        push_text_log(REAL_NS, f'REAL maker exit posted for {exit_reason} at {submitted_price:.5f}.')
+        return True
+    fills = fetch_real_fills_since(order['submitted_at_ms'])
+    handle_real_exit_fill(position, fills, exit_reason, 'post_only_limit', 'maker', submitted_price)
+    return True
+
+
+def execute_real_taker_exit(exit_reason):
+    position = get_position(REAL_NS)
+    if not position:
+        return False
+    bundle = get_real_clients()
+    exchange = bundle['exchange']
+    snapshot, _, _, _ = market_data.get_snapshot()
+    submitted_price = snapshot.get('best_bid', position['filled_price'])
+    started_ms = int(time.time() * 1000)
+    exchange.market_close(MARKET_COIN, sz=float(position['size']), px=submitted_price, slippage=REAL_MARKET_ORDER_TOLERANCE)
+    time.sleep(0.6)
+    fills = fetch_real_fills_since(started_ms)
+    if not handle_real_exit_fill(position, fills, exit_reason, 'market_exit', 'taker', submitted_price):
+        push_text_log(REAL_NS, f'REAL taker exit requested for {exit_reason}, but no fill was detected yet.')
+    return True
+
+
+def manage_open_order(namespace, snapshot):
+    order = get_open_order(namespace)
+    if not order:
+        return
+    bot_state = get_bot_state(namespace)
+    age = time.time() - float(order['submitted_at'])
+    timeout_seconds = float(order.get('timeout_seconds', 10))
+    if namespace == SANDBOX_NS:
+        if order['phase'] == 'entry' and bot_state != 'RUNNING':
+            cancel_sandbox_entry('bot no longer RUNNING')
+            return
+        if order['phase'] == 'entry' and snapshot['mid'] <= float(order['submitted_price']):
+            fill_sandbox_entry(order, snapshot)
+            return
+        if order['phase'] == 'exit' and snapshot['mid'] >= float(order['submitted_price']):
+            position = get_position(SANDBOX_NS)
+            if position:
+                fill_sandbox_exit(position, order['exit_reason'], 'maker', snapshot, submitted_price=float(order['submitted_price']))
+            return
+        if age >= timeout_seconds:
+            if order['phase'] == 'entry':
+                cancel_sandbox_entry('not filled within 10 seconds')
+            else:
+                save_open_order(SANDBOX_NS, None)
+                push_text_log(SANDBOX_NS, f"Sandbox maker exit {order['exit_reason']} expired after {timeout_seconds:.0f}s.")
+        return
+
+    sync_real_account_state()
+    stats = get_stats(REAL_NS)
+    working_ids = {int(item['oid']) for item in stats.get('real_open_orders', []) if item.get('coin') == MARKET_COIN}
+    oid = int(order.get('exchange_oid', 0)) if order.get('exchange_oid') else 0
+    if oid and oid in working_ids and age < timeout_seconds:
+        return
+    if oid and oid in working_ids and age >= timeout_seconds:
+        cancel_real_order(order, 'timeout exceeded')
+        return
+    fills = fetch_real_fills_since(order['submitted_at_ms'])
+    if order['phase'] == 'entry':
+        if handle_real_entry_fill(order, fills):
+            return
+        save_open_order(REAL_NS, None)
+        push_text_log(REAL_NS, 'REAL entry order disappeared without detected fill; treating as cancelled.')
+        return
+    position = get_position(REAL_NS)
+    if position and handle_real_exit_fill(position, fills, order.get('exit_reason', 'UNKNOWN'), 'post_only_limit', 'maker', float(order['submitted_price'])):
+        return
+    save_open_order(REAL_NS, None)
+    push_text_log(REAL_NS, f"REAL maker exit {order.get('exit_reason', 'UNKNOWN')} no longer working and no fill was detected.")
+
+
+def maybe_place_exit_order(namespace, exit_reason, maker_or_taker, snapshot):
+    position = get_position(namespace)
+    if not position:
+        return False
+    open_order = get_open_order(namespace)
+    if open_order and open_order.get('phase') == 'exit':
+        return False
+    if namespace == SANDBOX_NS:
+        if maker_or_taker == 'taker':
+            fill_sandbox_exit(position, exit_reason, 'taker', snapshot, submitted_price=float(snapshot['best_bid']))
+            return True
+        order = {
+            'phase': 'exit',
+            'side': 'sell',
+            'maker_or_taker': 'maker',
+            'order_type': 'limit',
+            'submitted_price': float(snapshot['best_ask']),
+            'submitted_at': time.time(),
+            'submitted_at_ms': int(time.time() * 1000),
+            'timeout_seconds': int(get_config(SANDBOX_NS)['entry_timeout_seconds']),
+            'size': float(position['size']),
+            'notional': float(position['size']) * float(snapshot['best_ask']),
+            'status': 'OPEN',
+            'exit_reason': exit_reason,
+        }
+        save_open_order(SANDBOX_NS, order)
+        set_engine_status(SANDBOX_NS, f'{exit_reason}_ORDER_WORKING')
+        push_text_log(SANDBOX_NS, f"Sandbox maker exit posted for {exit_reason} at {order['submitted_price']:.5f}.")
+        return True
+
+    if maker_or_taker == 'taker':
+        return execute_real_taker_exit(exit_reason)
+    return submit_real_maker_exit(position, snapshot, exit_reason)
+
+
+def manage_position(namespace, snapshot):
+    position = get_position(namespace)
+    if not position:
+        return
+    position = update_position_extremes(position, snapshot['mid'])
+    save_position(namespace, position)
+    bot_state = get_bot_state(namespace)
+    if bot_state == 'KILLED':
+        set_engine_status(namespace, 'KILLED_HOLDING_POSITION')
+        return
+    config = get_config(namespace)
+    entry_price = float(position['filled_price'])
+    change_pct = pct_change(entry_price, snapshot['mid'])
+    seconds_open = time.time() - float(position['entry_time'])
+    if change_pct <= -abs(float(config['emergency_exit_drop_pct'])) and seconds_open <= int(config['emergency_window_seconds']):
+        maybe_place_exit_order(namespace, 'EMERGENCY_EXIT', 'taker', snapshot)
+        return
+    if change_pct <= -abs(float(config['stop_loss_pct'])):
+        maybe_place_exit_order(namespace, 'STOP_LOSS', 'taker', snapshot)
+        return
+    if change_pct >= float(config['take_profit_pct']):
+        maybe_place_exit_order(namespace, 'TAKE_PROFIT', 'maker', snapshot)
+        return
+    if seconds_open >= int(config['time_stop_seconds']):
+        maybe_place_exit_order(namespace, 'TIME_STOP', 'maker', snapshot)
+        return
+    set_engine_status(namespace, 'MANAGING_POSITION')
+
+
+def trade_loop(namespace):
     while True:
         try:
-            if not paper and not reconciled:
-                if reconcile_live_state(client):
-                    reconciled = True
-                    if ns_get(namespace, 'position_active') == 'true':
-                        ns_set(namespace, 'engine_status', 'READY_WITH_POSITION')
-                        set_strategy_snapshot(namespace, mode='SELL', setup='Live position synced from exchange')
-                    else:
-                        ns_set(namespace, 'engine_status', 'READY_IN_CASH')
-                        set_strategy_snapshot(namespace, mode='BUY', setup='Live account synced and scanning')
-                else:
-                    ns_set(namespace, 'engine_status', 'RETRYING_LIVE_SYNC')
-                    set_strategy_snapshot(namespace, mode='WAITING', setup='Retrying live account sync')
-                    time.sleep(5)
-                    continue
-
-            current_status = read_text_state(namespace, 'engine_status')
-            if 'LOCKOUT' in current_status:
-                time.sleep(SAMPLE_INTERVAL)
-                continue
-
-            lock_key = ns_key(namespace, 'trading_execution_lock')
-            lock_acquired = redis.set(lock_key, INSTANCE_ID, nx=True, ex=15)
-            current_lock = redis.get(lock_key)
-            if not lock_acquired and current_lock != INSTANCE_ID:
-                time.sleep(SAMPLE_INTERVAL)
+            lock_key = ns_key(namespace, 'loop_lock')
+            acquired = redis.set(lock_key, INSTANCE_ID, nx=True, ex=15)
+            if not acquired and redis.get(lock_key) != INSTANCE_ID:
+                time.sleep(TRADING_LOOP_INTERVAL)
                 continue
             redis.set(lock_key, INSTANCE_ID, ex=15)
-
-            try:
-                current_price = get_live_price()
-                ns_set(namespace, 'current_sol_price', current_price)
-            except Exception:
-                ns_set(namespace, 'engine_status', 'WAITING_FOR_LIVE_PRICE')
-                set_strategy_snapshot(namespace, mode='WAITING', setup='Waiting for live websocket price')
-                time.sleep(SAMPLE_INTERVAL)
+            if namespace == REAL_NS:
+                sync_real_account_state()
+            snapshot, history, market_status, market_error = market_data.get_snapshot()
+            if not snapshot:
+                set_engine_status(namespace, f'WAITING_FOR_MARKET_DATA ({market_status})')
+                time.sleep(TRADING_LOOP_INTERVAL)
                 continue
-
-            if ns_get(namespace, 'bot_running') != 'true':
-                ns_set(namespace, 'engine_status', 'PAUSED')
-                set_strategy_snapshot(namespace, mode='PAUSED', setup='Trading paused by operator')
-                time.sleep(SAMPLE_INTERVAL)
+            metrics = compute_market_metrics(snapshot, history)
+            passed, reason, checks = evaluate_entry(namespace, snapshot, metrics)
+            record_signal(namespace, snapshot, metrics, passed, reason, checks)
+            manage_open_order(namespace, snapshot)
+            manage_position(namespace, snapshot)
+            position = get_position(namespace)
+            open_order = get_open_order(namespace)
+            if position or open_order:
+                time.sleep(TRADING_LOOP_INTERVAL)
                 continue
-
-            position_active = ns_get(namespace, 'position_active') == 'true'
-            purchase_price = read_float_state(namespace, 'purchase_price')
-
-            if not paper:
-                live_sol_balance = float(client.get_asset_balance(asset='SOL')['free'])
-                ns_set(namespace, 'balance_sol', live_sol_balance)
-                sanitize_position_state(namespace, live_sol_balance, 'Live sync guard')
-                position_active = ns_get(namespace, 'position_active') == 'true'
-                purchase_price = read_float_state(namespace, 'purchase_price')
+            if get_bot_state(namespace) != 'RUNNING':
+                set_engine_status(namespace, 'PAUSED_WAITING_FOR_START' if get_bot_state(namespace) == 'PAUSED' else 'KILLED')
+                time.sleep(TRADING_LOOP_INTERVAL)
+                continue
+            if metrics['market_data_age'] > MARKET_STALE_AFTER_SECONDS:
+                set_engine_status(namespace, f'MARKET_STALE: {metrics["market_data_age"]:.1f}s')
+                time.sleep(TRADING_LOOP_INTERVAL)
+                continue
+            if not passed:
+                set_engine_status(namespace, 'RUNNING_WAITING_FOR_SIGNAL')
+                time.sleep(TRADING_LOOP_INTERVAL)
+                continue
+            if namespace == SANDBOX_NS:
+                place_sandbox_entry(snapshot, metrics)
             else:
-                sandbox_sol_balance = read_float_state(namespace, 'balance_sol')
-                sanitize_position_state(namespace, sandbox_sol_balance, 'Sandbox sync guard')
-                position_active = ns_get(namespace, 'position_active') == 'true'
-                purchase_price = read_float_state(namespace, 'purchase_price')
-
-            if not position_active:
-                now = time.time()
-                samples = load_price_samples()
-                anchor_price = resolve_anchor_price(namespace, samples, now)
-                if len(samples) < 4 or anchor_price is None:
-                    warm_seconds = min(len(samples), LOOKBACK_SECONDS)
-                    ns_set(namespace, 'engine_status', 'WARMING_2M_ANCHOR')
-                    set_strategy_snapshot(
-                        namespace,
-                        mode='BUY',
-                        setup=f'Warming 2m anchor cache ({warm_seconds}/{LOOKBACK_SECONDS}s)',
-                        anchor_price='0',
-                        anchor_gap_usd='0',
-                        armed_low='0',
-                        rebound_progress_usd='0',
-                        buy_progress_pct='0',
-                        position_status=''
-                    )
-                    time.sleep(SAMPLE_INTERVAL)
-                    continue
-
-                if strategy_profile == 'dollar':
-                    anchor_gap_usd = max(0.0, anchor_price - current_price)
-                    armed_low = read_float_state(namespace, 'strategy_armed_low')
-                    if anchor_gap_usd >= ARM_GAP_USD:
-                        if armed_low <= 0 or current_price < armed_low:
-                            armed_low = current_price
-                        rebound_progress_usd = max(0.0, current_price - armed_low)
-                        buy_progress_pct = min(100.0, (rebound_progress_usd / REBOUND_BUY_USD) * 100)
-                        if rebound_progress_usd >= REBOUND_BUY_USD:
-                            setup = f'Armed low ${armed_low:.2f}; rebound confirmed'
-                            engine_status = 'REBOUND_CONFIRMED'
-                        else:
-                            setup = f'Armed at ${armed_low:.2f}; waiting for +${REBOUND_BUY_USD:.2f} rebound'
-                            engine_status = 'ARMED_WAITING_FOR_REBOUND'
-                    else:
-                        armed_low = 0.0
-                        rebound_progress_usd = 0.0
-                        buy_progress_pct = min(100.0, (anchor_gap_usd / ARM_GAP_USD) * 100)
-                        setup = f'Waiting for ${ARM_GAP_USD:.2f} gap below 2m anchor'
-                        engine_status = 'WAITING_FOR_ARM'
-
-                    set_strategy_snapshot(
-                        namespace,
-                        mode='BUY',
-                        setup=setup,
-                        anchor_price=f'{anchor_price:.6f}',
-                        anchor_delta='0',
-                        uplift_1='0',
-                        uplift_2='0',
-                        uplift_3='0',
-                        anchor_gap_usd=f'{anchor_gap_usd:.4f}',
-                        armed_low=f'{armed_low:.6f}',
-                        rebound_progress_usd=f'{rebound_progress_usd:.4f}',
-                        buy_progress_pct=f'{buy_progress_pct:.2f}',
-                        position_status=''
-                    )
-                    ns_set(namespace, 'engine_status', engine_status)
-
-                    if anchor_gap_usd >= ARM_GAP_USD and rebound_progress_usd >= REBOUND_BUY_USD:
-                        buy_reason = (
-                            f'2m anchor ${anchor_price:.2f} kept a ${anchor_gap_usd:.2f} gap; '
-                            f'price rebounded ${rebound_progress_usd:.2f} from armed low ${armed_low:.2f}'
-                        )
-                        if paper:
-                            execute_paper_buy(namespace, current_price, buy_reason)
-                        else:
-                            usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
-                            ns_set(namespace, 'balance_usdt', usdt_bal)
-                            usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
-                            if usdt_alloc >= 5.0:
-                                sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
-                                if sol_quantity > MIN_POSITION_SOL:
-                                    log_activity(
-                                        f'AUTO BUY: {sol_quantity} SOL at ${current_price:.2f} | {buy_reason}',
-                                        namespace=namespace
-                                    )
-                                    client.create_order(
-                                        symbol=SYMBOL,
-                                        side=Client.SIDE_BUY,
-                                        type=Client.ORDER_TYPE_MARKET,
-                                        quantity=sol_quantity
-                                    )
-                                    record_trade(namespace, 'BUY', sol_quantity, current_price, 'AUTO', buy_reason)
-                                    ns_set(namespace, 'position_opened_at', time.time())
-                                    time.sleep(1)
-                                    reconciled = reconcile_live_state(client)
-                                else:
-                                    log_activity('Auto buy aborted: calculated order size too low.', namespace=namespace)
-                            else:
-                                log_activity('Auto buy aborted: available balance under operational thresholds.', namespace=namespace)
-                else:
-                    latest_prices = [sample['price'] for sample in samples[-4:]]
-                    uplift_1 = pct_change(latest_prices[0], latest_prices[1])
-                    uplift_2 = pct_change(latest_prices[1], latest_prices[2])
-                    uplift_3 = pct_change(latest_prices[2], latest_prices[3])
-                    anchor_delta = pct_change(anchor_price, current_price)
-                    below_anchor = current_price < anchor_price
-                    uplift_confirmed = all(step >= UPLIFT_THRESHOLD_PCT for step in (uplift_1, uplift_2, uplift_3))
-
-                    if below_anchor and uplift_confirmed:
-                        setup = 'Rebound confirmed below 2m anchor'
-                        engine_status = 'REBOUND_CONFIRMED'
-                    elif below_anchor:
-                        setup = 'Below 2m anchor, waiting for 3 uplifts'
-                        engine_status = 'BELOW_2M_ANCHOR'
-                    else:
-                        setup = 'Waiting for price to move back below 2m anchor'
-                        engine_status = 'WAITING_BELOW_2M_ANCHOR'
-
-                    set_strategy_snapshot(
-                        namespace,
-                        mode='BUY',
-                        setup=setup,
-                        anchor_price=f'{anchor_price:.6f}',
-                        anchor_delta=f'{anchor_delta:.4f}',
-                        uplift_1=f'{uplift_1:.4f}',
-                        uplift_2=f'{uplift_2:.4f}',
-                        uplift_3=f'{uplift_3:.4f}',
-                        anchor_gap_usd='0',
-                        armed_low='0',
-                        rebound_progress_usd='0',
-                        buy_progress_pct='0',
-                        position_status=''
-                    )
-                    ns_set(namespace, 'engine_status', engine_status)
-
-                    if below_anchor and uplift_confirmed:
-                        buy_reason = (
-                            f'3 x +{UPLIFT_THRESHOLD_PCT:.2f}% uplifts while '
-                            f'price remains {anchor_delta:+.2f}% vs 2m anchor ${anchor_price:.2f}'
-                        )
-                        if paper:
-                            execute_paper_buy(namespace, current_price, buy_reason)
-                        else:
-                            usdt_bal = float(client.get_asset_balance(asset='USDT')['free'])
-                            ns_set(namespace, 'balance_usdt', usdt_bal)
-                            usdt_alloc = usdt_bal * AUTO_BUY_ALLOCATION
-                            if usdt_alloc >= 5.0:
-                                sol_quantity = math.floor((usdt_alloc / current_price) * 100) / 100.0
-                                if sol_quantity > MIN_POSITION_SOL:
-                                    log_activity(
-                                        f'AUTO BUY: {sol_quantity} SOL at ${current_price:.2f} | {buy_reason}',
-                                        namespace=namespace
-                                    )
-                                    client.create_order(
-                                        symbol=SYMBOL,
-                                        side=Client.SIDE_BUY,
-                                        type=Client.ORDER_TYPE_MARKET,
-                                        quantity=sol_quantity
-                                    )
-                                    record_trade(namespace, 'BUY', sol_quantity, current_price, 'AUTO', buy_reason)
-                                    ns_set(namespace, 'position_opened_at', time.time())
-                                    time.sleep(1)
-                                    reconciled = reconcile_live_state(client)
-                                else:
-                                    log_activity('Auto buy aborted: calculated order size too low.', namespace=namespace)
-                            else:
-                                log_activity('Auto buy aborted: available balance under operational thresholds.', namespace=namespace)
-            else:
-                opened_at = read_float_state(namespace, 'position_opened_at', time.time())
-                seconds_open = max(0, int(time.time() - opened_at))
-                sell_note = None
-                if strategy_profile == 'dollar':
-                    target_price = purchase_price + SELL_TARGET_USD
-                    stop_price = purchase_price - STOP_LOSS_USD
-                    profit_usd = current_price - purchase_price
-                    set_strategy_snapshot(
-                        namespace,
-                        mode='SELL',
-                        setup=f'Holding for +${SELL_TARGET_USD:.2f} / -${STOP_LOSS_USD:.2f}',
-                        target_price=f'{target_price:.6f}',
-                        stop_price=f'{stop_price:.6f}',
-                        profit_usd=f'{profit_usd:.4f}',
-                        seconds_open=str(seconds_open),
-                        position_status='Holding until target or stop is hit'
-                    )
-                    ns_set(namespace, 'engine_status', 'MANAGING_REBOUND_POSITION')
-
-                    if current_price >= target_price:
-                        sell_note = f'Target hit at +${SELL_TARGET_USD:.2f}'
-                    elif current_price <= stop_price:
-                        sell_note = f'Stop hit at -${STOP_LOSS_USD:.2f}'
-                else:
-                    target_price = purchase_price * SELL_TARGET_MULTIPLIER
-                    profit_usd = current_price - purchase_price
-                    set_strategy_snapshot(
-                        namespace,
-                        mode='SELL',
-                        setup=f'Holding for +{SELL_TARGET_PCT:.2f}% target',
-                        target_price=f'{target_price:.6f}',
-                        stop_price='0',
-                        profit_usd=f'{profit_usd:.4f}',
-                        seconds_open=str(seconds_open),
-                        position_status='Holding until target is hit'
-                    )
-                    ns_set(namespace, 'engine_status', 'MANAGING_REBOUND_POSITION')
-
-                    if current_price >= target_price:
-                        sell_note = f'Target hit at +{SELL_TARGET_PCT:.2f}%'
-
-                if sell_note:
-                    if paper:
-                        execute_paper_sell(namespace, current_price, sell_note)
-                    else:
-                        sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-                        ns_set(namespace, 'balance_sol', sol_bal)
-                        sol_to_liquidate, valid_position = sanitize_position_state(namespace, sol_bal, 'Live sell path')
-                        if valid_position and sol_to_liquidate > MIN_POSITION_SOL:
-                            log_activity(
-                                f'AUTO SELL: {sol_to_liquidate} SOL at ${current_price:.2f} | {sell_note}',
-                                namespace=namespace
-                            )
-                            client.create_order(
-                                symbol=SYMBOL,
-                                side=Client.SIDE_SELL,
-                                type=Client.ORDER_TYPE_MARKET,
-                                quantity=sol_to_liquidate
-                            )
-                            record_trade(namespace, 'SELL', sol_to_liquidate, current_price, 'AUTO', sell_note)
-                            time.sleep(1)
-                            reconciled = reconcile_live_state(client)
-                        else:
-                            log_activity('Auto sell aborted: no valid sellable SOL remained after repair.', namespace=namespace)
-        except Exception as e:
-            log_activity(f'Process Loop Error: {e}', namespace=namespace)
-            ns_set(namespace, 'engine_status', 'Loop Error')
-            set_strategy_snapshot(namespace, mode='ERROR', setup=str(e))
-        time.sleep(SAMPLE_INTERVAL)
-
-
-init_live_state()
-bootstrap_sandbox()
-Thread(target=run_price_stream, daemon=True).start()
-Thread(target=run_namespaced_trader, args=(LIVE_NS, False), daemon=True).start()
-Thread(target=run_namespaced_trader, args=(SANDBOX_NS, True), daemon=True).start()
-
-
-def build_state_payload(namespace):
-    logs = ns_lrange(namespace, 'bot_logs', 0, LOG_HISTORY_LIMIT - 1)
-    usdt_bal = read_float_state(namespace, 'balance_usdt')
-    sol_bal = read_float_state(namespace, 'balance_sol')
-    current_price = read_float_state(namespace, 'current_sol_price')
-    trade_count = read_int_state(namespace, 'trade_count')
-    purchase_price = read_float_state(namespace, 'purchase_price')
-    strategy_profile = get_strategy_profile(namespace)
-    if purchase_price > 0 and strategy_profile == 'dollar':
-        target_price = purchase_price + SELL_TARGET_USD
-        stop_price = purchase_price - STOP_LOSS_USD
-    elif purchase_price > 0:
-        target_price = purchase_price * SELL_TARGET_MULTIPLIER
-        stop_price = 0.0
-    else:
-        target_price = 0.0
-        stop_price = 0.0
-    profit_pct = pct_change(purchase_price, current_price) if purchase_price > 0 else 0.0
-    profit_usd = (current_price - purchase_price) if purchase_price > 0 else 0.0
-    seconds_open = 0
-    if purchase_price > 0:
-        seconds_open = max(0, int(time.time() - read_float_state(namespace, 'position_opened_at', time.time())))
-    websocket_last_seen = read_float_state(GLOBAL_NS, 'websocket_last_seen')
-    market_data_age = max(0.0, time.time() - websocket_last_seen) if websocket_last_seen > 0 else 0.0
-    total_usd = usdt_bal + (sol_bal * current_price)
-    total_gbp = total_usd * get_cached_gbp_rate()
-    return {
-        'bot_running': ns_get(namespace, 'bot_running') == 'true',
-        'position_active': ns_get(namespace, 'position_active') == 'true',
-        'purchase_price': str(purchase_price),
-        'current_sol_price': str(current_price),
-        'balance_usdt': str(usdt_bal),
-        'balance_sol': str(sol_bal),
-        'total_portfolio_usd': str(round(total_usd, 2)),
-        'total_portfolio_gbp': str(round(total_gbp, 2)),
-        'trade_count': trade_count,
-        'engine_status': read_text_state(namespace, 'engine_status', 'Initializing...'),
-        'websocket_status': read_text_state(GLOBAL_NS, 'websocket_status', 'DISCONNECTED'),
-        'market_data_age': round(market_data_age, 1),
-        'strategy': {
-            'profile': strategy_profile,
-            'mode': read_text_state(namespace, 'strategy_mode'),
-            'setup': read_text_state(namespace, 'strategy_setup'),
-            'anchor_price': read_float_state(namespace, 'strategy_anchor_price'),
-            'anchor_delta': read_float_state(namespace, 'strategy_anchor_delta'),
-            'uplift_1': read_float_state(namespace, 'strategy_uplift_1'),
-            'uplift_2': read_float_state(namespace, 'strategy_uplift_2'),
-            'uplift_3': read_float_state(namespace, 'strategy_uplift_3'),
-            'anchor_gap_usd': read_float_state(namespace, 'strategy_anchor_gap_usd'),
-            'armed_low': read_float_state(namespace, 'strategy_armed_low'),
-            'rebound_progress_usd': read_float_state(namespace, 'strategy_rebound_progress_usd'),
-            'buy_progress_pct': read_float_state(namespace, 'strategy_buy_progress_pct'),
-            'target_price': target_price,
-            'stop_price': stop_price,
-            'profit_pct': profit_pct,
-            'profit_usd': profit_usd,
-            'seconds_open': seconds_open,
-            'position_status': read_text_state(namespace, 'strategy_position_status')
-        },
-        'logs': logs
-    }
+                submit_real_entry(snapshot)
+        except Exception as exc:
+            set_engine_status(namespace, f'LOOP_ERROR: {exc}')
+            push_text_log(namespace, f'Loop error: {exc}')
+        time.sleep(TRADING_LOOP_INTERVAL)
 
 
 def build_health_payload(namespace):
-    health = {'database': 'FAIL', 'proxy_server': 'DIRECT (NO PROXY)', 'binance_api': 'FAIL', 'market_data': 'FAIL', 'errors': []}
+    payload = {
+        'database': 'OK',
+        'hyperliquid_sdk': 'OK' if not HYPERLIQUID_IMPORT_ERROR else 'ERROR',
+        'hyperliquid_api': 'N/A',
+        'market_data': market_data.status,
+        'engine': get_engine_status(namespace),
+        'errors': [],
+    }
     try:
         redis.ping()
-        health['database'] = 'OK'
-    except Exception as e:
-        health['errors'].append(f'Database Error: {str(e)}')
-    websocket_status = read_text_state(GLOBAL_NS, 'websocket_status', 'DISCONNECTED')
-    websocket_last_seen = read_float_state(GLOBAL_NS, 'websocket_last_seen')
-    if websocket_last_seen > 0:
-        age = max(0.0, time.time() - websocket_last_seen)
-        if age <= WEBSOCKET_STALE_AFTER:
-            health['market_data'] = f'OK (WS {age:.1f}s)'
+    except Exception as exc:
+        payload['database'] = 'ERROR'
+        payload['errors'].append(str(exc))
+    if HYPERLIQUID_IMPORT_ERROR:
+        payload['errors'].append(HYPERLIQUID_IMPORT_ERROR)
+    if market_data.error:
+        payload['errors'].append(market_data.error)
+    if namespace == REAL_NS:
+        if not HYPERLIQUID_API_KEY or not HYPERLIQUID_API_SECRET:
+            payload['hyperliquid_api'] = 'MISSING_KEYS'
         else:
-            health['market_data'] = f'STALE (WS {age:.1f}s)'
+            stats = get_stats(REAL_NS)
+            payload['hyperliquid_api'] = 'READY' if not stats.get('last_real_sync_error') else 'ERROR'
+            if stats.get('last_real_sync_error'):
+                payload['errors'].append(stats['last_real_sync_error'])
+    return payload
+
+
+def build_state_payload(namespace):
+    snapshot, history, market_status, market_error = market_data.get_snapshot()
+    metrics = compute_market_metrics(snapshot, history) if snapshot else {
+        'mid': 0.0,
+        'best_bid': 0.0,
+        'best_ask': 0.0,
+        'spread_pct': 0.0,
+        'book_imbalance': 0.0,
+        'book_imbalance_10s_ago': 0.0,
+        'return_2m': 0.0,
+        'return_5m': 0.0,
+        'return_15m': 0.0,
+        'return_60m': 0.0,
+        'bounce_from_2m_low': 0.0,
+        'mid_2m_low': 0.0,
+        'market_data_age': 0.0,
+    }
+    balances = get_balances(namespace)
+    position = get_position(namespace)
+    open_order = get_open_order(namespace)
+    stats = get_stats(namespace)
+    if namespace == SANDBOX_NS and position:
+        balances['equity'] = float(balances['available']) + (float(position['size']) * metrics['mid'])
+        save_balances(namespace, balances)
+    position_view = compute_position_view(position, metrics['mid'])
+    config = get_config(namespace)
+    last_trade = get_last_trade(namespace)
+    last_signal = get_last_signal(namespace)
+    real_warning = namespace == REAL_NS
+    payload = {
+        'environment': namespace.upper(),
+        'bot_state': get_bot_state(namespace),
+        'engine_status': get_engine_status(namespace),
+        'real_warning': real_warning,
+        'requires_confirmation': namespace == REAL_NS,
+        'market': {
+            'coin': MARKET_COIN,
+            'mid': trim_float(metrics['mid'], 6),
+            'best_bid': trim_float(metrics['best_bid'], 6),
+            'best_ask': trim_float(metrics['best_ask'], 6),
+            'spread_pct': trim_float(metrics['spread_pct'], 6),
+            'return_2m': trim_float(metrics['return_2m'], 6),
+            'return_5m': trim_float(metrics['return_5m'], 6),
+            'return_15m': trim_float(metrics['return_15m'], 6),
+            'return_60m': trim_float(metrics['return_60m'], 6),
+            'bounce_from_2m_low': trim_float(metrics['bounce_from_2m_low'], 6),
+            'book_imbalance': trim_float(metrics['book_imbalance'], 6),
+            'book_imbalance_10s_ago': trim_float(metrics['book_imbalance_10s_ago'], 6),
+            'market_data_status': market_status,
+            'market_data_error': market_error,
+            'market_data_age': trim_float(metrics['market_data_age'], 2),
+        },
+        'balances': {
+            'available': trim_float(balances.get('available', 0.0), 6),
+            'equity': trim_float(balances.get('equity', 0.0), 6),
+        },
+        'active_position': position_view,
+        'open_orders': {
+            'count': get_effective_open_order_count(namespace),
+            'current': open_order or {},
+        },
+        'config': config,
+        'stats': {
+            'daily_pnl': trim_float(stats.get('daily_pnl', 0.0), 6),
+            'total_pnl': trim_float(stats.get('total_pnl', 0.0), 6),
+            'consecutive_losses': int(stats.get('consecutive_losses', 0)),
+            'trades_today': int(stats.get('trades_today', 0)),
+            'trades_last_hour': get_hourly_trade_count(namespace),
+            'cancelled_entries': int(stats.get('cancelled_entries', 0)),
+            'time_stops': int(stats.get('time_stops', 0)),
+            'emergency_exits': int(stats.get('emergency_exits', 0)),
+            'last_loss_at': stats.get('last_loss_at', 0.0),
+            'last_loss_at_label': format_timestamp(stats.get('last_loss_at', 0.0)),
+            'unsupported_external_position': stats.get('unsupported_external_position', ''),
+        },
+        'last_signal': last_signal,
+        'last_trade': last_trade,
+        'reason_last_trade_not_taken': get_reason_not_taken(namespace),
+        'logs': load_action_logs(namespace),
+    }
+    if position:
+        payload['position_targets'] = {
+            'take_profit_price': trim_float(float(position['filled_price']) * (1.0 + (float(config['take_profit_pct']) / 100.0)), 6),
+            'stop_loss_price': trim_float(float(position['filled_price']) * (1.0 - (float(config['stop_loss_pct']) / 100.0)), 6),
+            'time_stop_seconds': int(config['time_stop_seconds']),
+        }
     else:
-        health['market_data'] = f'WAITING ({websocket_status})'
+        payload['position_targets'] = {}
+    if namespace == REAL_NS:
+        payload['real_account'] = {
+            'api_key_present': bool(HYPERLIQUID_API_KEY),
+            'api_secret_present': bool(HYPERLIQUID_API_SECRET),
+            'open_orders': get_stats(REAL_NS).get('real_open_orders', []),
+        }
+    return payload
+
+
+def compute_results_summary(namespace):
+    trades = list(reversed(load_json_log(namespace, 'trade_log', RESULTS_TRADE_LIMIT)))
+    stats = get_stats(namespace)
+    total_trades = len(trades)
+    wins = [trade for trade in trades if read_float(trade.get('net_pnl')) > 0]
+    losses = [trade for trade in trades if read_float(trade.get('net_pnl')) < 0]
+    gross_wins = sum(read_float(trade.get('net_pnl')) for trade in wins)
+    gross_losses = abs(sum(read_float(trade.get('net_pnl')) for trade in losses))
+    hold_times = [max(0.0, read_float(trade.get('exit_time')) - read_float(trade.get('entry_time'))) for trade in trades]
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for trade in trades:
+        cumulative += read_float(trade.get('net_pnl'))
+        peak = max(peak, cumulative)
+        max_drawdown = min(max_drawdown, cumulative - peak)
+    summary = {
+        'total_trades': total_trades,
+        'win_rate': (len(wins) / total_trades * 100.0) if total_trades else 0.0,
+        'average_win': (gross_wins / len(wins)) if wins else 0.0,
+        'average_loss': (sum(read_float(trade.get('net_pnl')) for trade in losses) / len(losses)) if losses else 0.0,
+        'profit_factor': (gross_wins / gross_losses) if gross_losses > 0 else (float('inf') if gross_wins > 0 else 0.0),
+        'net_pnl': sum(read_float(trade.get('net_pnl')) for trade in trades),
+        'max_drawdown': max_drawdown,
+        'average_hold_time_seconds': (sum(hold_times) / len(hold_times)) if hold_times else 0.0,
+        'best_trade': max((read_float(trade.get('net_pnl')) for trade in trades), default=0.0),
+        'worst_trade': min((read_float(trade.get('net_pnl')) for trade in trades), default=0.0),
+        'pnl_after_fees': sum(read_float(trade.get('net_pnl')) for trade in trades),
+        'cancelled_entries': int(stats.get('cancelled_entries', 0)),
+        'time_stops': int(stats.get('time_stops', 0)),
+        'emergency_exits': int(stats.get('emergency_exits', 0)),
+    }
+    return {'summary': summary, 'trades': trades}
+
+
+def parse_config_updates(namespace, incoming):
+    config = get_config(namespace)
+    for key, value in incoming.items():
+        if key not in EDITABLE_CONFIG_FIELDS:
+            continue
+        if key == 'require_imbalance_improvement':
+            config[key] = bool(value)
+            continue
+        if key in {'max_trades_per_hour', 'consecutive_loss_limit', 'cooldown_after_loss_seconds', 'entry_cooldown_seconds', 'time_stop_seconds', 'emergency_window_seconds', 'entry_timeout_seconds'}:
+            config[key] = max(0, int(float(value)))
+            continue
+        config[key] = float(value)
+    if namespace == REAL_NS:
+        config.pop('maker_entry_slippage_pct', None)
+        config.pop('maker_exit_slippage_pct', None)
+        config.pop('taker_exit_slippage_pct', None)
+        config['simulate_slippage'] = False
     if namespace == SANDBOX_NS:
-        health['binance_api'] = 'PAPER MODE'
-    else:
-        binance_status, binance_error = get_cached_binance_api_health()
-        health['binance_api'] = binance_status
-        if binance_error:
-            health['errors'].append(binance_error)
-    return health
+        config['trade_notional_usdc'] = min(config['trade_notional_usdc'], config['max_notional_usdc'])
+    return config
 
 
-def render_dashboard(namespace, page_label=''):
-    return render_template(
-        'index.html',
-        page_label=page_label,
-        strategy_profile=get_strategy_profile(namespace),
-        api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api',
-        trades_href='/sandbox/trades' if namespace == SANDBOX_NS else '/trades'
-    )
-
-
-def render_trade_history(namespace, page_label=''):
-    return render_template(
-        'trade_history.html',
-        page_label=page_label,
-        api_base='/sandbox/api' if namespace == SANDBOX_NS else '/api',
-        dashboard_href='/sandbox' if namespace == SANDBOX_NS else '/'
-    )
+@app.before_request
+def require_login():
+    allowed_routes = {
+        'login',
+        'logout',
+        'static',
+        'index',
+        'sandbox_index',
+        'trade_history_page',
+        'sandbox_trade_history_page',
+        'results_page',
+        'sandbox_results_page',
+        'health_check',
+        'sandbox_health_check',
+        'get_trades',
+        'sandbox_get_trades',
+        'get_results',
+        'sandbox_get_results',
+        'get_state',
+        'sandbox_get_state',
+        'real_start',
+        'sandbox_start',
+        'real_pause',
+        'sandbox_pause',
+        'real_kill',
+        'sandbox_kill',
+        'real_manual_close',
+        'sandbox_manual_close',
+        'sandbox_reset',
+        'save_real_config',
+        'save_sandbox_config',
+        'clear_real_logs',
+        'clear_sandbox_logs',
+    }
+    if request.endpoint not in allowed_routes and not session.get('logged_in'):
+        return redirect(url_for('login'))
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -1253,7 +1785,7 @@ def login():
         if request.form.get('password') == ADMIN_PASSWORD:
             session['logged_in'] = True
             return redirect(url_for('index'))
-        error = 'Invalid Credentials.'
+        error = 'Invalid credentials.'
     return render_template('login.html', error=error)
 
 
@@ -1265,244 +1797,222 @@ def logout():
 
 @app.route('/')
 def index():
-    return render_dashboard(LIVE_NS)
+    return render_template('index.html', api_base='/api', page_label='REAL', results_href='/results', trades_href='/trades')
 
 
 @app.route('/sandbox')
 def sandbox_index():
-    return render_dashboard(SANDBOX_NS, page_label='SANDBOX')
+    return render_template('index.html', api_base='/sandbox/api', page_label='SANDBOX', results_href='/sandbox/results', trades_href='/sandbox/trades')
 
 
 @app.route('/trades')
 def trade_history_page():
-    return render_trade_history(LIVE_NS)
+    return render_template('trade_history.html', api_base='/api', page_label='REAL', dashboard_href='/', results_href='/results')
 
 
 @app.route('/sandbox/trades')
 def sandbox_trade_history_page():
-    return render_trade_history(SANDBOX_NS, page_label='SANDBOX')
+    return render_template('trade_history.html', api_base='/sandbox/api', page_label='SANDBOX', dashboard_href='/sandbox', results_href='/sandbox/results')
 
 
-@app.route('/feed.xml', methods=['GET'])
-def status_feed():
-    try:
-        item = build_status_feed_item(LIVE_NS)
-        now = time.time()
-        feed_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>muzz.world bot status</title>
-    <link>https://muzz.world/</link>
-    <description>SOL trading bot status heartbeat every {RSS_STATUS_INTERVAL} seconds.</description>
-    <language>en-gb</language>
-    <ttl>1</ttl>
-    <lastBuildDate>{formatdate(now, usegmt=True)}</lastBuildDate>
-    <item>
-      <title>{escape(item['title'])}</title>
-      <link>https://muzz.world/</link>
-      <guid isPermaLink="false">{escape(item['guid'])}</guid>
-      <pubDate>{item['pub_date']}</pubDate>
-      <description>{escape(item['description'])}</description>
-    </item>
-  </channel>
-</rss>'''
-        response = app.response_class(feed_xml, mimetype='application/rss+xml')
-        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-        response.headers['Pragma'] = 'no-cache'
-        return response
-    except Exception as e:
-        return app.response_class(
-            f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>muzz.world bot status</title><item><title>Feed error</title><description>{escape(str(e))}</description></item></channel></rss>',
-            mimetype='application/rss+xml',
-            status=500
-        )
+@app.route('/results')
+def results_page():
+    return render_template('results.html', api_base='/api', page_label='REAL', dashboard_href='/', trades_href='/trades')
 
 
-@app.route('/api/health', methods=['GET'])
+@app.route('/sandbox/results')
+def sandbox_results_page():
+    return render_template('results.html', api_base='/sandbox/api', page_label='SANDBOX', dashboard_href='/sandbox', trades_href='/sandbox/trades')
+
+
+@app.route('/api/health')
 def health_check():
-    return jsonify(build_health_payload(LIVE_NS))
+    return jsonify(build_health_payload(REAL_NS))
 
 
-@app.route('/sandbox/api/health', methods=['GET'])
+@app.route('/sandbox/api/health')
 def sandbox_health_check():
     return jsonify(build_health_payload(SANDBOX_NS))
 
 
-@app.route('/api/trades', methods=['GET'])
-def get_trades():
-    return jsonify({'trade_count': read_int_state(LIVE_NS, 'trade_count'), 'trades': load_trade_history(LIVE_NS, 100)})
-
-
-@app.route('/sandbox/api/trades', methods=['GET'])
-def sandbox_get_trades():
-    return jsonify({'trade_count': read_int_state(SANDBOX_NS, 'trade_count'), 'trades': load_trade_history(SANDBOX_NS, 100)})
-
-
-@app.route('/api/state', methods=['GET'])
+@app.route('/api/state')
 def get_state():
-    return jsonify(build_state_payload(LIVE_NS))
+    return jsonify(build_state_payload(REAL_NS))
 
 
-@app.route('/sandbox/api/state', methods=['GET'])
+@app.route('/sandbox/api/state')
 def sandbox_get_state():
     return jsonify(build_state_payload(SANDBOX_NS))
 
 
-@app.route('/api/toggle', methods=['POST'])
-def toggle_bot():
-    action = (request.json or {}).get('run', False)
-    ns_set(LIVE_NS, 'bot_running', 'true' if action else 'false')
-    log_activity(f"Trading State Update: ENGINE {'STARTED' if action else 'PAUSED'}", namespace=LIVE_NS)
-    return jsonify({'status': 'success', 'bot_running': action})
+@app.route('/api/trades')
+def get_trades():
+    return jsonify({'trades': list(reversed(load_json_log(REAL_NS, 'trade_log', TRADE_LOG_LIMIT)))})
 
 
-@app.route('/sandbox/api/toggle', methods=['POST'])
-def sandbox_toggle_bot():
-    action = (request.json or {}).get('run', False)
-    ns_set(SANDBOX_NS, 'bot_running', 'true' if action else 'false')
-    log_activity(f"Sandbox State Update: ENGINE {'STARTED' if action else 'PAUSED'}", namespace=SANDBOX_NS)
-    return jsonify({'status': 'success', 'bot_running': action})
+@app.route('/sandbox/api/trades')
+def sandbox_get_trades():
+    return jsonify({'trades': list(reversed(load_json_log(SANDBOX_NS, 'trade_log', TRADE_LOG_LIMIT)))})
 
 
-@app.route('/api/manual_set', methods=['POST'])
-def manual_set_position():
+@app.route('/api/results')
+def get_results():
+    return jsonify(compute_results_summary(REAL_NS))
+
+
+@app.route('/sandbox/api/results')
+def sandbox_get_results():
+    return jsonify(compute_results_summary(SANDBOX_NS))
+
+
+@app.route('/api/start', methods=['POST'])
+def real_start():
+    data = request.json or {}
+    confirm_text = str(data.get('confirm_text', '')).strip()
+    if confirm_text != REAL_START_CONFIRM_TEXT:
+        return jsonify({'status': 'error', 'message': f'Type {REAL_START_CONFIRM_TEXT} to start REAL mode.'}), 400
     try:
-        data = request.json or {}
-        price = data.get('price')
-        if price and float(price) > 0:
-            ns_set(LIVE_NS, 'position_active', 'true')
-            ns_set(LIVE_NS, 'purchase_price', round(float(price), 2))
-            ns_set(LIVE_NS, 'position_opened_at', time.time())
-            log_activity(f'Manual Track Override: Position set ACTIVE at Entry ${price}', namespace=LIVE_NS)
-        else:
-            reset_position_state(LIVE_NS, setup='Manual reset to cash mode')
-            log_activity('Manual Track Override: Position cleared to INACTIVE', namespace=LIVE_NS)
+        get_real_clients()
+        sync_real_account_state()
+    except Exception as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 400
+    set_bot_state(REAL_NS, 'RUNNING')
+    set_engine_status(REAL_NS, 'RUNNING_WAITING_FOR_SIGNAL')
+    push_text_log(REAL_NS, 'REAL bot started by operator after confirmation.')
+    return jsonify({'status': 'success'})
+
+
+@app.route('/sandbox/api/start', methods=['POST'])
+def sandbox_start():
+    set_bot_state(SANDBOX_NS, 'RUNNING')
+    set_engine_status(SANDBOX_NS, 'RUNNING_WAITING_FOR_SIGNAL')
+    push_text_log(SANDBOX_NS, 'SANDBOX bot started by operator.')
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/pause', methods=['POST'])
+def real_pause():
+    set_bot_state(REAL_NS, 'PAUSED')
+    set_engine_status(REAL_NS, 'PAUSED_BY_OPERATOR')
+    order = get_open_order(REAL_NS)
+    if order and order.get('phase') == 'entry':
+        cancel_real_order(order, 'operator paused bot')
+    push_text_log(REAL_NS, 'REAL bot paused by operator. Existing positions remain managed.')
+    return jsonify({'status': 'success'})
+
+
+@app.route('/sandbox/api/pause', methods=['POST'])
+def sandbox_pause():
+    set_bot_state(SANDBOX_NS, 'PAUSED')
+    set_engine_status(SANDBOX_NS, 'PAUSED_BY_OPERATOR')
+    order = get_open_order(SANDBOX_NS)
+    if order and order.get('phase') == 'entry':
+        cancel_sandbox_entry('operator paused bot')
+    push_text_log(SANDBOX_NS, 'SANDBOX bot paused by operator. Existing positions remain managed.')
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/kill', methods=['POST'])
+def real_kill():
+    data = request.json or {}
+    close_position = bool(data.get('close_position', False))
+    set_bot_state(REAL_NS, 'KILLED')
+    try:
+        sync_real_account_state()
+        for order in get_stats(REAL_NS).get('real_open_orders', []):
+            if order.get('coin') == MARKET_COIN:
+                get_real_clients()['exchange'].cancel(MARKET_COIN, int(order['oid']))
+        save_open_order(REAL_NS, None)
+        if close_position and get_position(REAL_NS):
+            execute_real_taker_exit('KILL_SWITCH_CLOSE')
+        set_engine_status(REAL_NS, 'KILLED')
+        push_text_log(REAL_NS, f'REAL kill switch engaged. close_position={close_position}.')
         return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    except Exception as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 500
 
 
-@app.route('/sandbox/api/manual_set', methods=['POST'])
-def sandbox_manual_set_position():
+@app.route('/sandbox/api/kill', methods=['POST'])
+def sandbox_kill():
+    set_bot_state(SANDBOX_NS, 'KILLED')
+    save_open_order(SANDBOX_NS, None)
+    snapshot, _, _, _ = market_data.get_snapshot()
+    position = get_position(SANDBOX_NS)
+    if position and snapshot:
+        fill_sandbox_exit(position, 'KILL_SWITCH_CLOSE', 'taker', snapshot, submitted_price=float(snapshot['best_bid']))
+    set_engine_status(SANDBOX_NS, 'KILLED')
+    push_text_log(SANDBOX_NS, 'SANDBOX kill switch engaged.')
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/manual_close', methods=['POST'])
+def real_manual_close():
     try:
-        data = request.json or {}
-        price = data.get('price')
-        if price and float(price) > 0:
-            ns_set(SANDBOX_NS, 'position_active', 'true')
-            ns_set(SANDBOX_NS, 'purchase_price', round(float(price), 2))
-            ns_set(SANDBOX_NS, 'position_opened_at', time.time())
-            log_activity(f'Sandbox manual track: position set ACTIVE at Entry ${price}', namespace=SANDBOX_NS)
-        else:
-            reset_position_state(SANDBOX_NS, setup='Sandbox manual reset to cash mode')
-            log_activity('Sandbox manual track: position cleared to INACTIVE', namespace=SANDBOX_NS)
+        if not get_position(REAL_NS):
+            return jsonify({'status': 'error', 'message': 'No REAL position is open.'}), 400
+        execute_real_taker_exit('MANUAL_CLOSE')
         return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    except Exception as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 500
 
 
-@app.route('/sandbox/api/reset_balance', methods=['POST'])
-def sandbox_reset_balance():
+@app.route('/sandbox/api/manual_close', methods=['POST'])
+def sandbox_manual_close():
+    snapshot, _, _, _ = market_data.get_snapshot()
+    position = get_position(SANDBOX_NS)
+    if not position or not snapshot:
+        return jsonify({'status': 'error', 'message': 'No SANDBOX position is open.'}), 400
+    fill_sandbox_exit(position, 'MANUAL_CLOSE', 'taker', snapshot, submitted_price=float(snapshot['best_bid']))
+    return jsonify({'status': 'success'})
+
+
+@app.route('/sandbox/api/reset', methods=['POST'])
+def sandbox_reset():
+    if get_position(SANDBOX_NS) or get_open_order(SANDBOX_NS):
+        return jsonify({'status': 'error', 'message': 'Pause and clear positions/orders before resetting SANDBOX.'}), 400
+    reset_sandbox_state(clear_logs=False)
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/config', methods=['POST'])
+def save_real_config():
     try:
-        if not sandbox_can_reset_balance():
-            return jsonify({'status': 'error', 'message': 'Sandbox balance can only be reset during buy setup.'}), 400
-        reset_position_state(SANDBOX_NS, setup='Sandbox balance reset to $15,000')
-        ns_set(SANDBOX_NS, 'balance_usdt', 15000.0)
-        ns_set(SANDBOX_NS, 'balance_sol', 0)
-        ns_set(SANDBOX_NS, 'engine_status', 'READY_IN_CASH')
-        log_activity('Sandbox balance reset to $15,000 by operator.', namespace=SANDBOX_NS)
-        return jsonify({'status': 'success', 'message': 'Sandbox USDT reset to $15,000.'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        config = parse_config_updates(REAL_NS, request.json or {})
+        save_config(REAL_NS, config)
+        push_text_log(REAL_NS, 'REAL config updated by operator.')
+        return jsonify({'status': 'success', 'config': config})
+    except Exception as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 400
+
+
+@app.route('/sandbox/api/config', methods=['POST'])
+def save_sandbox_config():
+    try:
+        config = parse_config_updates(SANDBOX_NS, request.json or {})
+        save_config(SANDBOX_NS, config)
+        push_text_log(SANDBOX_NS, 'SANDBOX config updated by operator.')
+        return jsonify({'status': 'success', 'config': config})
+    except Exception as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 400
 
 
 @app.route('/api/logs/clear', methods=['POST'])
-def clear_logs():
-    redis.delete(ns_key(LIVE_NS, 'bot_logs'))
-    log_activity('Terminal log wiped by operator.', namespace=LIVE_NS, skip_db=True)
+def clear_real_logs():
+    redis.delete(ns_key(REAL_NS, 'action_logs'))
+    push_text_log(REAL_NS, 'REAL action log cleared by operator.')
     return jsonify({'status': 'success'})
 
 
 @app.route('/sandbox/api/logs/clear', methods=['POST'])
-def sandbox_clear_logs():
-    redis.delete(ns_key(SANDBOX_NS, 'bot_logs'))
-    log_activity('Sandbox terminal log wiped by operator.', namespace=SANDBOX_NS, skip_db=True)
+def clear_sandbox_logs():
+    redis.delete(ns_key(SANDBOX_NS, 'action_logs'))
+    push_text_log(SANDBOX_NS, 'SANDBOX action log cleared by operator.')
     return jsonify({'status': 'success'})
 
 
-@app.route('/api/manual_buy', methods=['POST'])
-def execute_manual_buy():
-    try:
-        data = request.json or {}
-        usdt_amount = min(float(data.get('usdt_amount', 0)), MAX_TRADE_USDT)
-        client = get_binance_client()
-        current_price = get_live_price()
-        sol_quantity = math.floor((usdt_amount / current_price) * 100) / 100.0
-        if sol_quantity > MIN_POSITION_SOL:
-            log_activity(f'MANUAL BUY: {sol_quantity} SOL at ${current_price:.2f}', namespace=LIVE_NS)
-            client.create_order(symbol=SYMBOL, side=Client.SIDE_BUY, type=Client.ORDER_TYPE_MARKET, quantity=sol_quantity)
-            record_trade(LIVE_NS, 'BUY', sol_quantity, current_price, 'MANUAL', 'Manual market buy')
-            ns_set(LIVE_NS, 'position_opened_at', time.time())
-            time.sleep(1)
-            reconcile_live_state(client)
-            return jsonify({'status': 'success', 'message': f'Successfully purchased {sol_quantity} SOL.'})
-        return jsonify({'status': 'error', 'message': 'Calculated order size too low.'}), 400
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@app.route('/sandbox/api/manual_buy', methods=['POST'])
-def sandbox_execute_manual_buy():
-    try:
-        data = request.json or {}
-        usdt_amount = float(data.get('usdt_amount', 0))
-        current_price = get_live_price()
-        usdt_bal = read_float_state(SANDBOX_NS, 'balance_usdt')
-        deploy = min(usdt_amount, usdt_bal)
-        sol_quantity = math.floor((deploy / current_price) * 100) / 100.0
-        if sol_quantity > MIN_POSITION_SOL:
-            ns_set(SANDBOX_NS, 'balance_usdt', round(usdt_bal - (sol_quantity * current_price), 4))
-            ns_set(SANDBOX_NS, 'balance_sol', round(read_float_state(SANDBOX_NS, 'balance_sol') + sol_quantity, 4))
-            ns_set(SANDBOX_NS, 'position_active', 'true')
-            ns_set(SANDBOX_NS, 'purchase_price', current_price)
-            ns_set(SANDBOX_NS, 'bot_tracked_qty', sol_quantity)
-            ns_set(SANDBOX_NS, 'position_opened_at', time.time())
-            record_trade(SANDBOX_NS, 'BUY', sol_quantity, current_price, 'MANUAL_PAPER', 'Manual paper buy')
-            log_activity(f'SANDBOX MANUAL BUY: {sol_quantity} SOL at ${current_price:.2f}', namespace=SANDBOX_NS)
-            return jsonify({'status': 'success', 'message': f'Paper bought {sol_quantity} SOL.'})
-        return jsonify({'status': 'error', 'message': 'Calculated order size too low.'}), 400
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@app.route('/api/liquidate', methods=['POST'])
-def liquidate_to_usdt():
-    try:
-        client = get_binance_client()
-        current_price = get_live_price()
-        sol_bal = float(client.get_asset_balance(asset='SOL')['free'])
-        ns_set(LIVE_NS, 'balance_sol', sol_bal)
-        sol_to_liquidate, valid_position = sanitize_position_state(LIVE_NS, sol_bal, 'Manual live liquidation')
-        if valid_position and sol_to_liquidate > MIN_POSITION_SOL:
-            log_activity(f'MANUAL SELL: {sol_to_liquidate} SOL at ${current_price:.2f} | Manual liquidation', namespace=LIVE_NS)
-            client.create_order(symbol=SYMBOL, side=Client.SIDE_SELL, type=Client.ORDER_TYPE_MARKET, quantity=sol_to_liquidate)
-            record_trade(LIVE_NS, 'SELL', sol_to_liquidate, current_price, 'MANUAL', 'Manual liquidation')
-            reset_position_state(LIVE_NS, setup='Manual liquidation complete')
-            return jsonify({'status': 'success', 'message': f'Liquidated {sol_to_liquidate} SOL.'})
-        return jsonify({'status': 'error', 'message': 'Insufficient SOL to dispatch order.'}), 400
-    except Exception as e:
-        log_activity(f'Manual Liquidation Error: {e}', namespace=LIVE_NS)
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@app.route('/sandbox/api/liquidate', methods=['POST'])
-def sandbox_liquidate_to_usdt():
-    try:
-        current_price = get_live_price()
-        execute_paper_sell(SANDBOX_NS, current_price, 'Manual paper liquidation')
-        return jsonify({'status': 'success', 'message': 'Sandbox position liquidated.'})
-    except Exception as e:
-        log_activity(f'Sandbox Manual Liquidation Error: {e}', namespace=SANDBOX_NS)
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+Thread(target=market_data.loop, daemon=True).start()
+Thread(target=trade_loop, args=(REAL_NS,), daemon=True).start()
+Thread(target=trade_loop, args=(SANDBOX_NS,), daemon=True).start()
 
 
 if __name__ == '__main__':

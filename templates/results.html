@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page_label }} Results</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <style>
+        body { background: #10151d; color: #f3f4f6; }
+        .panel { background: #18202a; border: 1px solid #2b3948; border-radius: 0.75rem; }
+        .stat { background: #121923; border: 1px solid #253243; border-radius: 0.75rem; padding: 0.9rem; }
+        .label { color: #94a3b8; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+        .value { font-size: 1.3rem; font-weight: 800; margin-top: 0.2rem; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .btn { background: #334155; color: white; border-radius: 0.6rem; padding: 0.7rem 1rem; font-weight: 800; text-transform: uppercase; font-size: 0.8rem; }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-6">
+    <div class="max-w-7xl mx-auto space-y-4">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+                <h1 class="text-3xl font-black tracking-tight">{{ page_label }} Results</h1>
+                <p class="text-sm text-gray-400 mono">Strategy outcomes and sandbox analysis metrics</p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <a href="{{ dashboard_href }}" class="btn">Dashboard</a>
+                <a href="{{ trades_href }}" class="btn">Trades</a>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div class="stat"><div class="label">Total Trades</div><div id="totalTrades" class="value mono">0</div></div>
+            <div class="stat"><div class="label">Win Rate</div><div id="winRate" class="value mono">0.00%</div></div>
+            <div class="stat"><div class="label">Average Win</div><div id="avgWin" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Average Loss</div><div id="avgLoss" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Profit Factor</div><div id="profitFactor" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Net PnL</div><div id="netPnl" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Max Drawdown</div><div id="maxDrawdown" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Average Hold Time</div><div id="avgHold" class="value mono">0s</div></div>
+            <div class="stat"><div class="label">Best Trade</div><div id="bestTrade" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Worst Trade</div><div id="worstTrade" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">PnL After Fees</div><div id="afterFees" class="value mono">0.0000</div></div>
+            <div class="stat"><div class="label">Cancelled Entries</div><div id="cancelledEntries" class="value mono">0</div></div>
+            <div class="stat"><div class="label">Time Stops</div><div id="timeStops" class="value mono">0</div></div>
+            <div class="stat"><div class="label">Emergency Exits</div><div id="emergencyExits" class="value mono">0</div></div>
+        </div>
+
+        <div class="panel p-4 overflow-x-auto">
+            <div class="label mb-3">Recent Trades</div>
+            <table class="w-full mono text-sm">
+                <thead>
+                    <tr>
+                        <th class="text-left py-2">ID</th>
+                        <th class="text-left py-2">Exit Reason</th>
+                        <th class="text-left py-2">Entry</th>
+                        <th class="text-left py-2">Exit</th>
+                        <th class="text-left py-2">Fees</th>
+                        <th class="text-left py-2">Net PnL</th>
+                        <th class="text-left py-2">Hold (s)</th>
+                    </tr>
+                </thead>
+                <tbody id="resultRows">
+                    <tr><td colspan="7" class="text-gray-400 py-3">Loading results...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const apiBase = '{{ api_base }}';
+        function fmt(value, digits = 4) { return Number(value || 0).toFixed(digits); }
+        function pct(value) { return `${fmt(value, 2)}%`; }
+        function holdText(seconds) { return `${Math.round(Number(seconds || 0))}s`; }
+
+        async function loadResults() {
+            const res = await fetch(`${apiBase}/results`);
+            const data = await res.json();
+            const summary = data.summary || {};
+            document.getElementById('totalTrades').textContent = summary.total_trades || 0;
+            document.getElementById('winRate').textContent = pct(summary.win_rate || 0);
+            document.getElementById('avgWin').textContent = fmt(summary.average_win || 0);
+            document.getElementById('avgLoss').textContent = fmt(summary.average_loss || 0);
+            document.getElementById('profitFactor').textContent = Number.isFinite(summary.profit_factor) ? fmt(summary.profit_factor || 0) : 'inf';
+            document.getElementById('netPnl').textContent = fmt(summary.net_pnl || 0);
+            document.getElementById('maxDrawdown').textContent = fmt(summary.max_drawdown || 0);
+            document.getElementById('avgHold').textContent = holdText(summary.average_hold_time_seconds || 0);
+            document.getElementById('bestTrade').textContent = fmt(summary.best_trade || 0);
+            document.getElementById('worstTrade').textContent = fmt(summary.worst_trade || 0);
+            document.getElementById('afterFees').textContent = fmt(summary.pnl_after_fees || 0);
+            document.getElementById('cancelledEntries').textContent = summary.cancelled_entries || 0;
+            document.getElementById('timeStops').textContent = summary.time_stops || 0;
+            document.getElementById('emergencyExits').textContent = summary.emergency_exits || 0;
+
+            const rows = document.getElementById('resultRows');
+            rows.innerHTML = '';
+            const trades = data.trades || [];
+            if (!trades.length) {
+                rows.innerHTML = '<tr><td colspan="7" class="text-gray-400 py-3">No completed trades yet.</td></tr>';
+                return;
+            }
+            trades.slice(0, 25).forEach((trade) => {
+                const row = document.createElement('tr');
+                const hold = Number(trade.exit_time || 0) - Number(trade.entry_time || 0);
+                const pnl = Number(trade.net_pnl || 0);
+                const color = pnl >= 0 ? 'style="color:#4ade80"' : 'style="color:#f87171"';
+                row.innerHTML = `
+                    <td class="py-2">${trade.id || ''}</td>
+                    <td class="py-2">${trade.exit_reason || ''}</td>
+                    <td class="py-2">${fmt(trade.filled_price, 5)}</td>
+                    <td class="py-2">${fmt(trade.exit_price, 5)}</td>
+                    <td class="py-2">${fmt(trade.fees_paid, 4)}</td>
+                    <td class="py-2" ${color}>${fmt(trade.net_pnl, 4)}</td>
+                    <td class="py-2">${holdText(hold)}</td>
+                `;
+                rows.appendChild(row);
+            });
+        }
+
+        loadResults();
+        setInterval(loadResults, 5000);
+    </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 Flask
-python-binance
+hyperliquid-python-sdk
+eth-account
 psycopg2-binary
 requests
 gunicorn
