@@ -59,7 +59,6 @@ MARKET_POLL_INTERVAL = 1.0
 TRADING_LOOP_INTERVAL = 1.0
 MARKET_HISTORY_SECONDS = 3900
 MARKET_STALE_AFTER_SECONDS = 20.0
-MARKET_REST_RECOVERY_INTERVAL_SECONDS = 5.0
 HYPERLIQUID_WS_URL = 'wss://api.hyperliquid.xyz/ws'
 RESULTS_TRADE_LIMIT = 500
 TRADE_LOG_LIMIT = 500
@@ -363,10 +362,8 @@ class MarketDataStore:
         self.loop_thread = None
         self.last_message_at = 0.0
         self.last_rest_snapshot_at = 0.0
-        self.last_rest_recovery_attempt_at = 0.0
         self.connected_at = 0.0
         self.reconnect_count = 0
-        self.rest_recovery_count = 0
         self.last_open_at = 0.0
         self.last_close_at = 0.0
         self.last_close_code = ''
@@ -414,31 +411,30 @@ class MarketDataStore:
         loop_thread.start()
         return True
 
-    def maybe_refresh_from_rest(self):
-        now = time.time()
+    def _record_ws_callback_error(self, exc, context, ws_app=None):
+        message = f'Hyperliquid websocket {context} failed: {exc}'
         with self.lock:
-            ws_thread_alive = bool(self.ws_thread and self.ws_thread.is_alive())
-            loop_thread_alive = bool(self.loop_thread and self.loop_thread.is_alive())
-            last_message_at = self.last_message_at
-            last_attempt = self.last_rest_recovery_attempt_at
-            if last_attempt and (now - last_attempt) < MARKET_REST_RECOVERY_INTERVAL_SECONDS:
-                return False
-            needs_refresh = (not last_message_at) or ((now - last_message_at) > MARKET_STALE_AFTER_SECONDS)
-            if not needs_refresh and ws_thread_alive and loop_thread_alive:
-                return False
-            self.last_rest_recovery_attempt_at = now
+            self.status = 'ERROR'
+            self.error = message
+            self.last_ws_error = message
+        if ws_app is not None:
+            try:
+                ws_app.close()
+            except Exception:
+                pass
+
+    def _run_ws_forever(self):
+        ws_app = self.ws_app
+        if ws_app is None:
+            return
         try:
-            snapshot_book = self.ensure_rest_client().l2_snapshot(MARKET_COIN)
-            snapshot = self._build_snapshot(snapshot_book, source='rest_recovery')
-            self._record_snapshot(snapshot, websocket_event=False)
-            with self.lock:
-                self.rest_recovery_count += 1
-            return True
+            ws_app.run_forever(ping_interval=20, ping_timeout=10)
         except Exception as exc:
-            with self.lock:
-                self.error = f'Hyperliquid REST recovery failed: {exc}'
-                self.last_loop_error = str(exc)
-            return False
+            self._record_ws_callback_error(exc, 'run_forever', ws_app)
+            return
+        with self.lock:
+            if self.ws_app is ws_app and not self.last_close_at and not self.last_ws_error:
+                self.last_ws_error = 'Hyperliquid websocket run_forever exited without close callback.'
 
     def _build_snapshot(self, book_data, source):
         levels = book_data.get('levels') or [[], []]
@@ -496,29 +492,35 @@ class MarketDataStore:
         self._record_snapshot(snapshot, websocket_event=True)
 
     def _on_ws_open(self, ws_app):
-        with self.lock:
-            self.status = 'SUBSCRIBING'
-            self.error = ''
-            self.connected_at = time.time()
-            self.last_open_at = self.connected_at
-        ws_app.send(json.dumps({'method': 'subscribe', 'subscription': {'type': 'l2Book', 'coin': MARKET_COIN}}))
+        try:
+            with self.lock:
+                self.status = 'SUBSCRIBING'
+                self.error = ''
+                self.connected_at = time.time()
+                self.last_open_at = self.connected_at
+            ws_app.send(json.dumps({'method': 'subscribe', 'subscription': {'type': 'l2Book', 'coin': MARKET_COIN}}))
+        except Exception as exc:
+            self._record_ws_callback_error(exc, 'open callback', ws_app)
 
     def _on_ws_message(self, _ws_app, raw_message):
-        if raw_message == 'Websocket connection established.':
-            return
         try:
+            if raw_message == 'Websocket connection established.':
+                return
             ws_msg = json.loads(raw_message)
         except Exception:
             return
-        if ws_msg.get('channel') == 'pong':
-            return
-        if ws_msg.get('channel') == 'subscriptionResponse':
-            with self.lock:
-                self.status = 'SUBSCRIBED'
-            return
-        if ws_msg.get('channel') != 'l2Book':
-            return
-        self.on_book_message(ws_msg)
+        try:
+            if ws_msg.get('channel') == 'pong':
+                return
+            if ws_msg.get('channel') == 'subscriptionResponse':
+                with self.lock:
+                    self.status = 'SUBSCRIBED'
+                return
+            if ws_msg.get('channel') != 'l2Book':
+                return
+            self.on_book_message(ws_msg)
+        except Exception as exc:
+            self._record_ws_callback_error(exc, 'message handler', _ws_app)
 
     def _on_ws_error(self, _ws_app, error):
         with self.lock:
@@ -547,6 +549,10 @@ class MarketDataStore:
             self.last_message_at = 0.0
             self.last_rest_snapshot_at = 0.0
             self.connected_at = 0.0
+            self.last_close_at = 0.0
+            self.last_close_code = ''
+            self.last_close_reason = ''
+            self.last_ws_error = ''
             self.reconnect_count += 1
         snapshot_book = self.ensure_rest_client().l2_snapshot(MARKET_COIN)
         self._record_snapshot(self._build_snapshot(snapshot_book, source='rest_seed'), websocket_event=False)
@@ -558,7 +564,7 @@ class MarketDataStore:
             on_close=self._on_ws_close,
         )
         self.ws_thread = Thread(
-            target=lambda: self.ws_app.run_forever(ping_interval=20, ping_timeout=10),
+            target=self._run_ws_forever,
             daemon=True,
         )
         self.ws_thread.start()
@@ -597,7 +603,6 @@ class MarketDataStore:
 
     def get_snapshot(self):
         self.ensure_running()
-        self.maybe_refresh_from_rest()
         with self.lock:
             snapshot = dict(self.snapshot)
             history = list(self.history)
@@ -630,10 +635,8 @@ class MarketDataStore:
                 'error': self.error,
                 'last_message_at': self.last_message_at,
                 'last_rest_snapshot_at': self.last_rest_snapshot_at,
-                'last_rest_recovery_attempt_at': self.last_rest_recovery_attempt_at,
                 'connected_at': self.connected_at,
                 'reconnect_count': self.reconnect_count,
-                'rest_recovery_count': self.rest_recovery_count,
                 'last_open_at': self.last_open_at,
                 'last_close_at': self.last_close_at,
                 'last_close_code': self.last_close_code,
@@ -1809,7 +1812,6 @@ def build_health_payload(namespace):
         'market_loop_alive': ws_diag['loop_thread_alive'],
         'ws_thread_alive': ws_diag['ws_thread_alive'],
         'ws_reconnect_count': ws_diag['reconnect_count'],
-        'rest_recovery_count': ws_diag['rest_recovery_count'],
         'ws_last_open_at': ws_diag['last_open_at'],
         'ws_last_message_at': ws_diag['last_message_at'],
         'ws_last_close_at': ws_diag['last_close_at'],
@@ -1899,7 +1901,6 @@ def build_state_payload(namespace):
             'status': ws_diag['status'],
             'error': ws_diag['error'],
             'reconnect_count': ws_diag['reconnect_count'],
-            'rest_recovery_count': ws_diag['rest_recovery_count'],
             'ws_thread_alive': ws_diag['ws_thread_alive'],
             'loop_thread_alive': ws_diag['loop_thread_alive'],
             'last_open_at': ws_diag['last_open_at'],
