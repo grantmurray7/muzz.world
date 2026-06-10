@@ -214,6 +214,12 @@
             white-space: nowrap;
         }
 
+        .table-compact th,
+        .table-compact td {
+            padding: 6px 8px;
+            line-height: 1.2;
+        }
+
         .table tbody tr:hover { background: var(--panel-soft); }
         .table td.num,
         .table th.num { text-align: right; }
@@ -427,11 +433,11 @@
                         <span id="hotPerpsStatus" class="pill">Warming Up</span>
                     </div>
                     <div class="section-body table-wrap">
-                        <table class="table mono">
+                        <table class="table table-compact mono">
                             <thead>
                                 <tr>
                                     <th>#</th>
-                                    <th>Coin</th>
+                                    <th>Perp</th>
                                     <th class="num">Score</th>
                                     <th>Basis</th>
                                     <th class="num">1m</th>
@@ -459,7 +465,7 @@
                         <table class="table mono">
                             <thead>
                                 <tr>
-                                    <th>Coin</th>
+                                    <th>Perp</th>
                                     <th>Side</th>
                                     <th class="num">Entry</th>
                                     <th class="num">Size</th>
@@ -484,12 +490,12 @@
                     </div>
                     <span id="tradeCountBadge" class="pill">0 Trades</span>
                 </div>
-                <div class="section-body table-wrap">
-                    <table class="table mono">
+                    <div class="section-body table-wrap">
+                    <table class="table table-compact mono">
                         <thead>
                             <tr>
                                 <th>Time</th>
-                                <th>Coin</th>
+                                <th>Perp</th>
                                 <th>Exit</th>
                                 <th class="num">Size</th>
                                 <th class="num">Entry</th>
