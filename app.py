@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import time
 import uuid
 from collections import deque
@@ -1002,6 +1003,87 @@ def format_timestamp(ts):
     if not ts:
         return ''
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+
+FX_CODE_TO_NAME = {
+    'AUD': 'Australian dollar',
+    'CAD': 'Canadian dollar',
+    'CHF': 'Swiss franc',
+    'EUR': 'Euro',
+    'GBP': 'British pound',
+    'JPY': 'Japanese yen',
+    'NZD': 'New Zealand dollar',
+    'USD': 'US dollar',
+}
+
+KNOWN_PERP_METADATA = {
+    'SPX': ('Equity Index', 'S&P 500 index'),
+    'NDX': ('Equity Index', 'Nasdaq 100 index'),
+    'DJI': ('Equity Index', 'Dow Jones Industrial Average'),
+    'VIX': ('Volatility Index', 'Cboe Volatility Index'),
+    'XAU': ('Commodity', 'Gold'),
+    'XAG': ('Commodity', 'Silver'),
+    'WTI': ('Commodity', 'WTI crude oil'),
+    'BRENT': ('Commodity', 'Brent crude oil'),
+    'NATGAS': ('Commodity', 'Natural gas'),
+    'COPPER': ('Commodity', 'Copper'),
+}
+
+
+def infer_perp_metadata(coin, asset=None):
+    asset = asset or {}
+    raw_category = (
+        asset.get('category')
+        or asset.get('type')
+        or asset.get('sector')
+        or asset.get('group')
+        or asset.get('tag')
+        or ''
+    )
+    raw_description = (
+        asset.get('description')
+        or asset.get('displayName')
+        or asset.get('fullName')
+        or asset.get('longName')
+        or ''
+    )
+    if raw_category or raw_description:
+        return {
+            'category': raw_category or 'Perp',
+            'description': raw_description or f'{coin} perp',
+        }
+
+    symbol = (coin or '').upper()
+    if symbol in KNOWN_PERP_METADATA:
+        category, description = KNOWN_PERP_METADATA[symbol]
+        return {'category': category, 'description': description}
+
+    if re.fullmatch(r'[A-Z]{6}', symbol):
+        base = symbol[:3]
+        quote = symbol[3:]
+        if base in FX_CODE_TO_NAME and quote in FX_CODE_TO_NAME:
+            return {
+                'category': 'FX',
+                'description': f'{FX_CODE_TO_NAME[base]} / {FX_CODE_TO_NAME[quote]}',
+            }
+
+    if re.fullmatch(r'US\d{1,2}Y', symbol):
+        years = symbol[2:-1]
+        return {
+            'category': 'Rates',
+            'description': f'US {years}-year Treasury yield',
+        }
+
+    if symbol.startswith('k') and len(symbol) > 1:
+        return {
+            'category': 'Crypto',
+            'description': f'{symbol[1:]} scaled crypto perp',
+        }
+
+    return {
+        'category': 'Crypto',
+        'description': f'{symbol} crypto perp',
+    }
 
 
 def current_day_key():
