@@ -52,6 +52,7 @@
                 <thead>
                     <tr>
                         <th class="text-left py-2">ID</th>
+                        <th class="text-left py-2">Coin</th>
                         <th class="text-left py-2">Exit Reason</th>
                         <th class="text-left py-2">Entry</th>
                         <th class="text-left py-2">Exit</th>
@@ -61,7 +62,7 @@
                     </tr>
                 </thead>
                 <tbody id="resultRows">
-                    <tr><td colspan="7" class="text-gray-400 py-3">Loading results...</td></tr>
+                    <tr><td colspan="8" class="text-gray-400 py-3">Loading results...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -96,7 +97,7 @@
             rows.innerHTML = '';
             const trades = data.trades || [];
             if (!trades.length) {
-                rows.innerHTML = '<tr><td colspan="7" class="text-gray-400 py-3">No completed trades yet.</td></tr>';
+                rows.innerHTML = '<tr><td colspan="8" class="text-gray-400 py-3">No completed trades yet.</td></tr>';
                 return;
             }
             trades.slice(0, 25).forEach((trade) => {
@@ -106,6 +107,7 @@
                 const color = pnl >= 0 ? 'style="color:#4ade80"' : 'style="color:#f87171"';
                 row.innerHTML = `
                     <td class="py-2">${trade.id || ''}</td>
+                    <td class="py-2">${trade.coin || 'N/A'}</td>
                     <td class="py-2">${trade.exit_reason || ''}</td>
                     <td class="py-2">${fmt(trade.filled_price, 5)}</td>
                     <td class="py-2">${fmt(trade.exit_price, 5)}</td>

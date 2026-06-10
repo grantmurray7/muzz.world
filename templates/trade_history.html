@@ -36,6 +36,7 @@
                     <tr>
                         <th>ID</th>
                         <th>Timestamp</th>
+                        <th>Coin</th>
                         <th>Exit Reason</th>
                         <th>Maker/Taker</th>
                         <th>Size</th>
@@ -47,7 +48,7 @@
                     </tr>
                 </thead>
                 <tbody id="tradeRows">
-                    <tr><td colspan="10" class="text-gray-400">Loading trades...</td></tr>
+                    <tr><td colspan="11" class="text-gray-400">Loading trades...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -65,7 +66,7 @@
             const rows = document.getElementById('tradeRows');
             rows.innerHTML = '';
             if (!data.trades || data.trades.length === 0) {
-                rows.innerHTML = '<tr><td colspan="10" class="text-gray-400">No completed trades yet.</td></tr>';
+                rows.innerHTML = '<tr><td colspan="11" class="text-gray-400">No completed trades yet.</td></tr>';
                 return;
             }
             data.trades.forEach((trade) => {
@@ -75,6 +76,7 @@
                 row.innerHTML = `
                     <td>${trade.id || ''}</td>
                     <td>${trade.timestamp || ''}</td>
+                    <td>${trade.coin || 'N/A'}</td>
                     <td>${trade.exit_reason || ''}</td>
                     <td>${trade.maker_or_taker || ''}</td>
                     <td>${fmt(trade.size, 4)}</td>

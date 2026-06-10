@@ -237,6 +237,23 @@
             word-break: break-word;
         }
 
+        .progress-shell {
+            width: 140px;
+            height: 8px;
+            border-radius: 999px;
+            background: #e4eaf1;
+            overflow: hidden;
+            margin-left: auto;
+        }
+
+        .progress-bar {
+            height: 100%;
+            border-radius: 999px;
+        }
+
+        .progress-bar.positive { background: var(--success); }
+        .progress-bar.negative { background: var(--danger); }
+
         .empty-state {
             padding: 18px;
             border: 1px dashed var(--border);
@@ -357,7 +374,7 @@
                 <button class="btn btn-primary" onclick="startBot()">Start</button>
                 <button class="btn" onclick="pauseBot()">Pause</button>
                 <button class="btn btn-danger" onclick="killBot()">Kill</button>
-                <button class="btn" onclick="manualClose()">Close Position</button>
+                <button class="btn" onclick="manualClose()">Close All</button>
                 {% if page_label == 'SANDBOX' %}
                 <button class="btn" onclick="resetSandbox()">Reset Sandbox</button>
                 {% endif %}
@@ -389,9 +406,9 @@
                     <div id="pnlSub" class="metric-sub mono">Total 0.0000</div>
                 </div>
                 <div class="card metric-card">
-                    <div class="eyebrow">Active Position</div>
-                    <div id="positionHeadline" class="metric-value mono">None</div>
-                    <div id="positionSub" class="metric-sub mono">No open position</div>
+                    <div class="eyebrow">Open Positions</div>
+                    <div id="positionHeadline" class="metric-value mono">0</div>
+                    <div id="positionSub" class="metric-sub mono">Live PnL 0.0000</div>
                 </div>
                 <div class="card metric-card">
                     <div class="eyebrow">Bot + Feed</div>
@@ -434,12 +451,27 @@
                     <div class="section-head">
                         <div>
                             <div class="section-kicker">Execution</div>
-                            <h2 class="section-title">Active Position</h2>
+                            <h2 class="section-title">Open Positions</h2>
                         </div>
                         <span id="environmentBadge" class="pill">{{ page_label }}</span>
                     </div>
-                    <div class="section-body">
-                        <div id="positionCard" class="empty-state">No active position.</div>
+                    <div class="section-body table-wrap">
+                        <table class="table mono">
+                            <thead>
+                                <tr>
+                                    <th>Coin</th>
+                                    <th>Side</th>
+                                    <th class="num">Entry</th>
+                                    <th class="num">Size</th>
+                                    <th class="num">PnL</th>
+                                    <th class="num">PnL %</th>
+                                    <th class="num">Progress</th>
+                                </tr>
+                            </thead>
+                            <tbody id="positionsBody">
+                                <tr><td colspan="7" class="table-empty">No active positions.</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -482,6 +514,7 @@
                             <div class="config-list">
                                 <div class="config-row"><div class="field-label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Max Open Positions</div><input id="cfg_max_open_positions" type="number" step="1"></div>
                                 <div class="config-row"><div class="field-label">Daily Loss Limit</div><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Max Trades / Hour</div><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
                                 <div class="config-row"><div class="field-label">Consecutive Loss Limit</div><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
@@ -543,7 +576,7 @@
         const apiBase = '{{ api_base }}';
         const isReal = '{{ page_label }}' === 'REAL';
         const configFields = [
-            'trade_notional_usdc', 'max_notional_usdc', 'daily_loss_limit_usdc', 'max_trades_per_hour',
+            'trade_notional_usdc', 'max_notional_usdc', 'max_open_positions', 'daily_loss_limit_usdc', 'max_trades_per_hour',
             'consecutive_loss_limit', 'leverage', 'maker_fee_pct', 'taker_fee_pct', 'take_profit_pct',
             'stop_loss_pct', 'time_stop_seconds', 'emergency_window_seconds', 'emergency_exit_drop_pct',
             'entry_timeout_seconds', 'entry_cooldown_seconds', 'cooldown_after_loss_seconds',
@@ -624,32 +657,36 @@
             `).join('');
         }
 
-        function renderPosition(position, targets) {
-            const card = document.getElementById('positionCard');
-            if (!position || !position.active) {
-                card.className = 'empty-state';
-                card.innerHTML = 'No active position.';
-                setText('positionHeadline', 'None');
-                setText('positionSub', 'No open position');
+        function renderPositions(positions, portfolio) {
+            const body = document.getElementById('positionsBody');
+            const rows = positions || [];
+            const count = rows.length;
+            setText('positionHeadline', String(count));
+            setText('positionSub', `Live PnL ${fmt((portfolio || {}).total_live_pnl, 4)} | Slots ${(portfolio || {}).slots_used || 0}/${(portfolio || {}).max_open_positions || 0}`);
+            if (!count) {
+                body.innerHTML = '<tr><td colspan=\"7\" class=\"table-empty\">No active positions.</td></tr>';
                 return;
             }
-            setText('positionHeadline', `${position.coin || 'HYPE'} ${position.side || 'LONG'}`);
-            setText('positionSub', `${fmt(position.size, 4)} units | ${position.seconds_open || 0}s open`);
-            card.className = '';
-            card.innerHTML = `
-                <div class="position-grid mono">
-                    <div class="field-label">Coin</div><div class="position-value">${position.coin || 'HYPE'}</div>
-                    <div class="field-label">Side</div><div class="position-value">${position.side || 'LONG'}</div>
-                    <div class="field-label">Size</div><div class="position-value">${fmt(position.size, 4)}</div>
-                    <div class="field-label">Entry</div><div class="position-value">${fmt(position.entry_price, 5)}</div>
-                    <div class="field-label">Current PnL</div><div class="position-value ${valueClass(position.gross_unrealized_pnl)}">${fmt(position.gross_unrealized_pnl, 4)} USDC</div>
-                    <div class="field-label">PnL %</div><div class="position-value ${valueClass(position.gross_unrealized_pnl_pct)}">${fmt(position.gross_unrealized_pnl_pct, 4)}%</div>
-                    <div class="field-label">Entry Type</div><div class="position-value">${position.entry_maker_or_taker || 'maker'}</div>
-                    <div class="field-label">Take Profit</div><div class="position-value">${targets ? fmt(targets.take_profit_price, 5) : 'N/A'}</div>
-                    <div class="field-label">Stop Loss</div><div class="position-value">${targets ? fmt(targets.stop_loss_price, 5) : 'N/A'}</div>
-                    <div class="field-label">Time Stop</div><div class="position-value">${targets ? (targets.time_stop_seconds || 0) : 0}s</div>
-                </div>
-            `;
+            body.innerHTML = rows.map((position) => {
+                const progress = Number(position.progress_pct || 0);
+                const width = Math.min(100, Math.abs(progress));
+                const progressClass = progress >= 0 ? 'positive' : 'negative';
+                return `
+                    <tr>
+                        <td>${position.coin || 'N/A'}</td>
+                        <td>${position.side || 'LONG'}</td>
+                        <td class="num">${fmt(position.entry_price, 5)}</td>
+                        <td class="num">${fmt(position.size, 4)}</td>
+                        <td class="num ${valueClass(position.gross_unrealized_pnl)}">${fmt(position.gross_unrealized_pnl, 4)}</td>
+                        <td class="num ${valueClass(position.gross_unrealized_pnl_pct)}">${fmt(position.gross_unrealized_pnl_pct, 4)}%</td>
+                        <td class="num">
+                            <div class="progress-shell" title="Progress to take-profit or stop-loss">
+                                <div class="progress-bar ${progressClass}" style="width:${width}%;"></div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         function renderTrades(trades) {
@@ -663,7 +700,7 @@
             body.innerHTML = rows.map((trade) => `
                 <tr>
                     <td>${trade.timestamp || 'N/A'}</td>
-                    <td>${trade.coin || 'HYPE'}</td>
+                    <td>${trade.coin || 'N/A'}</td>
                     <td>${trade.exit_reason || 'N/A'}</td>
                     <td class="num">${fmt(trade.size, 4)}</td>
                     <td class="num">${fmt(trade.filled_price, 5)}</td>
@@ -684,13 +721,13 @@
                 setText('modeTitle', `${data.environment} Dashboard`);
                 setText('environmentBadge', data.environment);
                 setText('portfolioValue', fmt(balances.equity, 4));
-                setText('portfolioSub', `Available ${fmt(balances.available, 4)}`);
+                setText('portfolioSub', `Available ${fmt(balances.available, 4)} | Live ${fmt((data.portfolio || {}).total_live_pnl, 4)}`);
                 setText('dailyPnlTop', fmt(stats.daily_pnl, 4));
                 setText('pnlSub', `Total ${fmt(stats.total_pnl, 4)}`);
                 document.getElementById('dailyPnlTop').className = `metric-value mono ${valueClass(stats.daily_pnl)}`.trim();
                 setText('botFeedHeadline', data.bot_state || 'N/A');
-                setText('botFeedSub', `${String(market.market_data_source || 'none').toUpperCase()} | ${fmt(market.market_data_age, 2)}s age`);
-                renderPosition(data.active_position, data.position_targets || {});
+                setText('botFeedSub', `${String(market.market_data_source || 'none').toUpperCase()} | ${fmt(market.market_data_age, 2)}s age | ${market.coin || 'N/A'}`);
+                renderPositions(data.positions || [], data.portfolio || {});
                 renderHotPerps(data.hot_perps || [], data.hot_perps_error || '');
                 document.getElementById('logBox').value = (data.logs || []).join('\n');
                 applyConfig(data.config || {});
