@@ -4,10 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>muzz.world - login</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&display=swap" rel="stylesheet">
     <style>
+        @font-face {
+            font-family: 'Colleged';
+            src: url("{{ url_for('static', filename='fonts/Colleged.ttf') }}") format('truetype');
+            font-weight: normal;
+            font-style: normal;
+        }
         :root {
             --accent-pink: rgb(237, 125, 175);
             --page: #0b0d14;
@@ -80,7 +83,7 @@
             position: relative;
             z-index: 2;
             display: block;
-            font-family: 'Luckiest Guy', cursive;
+            font-family: 'Colleged', sans-serif;
             font-size: clamp(30px, 5.8vw, 46px);
             line-height: 0.92;
             letter-spacing: 0;
