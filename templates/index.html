@@ -481,6 +481,7 @@
                                     <th>Perp</th>
                                     <th>Side</th>
                                     <th class="num">Entry</th>
+                                    <th class="num">Current</th>
                                     <th class="num">Size</th>
                                     <th class="num">PnL</th>
                                     <th class="num">PnL %</th>
@@ -488,7 +489,7 @@
                                 </tr>
                             </thead>
                             <tbody id="positionsBody">
-                                <tr><td colspan="7" class="table-empty">No active positions.</td></tr>
+                                <tr><td colspan="8" class="table-empty">No active positions.</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -709,7 +710,7 @@
             setText('positionHeadline', String(count));
             setText('positionSub', `Live PnL ${fmt((portfolio || {}).total_live_pnl, 4)} | Slots ${(portfolio || {}).slots_used || 0}/${(portfolio || {}).max_open_positions || 0}`);
             if (!count) {
-                body.innerHTML = '<tr><td colspan=\"7\" class=\"table-empty\">No active positions.</td></tr>';
+                body.innerHTML = '<tr><td colspan=\"8\" class=\"table-empty\">No active positions.</td></tr>';
                 return;
             }
             body.innerHTML = rows.map((position) => {
@@ -721,6 +722,7 @@
                         <td>${position.coin || 'N/A'}</td>
                         <td>${position.side || 'LONG'}</td>
                         <td class="num">${fmt(position.entry_price, 5)}</td>
+                        <td class="num">${fmt(position.current_price, 5)}</td>
                         <td class="num">${fmt(position.size, 4)}</td>
                         <td class="num ${valueClass(position.gross_unrealized_pnl)}">${fmt(position.gross_unrealized_pnl, 4)}</td>
                         <td class="num ${valueClass(position.gross_unrealized_pnl_pct)}">${fmt(position.gross_unrealized_pnl_pct, 4)}%</td>

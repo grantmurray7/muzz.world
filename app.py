@@ -1517,6 +1517,7 @@ def compute_position_view(position, mid):
         return {'active': False}
     size = float(position['size'])
     entry = float(position['filled_price'])
+    current_price = float(mid)
     gross = (mid - entry) * size
     pnl_pct = pct_change(entry, mid)
     coin = position.get('coin') or MARKET_COIN
@@ -1526,6 +1527,7 @@ def compute_position_view(position, mid):
         'side': position.get('side', 'LONG'),
         'size': trim_float(size, 4),
         'entry_price': trim_float(entry, 6),
+        'current_price': trim_float(current_price, 6),
         'submitted_price': trim_float(position.get('submitted_price', entry), 6),
         'notional': trim_float(position.get('notional', size * entry), 4),
         'entry_time': position.get('entry_time'),
