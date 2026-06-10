@@ -162,8 +162,9 @@
         }
         .summary-grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 10px;
+            align-items: start;
         }
         .summary-card {
             background: var(--panel-soft);
@@ -334,13 +335,13 @@
             .dashboard {
                 grid-template-columns: 230px minmax(0, 1fr) 380px;
             }
-            .summary-grid {
-                grid-template-columns: 1fr;
-            }
         }
         @media (max-width: 1180px) {
             body { overflow: auto; }
             .dashboard {
+                grid-template-columns: 1fr;
+            }
+            .summary-grid {
                 grid-template-columns: 1fr;
             }
             .column { min-height: auto; }
