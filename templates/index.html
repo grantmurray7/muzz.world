@@ -454,6 +454,7 @@
                                     <th>Category</th>
                                     <th class="num">Score</th>
                                     <th>Basis</th>
+                                    <th class="num">30s</th>
                                     <th class="num">1m</th>
                                     <th class="num">5m</th>
                                     <th class="num">15m</th>
@@ -461,7 +462,7 @@
                                 </tr>
                             </thead>
                             <tbody id="hotPerpsBody">
-                                <tr><td colspan="10" class="table-empty">Building the market ranking...</td></tr>
+                                <tr><td colspan="11" class="table-empty">Building the market ranking...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -550,6 +551,7 @@
                                 <div class="config-row"><div class="field-label">Entry Timeout Seconds</div><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
                                 <div class="config-row"><div class="field-label">Entry Cooldown Sec</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
                                 <div class="config-row"><div class="field-label">Loss Cooldown Sec</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
+                                <div class="config-row"><div class="field-label">Return 30s Trigger %</div><input id="cfg_return_30s_threshold_pct" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
@@ -601,6 +603,7 @@
             'consecutive_loss_limit', 'leverage', 'maker_fee_pct', 'taker_fee_pct', 'take_profit_pct',
             'stop_loss_pct', 'time_stop_seconds', 'emergency_window_seconds', 'emergency_exit_drop_pct',
             'entry_timeout_seconds', 'entry_cooldown_seconds', 'cooldown_after_loss_seconds',
+            'return_30s_threshold_pct',
             'return_2m_threshold_pct', 'bounce_from_2m_low_threshold_pct', 'return_60m_min_pct',
             'spread_pct_max', 'book_imbalance_min', 'starting_balance_usdc',
             'maker_entry_slippage_pct', 'maker_exit_slippage_pct', 'taker_exit_slippage_pct'
@@ -725,7 +728,7 @@
             const body = document.getElementById('hotPerpsBody');
             const badge = document.getElementById('hotPerpsStatus');
             if (!items || !items.length) {
-                body.innerHTML = `<tr><td colspan="10" class="table-empty">${error || 'Ranking is warming up.'}</td></tr>`;
+                body.innerHTML = `<tr><td colspan="11" class="table-empty">${error || 'Ranking is warming up.'}</td></tr>`;
                 badge.textContent = error ? 'Error' : 'Warming Up';
                 return;
             }
@@ -738,6 +741,7 @@
                     <td>${item.category || '-'}</td>
                     <td class="num ${valueClass(item.score_pct)}">${fmt(item.score_pct, 4)}%</td>
                     <td>${item.score_basis}${item.score_basis_description ? ` <span class="subtle">(${item.score_basis_description})</span>` : ''}</td>
+                    <td class="num ${valueClass(item.return_30s)}">${fmt(item.return_30s, 4)}%</td>
                     <td class="num ${valueClass(item.return_1m)}">${fmt(item.return_1m, 4)}%</td>
                     <td class="num ${valueClass(item.return_5m)}">${fmt(item.return_5m, 4)}%</td>
                     <td class="num ${valueClass(item.return_15m)}">${fmt(item.return_15m, 4)}%</td>
