@@ -2562,23 +2562,27 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
         if metrics['return_60m'] <= float(config['return_60m_min_pct']):
             reasons.append(f"return_60m {metrics['return_60m']:.4f}% below minimum")
         checks.append({'name': 'return_60m above minimum', 'passed': metrics['return_60m'] > float(config['return_60m_min_pct'])})
-    if metrics['spread_pct'] > float(config['spread_pct_max']):
-        reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
-    checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
-    if metrics['book_imbalance'] < max(0.5, float(config['book_imbalance_min']) - 0.02):
-        reasons.append(f"book_imbalance {metrics['book_imbalance']:.4f} below min")
-    checks.append({'name': 'book imbalance healthy', 'passed': metrics['book_imbalance'] >= max(0.5, float(config['book_imbalance_min']) - 0.02)})
+    if namespace == SANDBOX_NS:
+        checks.append({'name': 'spread check relaxed in sandbox', 'passed': True})
+        checks.append({'name': 'book imbalance check relaxed in sandbox', 'passed': True})
+    else:
+        if metrics['spread_pct'] > float(config['spread_pct_max']):
+            reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
+        checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
+        if metrics['book_imbalance'] < max(0.5, float(config['book_imbalance_min']) - 0.02):
+            reasons.append(f"book_imbalance {metrics['book_imbalance']:.4f} below min")
+        checks.append({'name': 'book imbalance healthy', 'passed': metrics['book_imbalance'] >= max(0.5, float(config['book_imbalance_min']) - 0.02)})
     last_entry_at = read_float(stats.get('last_entry_fill_at'), 0.0)
     if int(config.get('entry_cooldown_seconds', 0)) > 0 and last_entry_at and (time.time() - last_entry_at) < int(config['entry_cooldown_seconds']):
         reasons.append('entry cooldown active')
-    if stats.get('daily_pnl', 0.0) <= -abs(float(config['daily_loss_limit_usdc'])):
+    if namespace != SANDBOX_NS and stats.get('daily_pnl', 0.0) <= -abs(float(config['daily_loss_limit_usdc'])):
         reasons.append('daily loss limit hit')
-    if int(stats.get('consecutive_losses', 0)) >= int(config['consecutive_loss_limit']):
+    if namespace != SANDBOX_NS and int(stats.get('consecutive_losses', 0)) >= int(config['consecutive_loss_limit']):
         reasons.append('consecutive loss limit hit')
     if int(config.get('max_trades_per_hour', 0)) > 0 and get_hourly_trade_count(namespace) >= int(config['max_trades_per_hour']):
         reasons.append('max trades per hour reached')
     last_loss_at = read_float(stats.get('last_loss_at'), 0.0)
-    if int(config.get('cooldown_after_loss_seconds', 0)) > 0 and last_loss_at and (time.time() - last_loss_at) < int(config['cooldown_after_loss_seconds']):
+    if namespace != SANDBOX_NS and int(config.get('cooldown_after_loss_seconds', 0)) > 0 and last_loss_at and (time.time() - last_loss_at) < int(config['cooldown_after_loss_seconds']):
         reasons.append('loss cooldown active')
     return len(reasons) == 0, build_rejection_reason(reasons), checks
 
@@ -2591,14 +2595,14 @@ def place_sandbox_entry_multi(coin, snapshot):
     if notional < 10.0:
         push_text_log(SANDBOX_NS, f'Sandbox entry blocked for {coin}: available balance below 10 USDC minimum.')
         return False
-    submitted_price = float(snapshot['best_bid'])
+    submitted_price = float(snapshot['best_ask'])
     size = notional / submitted_price
     order = {
         'coin': coin,
         'phase': 'entry',
         'side': 'buy',
-        'maker_or_taker': 'maker',
-        'order_type': 'limit',
+        'maker_or_taker': 'taker',
+        'order_type': 'marketable_limit',
         'submitted_price': submitted_price,
         'submitted_at': time.time(),
         'submitted_at_ms': int(time.time() * 1000),
@@ -2609,7 +2613,7 @@ def place_sandbox_entry_multi(coin, snapshot):
     }
     save_open_order_for_coin(SANDBOX_NS, coin, order)
     set_engine_status(SANDBOX_NS, f'ENTRY_ORDER_WORKING:{coin}')
-    push_text_log(SANDBOX_NS, f"Sandbox maker entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
+    push_text_log(SANDBOX_NS, f"Sandbox taker-style entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
     return True
 
 
@@ -2618,10 +2622,12 @@ def fill_sandbox_entry_multi(order, current_mid):
     config = get_config(SANDBOX_NS)
     balances = get_balances(SANDBOX_NS)
     submitted_price = float(order['submitted_price'])
-    filled_price = apply_slippage(submitted_price, config['maker_entry_slippage_pct'], 'buy')
+    maker_or_taker = order.get('maker_or_taker', 'maker')
+    entry_slippage_pct = config['taker_exit_slippage_pct'] if maker_or_taker == 'taker' else config['maker_entry_slippage_pct']
+    filled_price = apply_slippage(submitted_price, entry_slippage_pct, 'buy')
     size = float(order['size'])
     notional = size * filled_price
-    fee = apply_fee(notional, config['maker_fee_pct'])
+    fee = apply_fee(notional, config['taker_fee_pct'] if maker_or_taker == 'taker' else config['maker_fee_pct'])
     available = float(balances['available']) - notional - fee
     save_balances(SANDBOX_NS, {'available': available, 'equity': float(balances.get('equity', available))})
     position = {
@@ -2633,8 +2639,8 @@ def fill_sandbox_entry_multi(order, current_mid):
         'notional': notional,
         'entry_time': time.time(),
         'entry_fill_delay_seconds': time.time() - float(order['submitted_at']),
-        'entry_maker_or_taker': 'maker',
-        'entry_order_type': 'post_only_limit',
+        'entry_maker_or_taker': maker_or_taker,
+        'entry_order_type': order.get('order_type', 'post_only_limit'),
         'entry_fees_paid': fee,
         'highest_mid': current_mid,
         'lowest_mid': current_mid,
@@ -2650,7 +2656,7 @@ def fill_sandbox_entry_multi(order, current_mid):
     stats['last_entry_fill_at'] = time.time()
     save_stats(SANDBOX_NS, stats)
     set_engine_status(SANDBOX_NS, f'POSITION_OPEN:{coin}')
-    push_text_log(SANDBOX_NS, f"Sandbox entry filled for {coin} at {filled_price:.5f}. Fee {fee:.4f} USDC.")
+    push_text_log(SANDBOX_NS, f"Sandbox {maker_or_taker} entry filled for {coin} at {filled_price:.5f}. Fee {fee:.4f} USDC.")
 
 
 def cancel_sandbox_entry_multi(coin, reason):
@@ -2981,7 +2987,7 @@ def manage_open_orders(namespace):
             if order['phase'] == 'entry' and get_bot_state(SANDBOX_NS) != 'RUNNING':
                 cancel_sandbox_entry_multi(coin, 'bot no longer RUNNING')
                 continue
-            if order['phase'] == 'entry' and current_mid <= float(order['submitted_price']):
+            if order['phase'] == 'entry' and (order.get('maker_or_taker') == 'taker' or current_mid <= float(order['submitted_price'])):
                 fill_sandbox_entry_multi(order, current_mid)
                 continue
             if order['phase'] == 'exit' and current_mid >= float(order['submitted_price']):
