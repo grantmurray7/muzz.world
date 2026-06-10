@@ -259,20 +259,23 @@
             color: var(--muted);
             line-height: 1.3;
         }
-        .config-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px 10px;
+        .config-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
-        .field { min-width: 0; }
-        .field label {
-            display: block;
+        .config-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 120px;
+            gap: 10px;
+            align-items: center;
+        }
+        .config-row .field-label {
             font-size: 10px;
             font-weight: 700;
             color: var(--muted);
             text-transform: uppercase;
             letter-spacing: 0.06em;
-            margin-bottom: 4px;
         }
         input, select {
             width: 100%;
@@ -290,11 +293,6 @@
             margin-top: 8px;
             font-size: 11px;
             color: #5f6872;
-        }
-        .split-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 10px;
         }
         .client-meta {
             display: grid;
@@ -336,9 +334,7 @@
             .dashboard {
                 grid-template-columns: 230px minmax(0, 1fr) 380px;
             }
-            .summary-grid,
-            .split-grid,
-            .config-grid {
+            .summary-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -460,6 +456,30 @@
                             <div class="summary-row"><div class="summary-key">Equity</div><div id="equityBalance" class="summary-value">0.0000</div></div>
                         </div>
                     </div>
+                    <div class="summary-card">
+                        <h3>Market Feed</h3>
+                        <div class="summary-table mono">
+                            <div class="summary-row"><div class="summary-key">Status</div><div id="feedStatus" class="summary-value">N/A</div></div>
+                            <div class="summary-row"><div class="summary-key">Thread alive</div><div id="feedThreadAlive" class="summary-value">N/A</div></div>
+                            <div class="summary-row"><div class="summary-key">Reconnects</div><div id="feedReconnects" class="summary-value">0</div></div>
+                            <div class="summary-row"><div class="summary-key">Last open</div><div id="feedLastOpen" class="summary-value">N/A</div></div>
+                            <div class="summary-row"><div class="summary-key">Last message</div><div id="feedLastMessage" class="summary-value">N/A</div></div>
+                            <div class="summary-row"><div class="summary-key">Last close</div><div id="feedLastClose" class="summary-value">N/A</div></div>
+                            <div class="summary-row"><div class="summary-key">Close code</div><div id="feedCloseCode" class="summary-value">N/A</div></div>
+                            <div class="summary-row"><div class="summary-key">Last error</div><div id="feedLastError" class="summary-value">N/A</div></div>
+                        </div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Realtime State</h3>
+                        <div class="summary-table mono">
+                            <div class="summary-row"><div class="summary-key">Environment</div><div id="environmentSummary" class="summary-value">{{ page_label }}</div></div>
+                            <div class="summary-row"><div class="summary-key">Bot state</div><div id="botStateSummary" class="summary-value">PAUSED</div></div>
+                            <div class="summary-row"><div class="summary-key">Engine</div><div id="engineSummary" class="summary-value">Loading...</div></div>
+                            <div class="summary-row"><div class="summary-key">Source</div><div id="marketSourceSummary" class="summary-value">NONE</div></div>
+                            <div class="summary-row"><div class="summary-key">Age</div><div id="marketAgeSummary" class="summary-value">0.00s</div></div>
+                            <div class="summary-row"><div class="summary-key">Reconnects</div><div id="wsReconnectSummary" class="summary-value">0</div></div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="panel">
@@ -498,65 +518,39 @@
             </div>
 
             <div class="column">
-                <div class="split-grid">
-                    <div class="panel scrollable">
-                        <div class="panel-head">
-                            <h2 class="panel-title">Market Feed</h2>
-                        </div>
-                        <div class="panel-body compact">
-                            <div id="marketDiag" class="feed-block mono"></div>
-                        </div>
-                    </div>
-                    <div class="panel scrollable">
-                        <div class="panel-head">
-                            <h2 class="panel-title">Realtime State</h2>
-                        </div>
-                        <div class="panel-body compact">
-                            <div class="client-meta mono">
-                                <div class="meta-key">Environment</div><div id="environmentSummary" class="meta-value">{{ page_label }}</div>
-                                <div class="meta-key">Bot state</div><div id="botStateSummary" class="meta-value">PAUSED</div>
-                                <div class="meta-key">Engine</div><div id="engineSummary" class="meta-value">Loading...</div>
-                                <div class="meta-key">Source</div><div id="marketSourceSummary" class="meta-value">NONE</div>
-                                <div class="meta-key">Age</div><div id="marketAgeSummary" class="meta-value">0.00s</div>
-                                <div class="meta-key">Reconnects</div><div id="wsReconnectSummary" class="meta-value">0</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <div class="panel scrollable" style="flex:1 1 auto;">
                     <div class="panel-head">
                         <h2 class="panel-title">Environment Config</h2>
                         <button class="btn btn-primary" onclick="saveConfig()">Save Config</button>
                     </div>
                     <div class="panel-body compact">
-                        <div class="config-grid">
-                            <div class="field"><label>Trade Notional USDC</label><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
-                            <div class="field"><label>Max Notional USDC</label><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
-                            <div class="field"><label>Daily Loss Limit</label><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
-                            <div class="field"><label>Max Trades / Hour</label><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
-                            <div class="field"><label>Consecutive Loss Limit</label><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
-                            <div class="field"><label>Leverage</label><input id="cfg_leverage" type="number" step="0.1"></div>
-                            <div class="field"><label>Maker Fee %</label><input id="cfg_maker_fee_pct" type="number" step="0.001"></div>
-                            <div class="field"><label>Taker Fee %</label><input id="cfg_taker_fee_pct" type="number" step="0.001"></div>
-                            <div class="field"><label>Take Profit %</label><input id="cfg_take_profit_pct" type="number" step="0.01"></div>
-                            <div class="field"><label>Stop Loss %</label><input id="cfg_stop_loss_pct" type="number" step="0.01"></div>
-                            <div class="field"><label>Time Stop Seconds</label><input id="cfg_time_stop_seconds" type="number" step="1"></div>
-                            <div class="field"><label>Emergency Window Sec</label><input id="cfg_emergency_window_seconds" type="number" step="1"></div>
-                            <div class="field"><label>Emergency Drop %</label><input id="cfg_emergency_exit_drop_pct" type="number" step="0.01"></div>
-                            <div class="field"><label>Entry Timeout Seconds</label><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
-                            <div class="field"><label>Entry Cooldown Sec</label><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
-                            <div class="field"><label>Loss Cooldown Sec</label><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
-                            <div class="field"><label>Return 2m Threshold %</label><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
-                            <div class="field"><label>Bounce From 2m Low %</label><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
-                            <div class="field"><label>Return 60m Minimum %</label><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
-                            <div class="field"><label>Spread Max %</label><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
-                            <div class="field"><label>Book Imbalance Min</label><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
+                        <div class="config-list">
+                            <div class="config-row"><div class="field-label">Trade Notional USDC</div><input id="cfg_trade_notional_usdc" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Max Notional USDC</div><input id="cfg_max_notional_usdc" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Daily Loss Limit</div><input id="cfg_daily_loss_limit_usdc" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Max Trades / Hour</div><input id="cfg_max_trades_per_hour" type="number" step="1"></div>
+                            <div class="config-row"><div class="field-label">Consecutive Loss Limit</div><input id="cfg_consecutive_loss_limit" type="number" step="1"></div>
+                            <div class="config-row"><div class="field-label">Leverage</div><input id="cfg_leverage" type="number" step="0.1"></div>
+                            <div class="config-row"><div class="field-label">Maker Fee %</div><input id="cfg_maker_fee_pct" type="number" step="0.001"></div>
+                            <div class="config-row"><div class="field-label">Taker Fee %</div><input id="cfg_taker_fee_pct" type="number" step="0.001"></div>
+                            <div class="config-row"><div class="field-label">Take Profit %</div><input id="cfg_take_profit_pct" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Stop Loss %</div><input id="cfg_stop_loss_pct" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Time Stop Seconds</div><input id="cfg_time_stop_seconds" type="number" step="1"></div>
+                            <div class="config-row"><div class="field-label">Emergency Window Sec</div><input id="cfg_emergency_window_seconds" type="number" step="1"></div>
+                            <div class="config-row"><div class="field-label">Emergency Drop %</div><input id="cfg_emergency_exit_drop_pct" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Entry Timeout Seconds</div><input id="cfg_entry_timeout_seconds" type="number" step="1"></div>
+                            <div class="config-row"><div class="field-label">Entry Cooldown Sec</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
+                            <div class="config-row"><div class="field-label">Loss Cooldown Sec</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
+                            <div class="config-row"><div class="field-label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Spread Max %</div><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
+                            <div class="config-row"><div class="field-label">Book Imbalance Min</div><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
                             {% if page_label == 'SANDBOX' %}
-                            <div class="field"><label>Starting Balance USDC</label><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
-                            <div class="field"><label>Maker Entry Slippage %</label><input id="cfg_maker_entry_slippage_pct" type="number" step="0.001"></div>
-                            <div class="field"><label>Maker Exit Slippage %</label><input id="cfg_maker_exit_slippage_pct" type="number" step="0.001"></div>
-                            <div class="field"><label>Taker Exit Slippage %</label><input id="cfg_taker_exit_slippage_pct" type="number" step="0.001"></div>
+                            <div class="config-row"><div class="field-label">Starting Balance USDC</div><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
+                            <div class="config-row"><div class="field-label">Maker Entry Slippage %</div><input id="cfg_maker_entry_slippage_pct" type="number" step="0.001"></div>
+                            <div class="config-row"><div class="field-label">Maker Exit Slippage %</div><input id="cfg_maker_exit_slippage_pct" type="number" step="0.001"></div>
+                            <div class="config-row"><div class="field-label">Taker Exit Slippage %</div><input id="cfg_taker_exit_slippage_pct" type="number" step="0.001"></div>
                             {% endif %}
                         </div>
                         <div class="checkbox-row mono">
