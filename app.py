@@ -59,6 +59,9 @@ INSTANCE_ID = str(uuid.uuid4())[:8]
 SYSTEM_POWER_KEY = 'system_power'
 SYSTEM_POWER_ON = 'ON'
 SYSTEM_POWER_OFF = 'OFF'
+SIGNAL_LOG_DECLINED_INTERVAL_SECONDS = 5.0
+last_signal_log_at = {REAL_NS: 0.0, SANDBOX_NS: 0.0}
+sandbox_balance_cache = {'available': None, 'equity': None}
 
 MARKET_COIN = 'HYPE'
 MARKET_POLL_INTERVAL = 1.0
@@ -187,6 +190,8 @@ class PostgresStateStore:
                     SET value = EXCLUDED.value,
                         expires_at = EXCLUDED.expires_at,
                         updated_at = NOW()
+                    WHERE state_kv.value IS DISTINCT FROM EXCLUDED.value
+                       OR state_kv.expires_at IS DISTINCT FROM EXCLUDED.expires_at
                     ''',
                     (key, str(value), expires_at),
                 )
@@ -283,8 +288,7 @@ class PostgresStateStore:
             with conn.cursor() as cur:
                 self._maybe_migrate_list(cur, key)
                 cur.execute('INSERT INTO state_list_items (key, value) VALUES (%s, %s)', (key, str(value)))
-                cur.execute('SELECT COUNT(*) FROM state_list_items WHERE key = %s', (key,))
-                return int(cur.fetchone()[0])
+                return 0
 
     def ltrim(self, key, start, end):
         with self.connection() as conn:
@@ -313,6 +317,13 @@ class PostgresStateStore:
         with self.connection() as conn:
             with conn.cursor() as cur:
                 self._maybe_migrate_list(cur, key)
+                if start >= 0 and end >= start and end >= 0:
+                    limit = (end - start) + 1
+                    cur.execute(
+                        'SELECT value FROM state_list_items WHERE key = %s ORDER BY id DESC OFFSET %s LIMIT %s',
+                        (key, start, limit),
+                    )
+                    return [row[0] for row in cur.fetchall()]
                 cur.execute('SELECT COUNT(*) FROM state_list_items WHERE key = %s', (key,))
                 length = int(cur.fetchone()[0])
                 if length <= 0:
@@ -1429,7 +1440,10 @@ def reconcile_sandbox_balances(open_positions=None, total_live_pnl=None):
     else:
         equity = trim_float(max(float(get_balances(SANDBOX_NS).get('equity', available)), available), 6)
     balances = {'available': available, 'equity': equity}
+    if sandbox_balance_cache.get('available') == balances['available'] and sandbox_balance_cache.get('equity') == balances['equity']:
+        return balances
     save_balances(SANDBOX_NS, balances)
+    sandbox_balance_cache.update(balances)
     return balances
 
 
@@ -1502,6 +1516,7 @@ def load_action_logs(namespace):
 
 
 def record_signal(namespace, snapshot, metrics, passed, reason, checks):
+    now = time.time()
     payload = {
         'timestamp': iso_now(),
         'environment': namespace.upper(),
@@ -1523,7 +1538,14 @@ def record_signal(namespace, snapshot, metrics, passed, reason, checks):
         'reason_not_taken': reason,
         'checks': checks,
     }
-    push_json_log(namespace, 'signal_log', payload, SIGNAL_LOG_LIMIT)
+    should_log = bool(passed)
+    if not should_log:
+        last_at = float(last_signal_log_at.get(namespace, 0.0) or 0.0)
+        if (now - last_at) >= SIGNAL_LOG_DECLINED_INTERVAL_SECONDS:
+            should_log = True
+    if should_log:
+        push_json_log(namespace, 'signal_log', payload, SIGNAL_LOG_LIMIT)
+        last_signal_log_at[namespace] = now
     set_last_signal(namespace, payload)
     set_reason_not_taken(namespace, reason)
 
@@ -3279,8 +3301,21 @@ def manage_positions(namespace):
         if not market_metrics:
             continue
         current_mid = float(market_metrics['mid'])
+        prior_extremes = (
+            position.get('highest_mid'),
+            position.get('lowest_mid'),
+            position.get('max_favourable_excursion'),
+            position.get('max_adverse_excursion'),
+        )
         position = update_position_extremes(position, current_mid)
-        save_position_for_coin(namespace, coin, position)
+        next_extremes = (
+            position.get('highest_mid'),
+            position.get('lowest_mid'),
+            position.get('max_favourable_excursion'),
+            position.get('max_adverse_excursion'),
+        )
+        if next_extremes != prior_extremes:
+            save_position_for_coin(namespace, coin, position)
         total_positions += 1
         if get_bot_state(namespace) == 'KILLED':
             continue
