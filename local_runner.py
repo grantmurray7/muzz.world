@@ -679,6 +679,7 @@ class LocalSandboxBot:
             "max_favourable_excursion": 0.0,
             "max_adverse_excursion": 0.0,
             "last_hold_check_at": 0.0,
+            "extension_checks_completed": 0,
         }
         self.stats["last_entry_fill_at"] = time.time()
         self.log(f"{intended_side} entry filled for {coin} at {filled_price:.5f}. Fee {fee:.4f} USDC.")
@@ -756,6 +757,7 @@ class LocalSandboxBot:
                 self.exit_position(position, "TIME_STOP")
                 continue
             position["last_hold_check_at"] = time.time()
+            position["extension_checks_completed"] = int(position.get("extension_checks_completed", 0)) + 1
 
     def attempt_entries(self):
         if (time.time() - self.last_scan_at) < SCAN_INTERVAL_SECONDS:
@@ -873,29 +875,30 @@ def build_positions_table(bot, market):
     table.add_column("Side")
     table.add_column("Entry", justify="right")
     table.add_column("Current", justify="right")
-    table.add_column("Size", justify="right")
-    table.add_column("PnL", justify="right")
-    table.add_column("PnL %", justify="right")
-    table.add_column("Open", justify="right")
+    table.add_column("Gain %", justify="right")
+    table.add_column("Status")
     if not bot.positions:
-        table.add_row("-", "No active positions", "-", "-", "-", "-", "-", "-")
+        table.add_row("-", "No active positions", "-", "-", "-", "-")
         return table
     for coin, position in sorted(bot.positions.items()):
         metrics = market.get_metrics_for_coin(coin)
         current_mid = float(metrics["mid"]) if metrics else float(position["filled_price"])
         direction = 1.0 if position["side"] == "LONG" else -1.0
-        pnl = ((current_mid - float(position["filled_price"])) * float(position["size"])) * direction
         pnl_pct = pct_change(float(position["filled_price"]), current_mid) * direction
-        pnl_style = style_pct(pnl)
+        pnl_style = style_pct(pnl_pct)
+        seconds_open = int(time.time() - float(position["entry_time"]))
+        if seconds_open < 60:
+            status = "First 60s"
+        else:
+            extension_checks = int(position.get("extension_checks_completed", 0))
+            status = "10s review due" if extension_checks <= 0 else f"10s extension - {extension_checks}"
         table.add_row(
             coin,
             position["side"],
             f"{position['filled_price']:.5f}",
             f"{current_mid:.5f}",
-            f"{position['size']:.4f}",
-            f"{pnl_style}{pnl:,.4f}[/]",
             f"{pnl_style}{pnl_pct:,.4f}%[/]",
-            f"{int(time.time() - float(position['entry_time']))}s",
+            status,
         )
     return table
 
