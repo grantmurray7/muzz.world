@@ -136,9 +136,8 @@ def rolling_block_changes(history, total_window=BLOCK_WINDOW_SECONDS, step=BLOCK
         older_mid = nearest_value(history, start_seconds_ago, "mid")
         newer_seconds_ago = max(start_seconds_ago - step, 0)
         newer_mid = nearest_value(history, newer_seconds_ago, "mid")
-        if older_mid is None or newer_mid is None:
-            return []
-        changes.append({"label": f"-{start_seconds_ago}s", "pct": pct_change(older_mid, newer_mid)})
+        pct = None if older_mid is None or newer_mid is None else pct_change(older_mid, newer_mid)
+        changes.append({"label": f"-{start_seconds_ago}s", "pct": pct})
     latest_mid = nearest_value(history, 0, "mid")
     if latest_mid is None:
         return []
@@ -237,7 +236,7 @@ def compute_market_metrics(snapshot, history):
     acceleration_15s = return_15s - prior_15s_return if anchor_30s is not None and anchor_15s is not None else 0.0
     acceleration_30s = return_30s - (prior_90s_return / 3.0) if anchor_2m is not None and anchor_30s is not None else 0.0
     block_changes_5s = rolling_block_changes(history)
-    real_block_changes_5s = block_changes_5s[:-1] if block_changes_5s else []
+    real_block_changes_5s = [item for item in (block_changes_5s[:-1] if block_changes_5s else []) if item["pct"] is not None]
     latest_three_blocks = [item["pct"] for item in real_block_changes_5s[-3:]] if len(real_block_changes_5s) >= 3 else []
     latest_5s_block = float(real_block_changes_5s[-1]["pct"]) if real_block_changes_5s else 0.0
     latest_three_increasing = (
@@ -643,9 +642,6 @@ class MarketUniverse:
                 else None
             )
             block_changes = rolling_block_changes(history)
-            if primary_basis == "2m_accel" and len(block_changes) != len(BLOCK_COLUMN_LABELS):
-                warmup_waiting = True
-                continue
             if primary_basis == "2m_accel" and (
                 return_2m is None
                 or acceleration_30s is None
@@ -653,8 +649,10 @@ class MarketUniverse:
                 or acceleration_5s is None
             ):
                 warmup_waiting = True
+            real_block_changes = [item for item in block_changes[:-1] if item["pct"] is not None]
+            if not real_block_changes:
+                warmup_waiting = True
                 continue
-            real_block_changes = block_changes[:-1]
             latest_three_blocks = [item["pct"] for item in real_block_changes[-3:]] if len(real_block_changes) >= 3 else []
             latest_three_increasing = (
                 len(latest_three_blocks) == 3
@@ -684,7 +682,7 @@ class MarketUniverse:
                     "acceleration_5s": trim_float(acceleration_5s or 0.0, 4),
                     "acceleration_15s": trim_float(acceleration_15s or 0.0, 4),
                     "acceleration_30s": trim_float(acceleration_30s or 0.0, 4),
-                    "block_changes_5s": [trim_float(item["pct"], 4) for item in block_changes],
+                    "block_changes_5s": [None if item["pct"] is None else trim_float(item["pct"], 4) for item in block_changes],
                     "latest_three_blocks": [trim_float(value, 4) for value in latest_three_blocks],
                     "latest_three_increasing": latest_three_increasing,
                 }
@@ -788,9 +786,9 @@ class LocalSandboxBot:
             reasons.append("market data stale")
         if float(snapshot.get("mid", 0.0)) < float(self.config.min_price_usdc):
             reasons.append("price below minimum")
-        block_changes = metrics.get("block_changes_5s") or []
-        if len(block_changes) != len(BLOCK_COLUMN_LABELS):
-            reasons.append("waiting for rolling 2m block history")
+        real_block_changes = metrics.get("real_block_changes_5s") or []
+        if len(real_block_changes) < 3:
+            reasons.append("waiting for three real 5s blocks")
         latest_three_blocks = metrics.get("latest_three_blocks") or []
         if len(latest_three_blocks) < 3:
             reasons.append("latest 5s blocks unavailable")
@@ -1001,6 +999,8 @@ def style_pct(value):
 
 
 def render_block_pct(value):
+    if value is None:
+        return Text("-", style="dim")
     if value > 0:
         style = "green"
     elif value < 0:
