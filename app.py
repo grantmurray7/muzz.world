@@ -411,7 +411,7 @@ DEFAULT_CONFIGS = {
         'return_60m_min_pct': -1.00,
         'spread_pct_max': 0.025,
         'book_imbalance_min': 0.52,
-        'min_top5_depth_usdc': 0.0,
+        'min_top5_depth_usdc': 2000.0,
         'require_imbalance_improvement': True,
         'simulate_slippage': False,
     },
@@ -1923,6 +1923,13 @@ def evaluate_entry(namespace, snapshot, metrics):
     if metrics['spread_pct'] > config['spread_pct_max']:
         reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
     checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= config['spread_pct_max']})
+    bid_depth = float(snapshot.get('bid_depth_top5', 0.0) or 0.0)
+    ask_depth = float(snapshot.get('ask_depth_top5', 0.0) or 0.0)
+    depth_usdc = (bid_depth + ask_depth) * float(snapshot.get('mid', 0.0) or 0.0)
+    min_depth = float(config.get('min_top5_depth_usdc', 0.0))
+    if min_depth > 0 and depth_usdc < min_depth:
+        reasons.append(f"top5_depth {depth_usdc:.0f} USDC below minimum {min_depth:.0f}")
+    checks.append({'name': f'top5_depth >= {min_depth:.0f} USDC', 'passed': (min_depth <= 0) or (depth_usdc >= min_depth)})
     if metrics['book_imbalance'] < config['book_imbalance_min']:
         reasons.append(f"book_imbalance {metrics['book_imbalance']:.4f} below min")
     checks.append({'name': 'book_imbalance >= min', 'passed': metrics['book_imbalance'] >= config['book_imbalance_min']})
@@ -2801,27 +2808,45 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
     if float(snapshot.get('mid', 0.0)) < float(config.get('min_price_usdc', 0.0)):
         reasons.append(f"price {float(snapshot.get('mid', 0.0)):.6f} below minimum")
     if namespace == SANDBOX_NS:
-        thirty_second_threshold = float(config.get('return_30s_threshold_pct', 0.25))
-        if metrics['return_30s'] <= thirty_second_threshold:
-            reasons.append(f"return_30s {metrics['return_30s']:.4f}% below trigger")
-        checks.append({'name': f'return_30s > {thirty_second_threshold:.2f}%', 'passed': metrics['return_30s'] > thirty_second_threshold})
-    else:
-        if metrics['return_5m'] <= 0.25:
-            reasons.append(f"return_5m {metrics['return_5m']:.4f}% below momentum floor")
-        checks.append({'name': 'return_5m > 0.25%', 'passed': metrics['return_5m'] > 0.25})
-        if metrics['return_15m'] <= 0.40:
-            reasons.append(f"return_15m {metrics['return_15m']:.4f}% below momentum floor")
-        checks.append({'name': 'return_15m > 0.40%', 'passed': metrics['return_15m'] > 0.40})
-        if metrics['return_60m'] <= float(config['return_60m_min_pct']):
-            reasons.append(f"return_60m {metrics['return_60m']:.4f}% below minimum")
-        checks.append({'name': 'return_60m above minimum', 'passed': metrics['return_60m'] > float(config['return_60m_min_pct'])})
-    if namespace == SANDBOX_NS:
-        checks.append({'name': 'spread check relaxed in sandbox', 'passed': True})
-        checks.append({'name': 'book imbalance check relaxed in sandbox', 'passed': True})
-    else:
+        five_min_down = float(config.get('return_5m_down_threshold_pct', 0.40))
+        if metrics['return_5m'] >= -abs(five_min_down):
+            reasons.append(f"return_5m {metrics['return_5m']:.4f}% not below -{abs(five_min_down):.2f}%")
+        checks.append({'name': f'return_5m <= -{abs(five_min_down):.2f}%', 'passed': metrics['return_5m'] <= -abs(five_min_down)})
+        if metrics.get('return_30s', 0.0) <= 0.0:
+            reasons.append(f"return_30s {metrics.get('return_30s', 0.0):.4f}% not stabilising")
+        checks.append({'name': 'return_30s > 0', 'passed': metrics.get('return_30s', 0.0) > 0.0})
         if metrics['spread_pct'] > float(config['spread_pct_max']):
             reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
         checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
+        bid_depth = float(snapshot.get('bid_depth_top5', 0.0) or 0.0)
+        ask_depth = float(snapshot.get('ask_depth_top5', 0.0) or 0.0)
+        depth_usdc = (bid_depth + ask_depth) * float(snapshot.get('mid', 0.0) or 0.0)
+        min_depth = float(config.get('min_top5_depth_usdc', 0.0))
+        if min_depth > 0 and depth_usdc < min_depth:
+            reasons.append(f"top5_depth {depth_usdc:.0f} USDC below minimum {min_depth:.0f}")
+        checks.append({'name': f'top5_depth >= {min_depth:.0f} USDC', 'passed': (min_depth <= 0) or (depth_usdc >= min_depth)})
+    else:
+        five_min_down = float(config.get('return_5m_down_threshold_pct', 0.40))
+        if metrics['return_5m'] >= -abs(five_min_down):
+            reasons.append(f"return_5m {metrics['return_5m']:.4f}% not below -{abs(five_min_down):.2f}%")
+        checks.append({'name': f'return_5m <= -{abs(five_min_down):.2f}%', 'passed': metrics['return_5m'] <= -abs(five_min_down)})
+        if metrics.get('return_30s', 0.0) <= 0.0:
+            reasons.append(f"return_30s {metrics.get('return_30s', 0.0):.4f}% not stabilising")
+        checks.append({'name': 'return_30s > 0', 'passed': metrics.get('return_30s', 0.0) > 0.0})
+        if metrics['return_60m'] <= float(config['return_60m_min_pct']):
+            reasons.append(f"return_60m {metrics['return_60m']:.4f}% below minimum")
+        checks.append({'name': 'return_60m above minimum', 'passed': metrics['return_60m'] > float(config['return_60m_min_pct'])})
+    if namespace != SANDBOX_NS:
+        if metrics['spread_pct'] > float(config['spread_pct_max']):
+            reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
+        checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
+        bid_depth = float(snapshot.get('bid_depth_top5', 0.0) or 0.0)
+        ask_depth = float(snapshot.get('ask_depth_top5', 0.0) or 0.0)
+        depth_usdc = (bid_depth + ask_depth) * float(snapshot.get('mid', 0.0) or 0.0)
+        min_depth = float(config.get('min_top5_depth_usdc', 0.0))
+        if min_depth > 0 and depth_usdc < min_depth:
+            reasons.append(f"top5_depth {depth_usdc:.0f} USDC below minimum {min_depth:.0f}")
+        checks.append({'name': f'top5_depth >= {min_depth:.0f} USDC', 'passed': (min_depth <= 0) or (depth_usdc >= min_depth)})
         if metrics['book_imbalance'] < max(0.5, float(config['book_imbalance_min']) - 0.02):
             reasons.append(f"book_imbalance {metrics['book_imbalance']:.4f} below min")
         checks.append({'name': 'book imbalance healthy', 'passed': metrics['book_imbalance'] >= max(0.5, float(config['book_imbalance_min']) - 0.02)})
@@ -2851,9 +2876,9 @@ def place_sandbox_entry_multi(coin, snapshot):
     if initial_margin < 10.0:
         push_text_log(SANDBOX_NS, f'Sandbox entry blocked for {coin}: available balance below 10 USDC minimum.')
         return False
-    submitted_price = float(snapshot['best_bid'])
+    submitted_price = float(snapshot['best_ask'])
     size = notional / submitted_price
-    side = 'sell'
+    side = 'buy'
     order = {
         'coin': coin,
         'phase': 'entry',
@@ -2872,7 +2897,7 @@ def place_sandbox_entry_multi(coin, snapshot):
     }
     save_open_order_for_coin(SANDBOX_NS, coin, order)
     set_engine_status(SANDBOX_NS, f'ENTRY_ORDER_WORKING:{coin}')
-    push_text_log(SANDBOX_NS, f"Sandbox SHORT entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
+    push_text_log(SANDBOX_NS, f"Sandbox LONG entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
     return True
 
 
@@ -3384,12 +3409,27 @@ def manage_positions(namespace):
         if change_pct <= -abs(float(config['stop_loss_pct'])):
             maybe_place_exit_order_multi(namespace, position, 'STOP_LOSS', 'taker', {'coin': coin, 'mid': current_mid, 'best_bid': current_mid, 'best_ask': current_mid})
             continue
-        if change_pct >= float(config['take_profit_pct']):
-            maybe_place_exit_order_multi(namespace, position, 'TAKE_PROFIT', 'taker', fetch_coin_book_snapshot(coin))
-            continue
-        if seconds_open >= int(config['time_stop_seconds']):
-            maybe_place_exit_order_multi(namespace, position, 'TIME_STOP', 'maker', fetch_coin_book_snapshot(coin))
-            continue
+        if namespace == SANDBOX_NS:
+            if seconds_open < 60:
+                continue
+            last_check = float(position.get('last_hold_check_at', 0.0) or 0.0)
+            if (time.time() - last_check) < 10:
+                continue
+            if change_pct >= float(config['take_profit_pct']):
+                maybe_place_exit_order_multi(namespace, position, 'TAKE_PROFIT', 'taker', fetch_coin_book_snapshot(coin))
+                continue
+            if change_pct <= 0 and float(market_metrics.get('return_1m', 0.0)) < 0:
+                maybe_place_exit_order_multi(namespace, position, 'TIME_STOP', 'taker', fetch_coin_book_snapshot(coin))
+                continue
+            position['last_hold_check_at'] = time.time()
+            save_position_for_coin(namespace, coin, position)
+        else:
+            if change_pct >= float(config['take_profit_pct']):
+                maybe_place_exit_order_multi(namespace, position, 'TAKE_PROFIT', 'taker', fetch_coin_book_snapshot(coin))
+                continue
+            if seconds_open >= int(config['time_stop_seconds']):
+                maybe_place_exit_order_multi(namespace, position, 'TIME_STOP', 'maker', fetch_coin_book_snapshot(coin))
+                continue
     if total_positions:
         set_engine_status(namespace, f'MANAGING_{total_positions}_POSITIONS')
 
@@ -3402,11 +3442,13 @@ def attempt_entries(namespace):
     slots_left = max(0, int(config.get('max_open_positions', 1)) - active_slots)
     if slots_left <= 0:
         return
-    primary_basis = '30s' if namespace == SANDBOX_NS else '5m'
+    primary_basis = '5m'
+    direction = 'down'
     candidates = market_universe.get_hot_perps(
         limit=12,
         primary_basis=primary_basis,
         min_price=float(config.get('min_price_usdc', 0.0)),
+        direction=direction,
     ).get('leaders', [])
     for candidate in candidates:
         if slots_left <= 0:
@@ -3577,11 +3619,12 @@ def build_state_payload(namespace):
         balances = get_balances(namespace)
     config = get_config(namespace)
     focus_market = build_market_focus()
-    hot_primary_basis = '30s' if namespace == SANDBOX_NS else '5m'
+    hot_primary_basis = '5m'
     hot_perps = market_universe.get_hot_perps(
         limit=10,
         primary_basis=hot_primary_basis,
         min_price=float(config.get('min_price_usdc', 0.0)),
+        direction='down',
     )
     open_orders = get_open_orders(namespace)
     active_position = open_positions[0] if open_positions else {'active': False}

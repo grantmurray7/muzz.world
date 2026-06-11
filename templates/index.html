@@ -562,10 +562,12 @@
                                 <div class="config-row"><div class="field-label">Entry Cooldown Sec</div><input id="cfg_entry_cooldown_seconds" type="number" step="1"></div>
                                 <div class="config-row"><div class="field-label">Loss Cooldown Sec</div><input id="cfg_cooldown_after_loss_seconds" type="number" step="1"></div>
                                 <div class="config-row"><div class="field-label">Return 30s Trigger %</div><input id="cfg_return_30s_threshold_pct" type="number" step="0.01"></div>
+                                <div class="config-row"><div class="field-label">Return 5m Down Trigger %</div><input id="cfg_return_5m_down_threshold_pct" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Return 2m Threshold %</div><input id="cfg_return_2m_threshold_pct" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Bounce From 2m Low %</div><input id="cfg_bounce_from_2m_low_threshold_pct" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Return 60m Minimum %</div><input id="cfg_return_60m_min_pct" type="number" step="0.01"></div>
                                 <div class="config-row"><div class="field-label">Spread Max %</div><input id="cfg_spread_pct_max" type="number" step="0.001"></div>
+                                <div class="config-row"><div class="field-label">Min Top5 Depth USDC</div><input id="cfg_min_top5_depth_usdc" type="number" step="1"></div>
                                 <div class="config-row"><div class="field-label">Book Imbalance Min</div><input id="cfg_book_imbalance_min" type="number" step="0.001"></div>
                                 {% if page_label == 'SANDBOX' %}
                                 <div class="config-row"><div class="field-label">Starting Balance USDC</div><input id="cfg_starting_balance_usdc" type="number" step="0.01"></div>
@@ -613,9 +615,9 @@
             'consecutive_loss_limit', 'leverage', 'maker_fee_pct', 'taker_fee_pct', 'take_profit_pct',
             'stop_loss_pct', 'time_stop_seconds', 'emergency_window_seconds', 'emergency_exit_drop_pct',
             'entry_timeout_seconds', 'entry_cooldown_seconds', 'cooldown_after_loss_seconds',
-            'return_30s_threshold_pct',
+            'return_30s_threshold_pct', 'return_5m_down_threshold_pct',
             'return_2m_threshold_pct', 'bounce_from_2m_low_threshold_pct', 'return_60m_min_pct',
-            'spread_pct_max', 'book_imbalance_min', 'starting_balance_usdc',
+            'spread_pct_max', 'min_top5_depth_usdc', 'book_imbalance_min', 'starting_balance_usdc',
             'maker_entry_slippage_pct', 'maker_exit_slippage_pct', 'taker_exit_slippage_pct'
         ];
         const ukDateTimeFormatter = new Intl.DateTimeFormat('en-GB', {
