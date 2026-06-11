@@ -97,6 +97,11 @@
 
         .btn-primary { background: var(--accent); color: #fff; border-color: #cf6d1d; }
         .btn-danger { background: var(--danger); color: #fff; border-color: #b73c3c; }
+        .btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
 
         .warning-banner {
             margin: 10px 14px 0;
@@ -388,14 +393,14 @@
                 </div>
             </div>
             <div class="top-actions">
-                <button class="btn btn-primary" onclick="powerOnSystem()">Master On</button>
-                <button class="btn" onclick="powerOffSystem()">Master Off</button>
-                <button class="btn btn-primary" onclick="startBot()">Start</button>
-                <button class="btn" onclick="pauseBot()">Pause</button>
-                <button class="btn btn-danger" onclick="killBot()">Kill</button>
-                <button class="btn" onclick="manualClose()">Close All</button>
+                <button id="btnMasterOn" class="btn btn-primary" onclick="powerOnSystem()">Master On</button>
+                <button id="btnMasterOff" class="btn" onclick="powerOffSystem()">Master Off</button>
+                <button id="btnStart" class="btn btn-primary" onclick="startBot()">Start</button>
+                <button id="btnPause" class="btn" onclick="pauseBot()">Pause</button>
+                <button id="btnKill" class="btn btn-danger" onclick="killBot()">Kill</button>
+                <button id="btnCloseAll" class="btn" onclick="manualClose()">Close All</button>
                 {% if page_label == 'SANDBOX' %}
-                <button class="btn" onclick="resetSandbox()">Reset Sandbox</button>
+                <button id="btnResetSandbox" class="btn" onclick="resetSandbox()">Reset Sandbox</button>
                 {% endif %}
                 <a href="{{ trades_href }}" class="btn">Trades</a>
                 <a href="{{ results_href }}" class="btn">Results</a>
@@ -851,6 +856,7 @@
                 const balances = data.balances || {};
                 const stats = data.stats || {};
                 const systemPower = data.system_power || 'OFF';
+                const botState = data.bot_state || 'N/A';
                 document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
                 setText('modeTitle', `${data.environment} Dashboard`);
                 setText('environmentBadge', data.environment);
@@ -860,15 +866,43 @@
                 setText('dailyPnlTop', fmtUsdc(stats.daily_pnl, 2));
                 setText('pnlSub', `Total ${fmtUsdc(stats.total_pnl, 2)}`);
                 document.getElementById('dailyPnlTop').className = `metric-value mono ${valueClass(stats.daily_pnl)}`.trim();
-                setText('botFeedHeadline', data.bot_state || 'N/A');
+                setText('botFeedHeadline', botState);
                 setText('botFeedSub', `POWER ${systemPower} | ${String(market.market_data_source || 'none').toUpperCase()} | ${fmt(market.market_data_age, 2)}s age | ${market.coin || 'N/A'}`);
                 renderPositions(data.positions || [], data.portfolio || {});
                 renderHotPerps(data.hot_perps || [], data.hot_perps_error || '');
                 document.getElementById('logBox').value = (data.logs || []).join('\n');
                 applyConfig(data.config || {});
+                updateControls(systemPower, botState, data);
             } catch (error) {
                 document.getElementById('hotPerpsBody').innerHTML = `<tr><td colspan="10" class="table-empty">${error.message || 'State refresh failed.'}</td></tr>`;
             }
+        }
+
+        function updateControls(systemPower, botState, state) {
+            const powerOn = String(systemPower || 'OFF').toUpperCase() === 'ON';
+            const running = String(botState || '').toUpperCase() === 'RUNNING';
+            const paused = String(botState || '').toUpperCase() === 'PAUSED';
+            const stopped = String(botState || '').toUpperCase() === 'STOPPED';
+            const killed = String(botState || '').toUpperCase() === 'KILLED';
+            const hasPositions = ((state.positions || []).length || 0) > 0;
+            const hasOrders = ((state.open_orders || {}).count || 0) > 0;
+
+            const btnMasterOn = document.getElementById('btnMasterOn');
+            const btnMasterOff = document.getElementById('btnMasterOff');
+            const btnStart = document.getElementById('btnStart');
+            const btnPause = document.getElementById('btnPause');
+            const btnKill = document.getElementById('btnKill');
+            const btnCloseAll = document.getElementById('btnCloseAll');
+            const btnResetSandbox = document.getElementById('btnResetSandbox');
+
+            if (btnMasterOn) btnMasterOn.disabled = powerOn;
+            if (btnMasterOff) btnMasterOff.disabled = !powerOn || hasPositions || hasOrders;
+
+            if (btnStart) btnStart.disabled = !powerOn || running || killed || stopped;
+            if (btnPause) btnPause.disabled = !powerOn || paused || stopped;
+            if (btnKill) btnKill.disabled = !powerOn || killed || stopped;
+            if (btnCloseAll) btnCloseAll.disabled = !powerOn || (!hasPositions && !hasOrders);
+            if (btnResetSandbox) btnResetSandbox.disabled = !powerOn || hasPositions || hasOrders;
         }
 
         async function fetchTrades() {
