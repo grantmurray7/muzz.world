@@ -993,7 +993,7 @@ def render_block_pct(value):
         style = "bold white on red"
     else:
         style = "black on grey70"
-    return Text(f"{value:.2f}%", style=style)
+    return Text(f"{value:.3f}%", style=style)
 
 
 def build_summary_table(bot, market):
