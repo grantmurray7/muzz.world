@@ -988,11 +988,11 @@ def style_pct(value):
 
 def render_block_pct(value):
     if value > 0:
-        style = "bold black on green"
+        style = "green"
     elif value < 0:
-        style = "bold white on red"
+        style = "red"
     else:
-        style = "black on grey70"
+        style = "white"
     return Text(f"{value:.3f}%", style=style)
 
 
