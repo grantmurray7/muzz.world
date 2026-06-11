@@ -708,6 +708,7 @@ class LocalSandboxBot:
             "entry_price": float(position["filled_price"]),
             "exit_price": fill_price,
             "notional": float(position["notional"]),
+            "gross_pnl": gross_pnl,
             "net_pnl": net_pnl,
             "fees_paid": entry_fee + exit_fee,
             "exit_reason": exit_reason,
@@ -910,12 +911,14 @@ def build_trades_table(bot):
     table.add_column("Side")
     table.add_column("Exit")
     table.add_column("Entry USDC", justify="right")
-    table.add_column("Exit Equity", justify="right")
+    table.add_column("Exit USDC", justify="right")
+    table.add_column("PnL", justify="right")
     table.add_column("Net PnL", justify="right")
     if not bot.trades:
-        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-")
+        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-", "-")
         return table
     for trade in list(bot.trades)[:8]:
+        gross_style = style_pct(trade["gross_pnl"])
         pnl_style = style_pct(trade["net_pnl"])
         table.add_row(
             format_timestamp(trade["timestamp"]),
@@ -924,6 +927,7 @@ def build_trades_table(bot):
             trade["exit_reason"],
             f"{trade['notional']:,.2f}",
             f"{trade['equity_after_trade']:,.2f}",
+            f"{gross_style}{trade['gross_pnl']:,.4f}[/]",
             f"{pnl_style}{trade['net_pnl']:,.4f}[/]",
         )
     return table
