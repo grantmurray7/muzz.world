@@ -13,7 +13,7 @@
             --border: #d7dee7;
             --text: #213040;
             --muted: #6f7d8c;
-            --header: #5f6b77;
+            --header: #ffffff;
             --accent: #e87722;
             --accent-soft: #fff2e8;
             --danger: #d34b4b;
@@ -44,7 +44,8 @@
             gap: 14px;
             padding: 16px 18px;
             background: var(--header);
-            color: #fff;
+            color: var(--text);
+            border-bottom: 1px solid var(--border);
         }
 
         .brand {
@@ -69,7 +70,7 @@
 
         .brand-copy p {
             margin: 3px 0 0;
-            color: rgba(255, 255, 255, 0.8);
+            color: var(--muted);
             font-size: 11px;
         }
 
@@ -93,6 +94,12 @@
             text-transform: uppercase;
             letter-spacing: 0.05em;
             cursor: pointer;
+        }
+
+        .control-btn {
+            border-width: 2px;
+            border-color: #b7c2cf;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
         }
 
         .btn-primary { background: var(--accent); color: #fff; border-color: #cf6d1d; }
@@ -386,21 +393,21 @@
     <div class="app-shell">
         <div class="topbar">
             <div class="brand">
-                <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="muzz.world logo">
+                <img class="brand-logo" src="{{ url_for('static', filename='logo_neg.png') }}" alt="muzz.world logo">
                 <div class="brand-copy">
                     <h1 id="modeTitle">{{ page_label }} Dashboard</h1>
                     <p>Lean view first. Details stay tucked away unless you open them.</p>
                 </div>
             </div>
             <div class="top-actions">
-                <button id="btnMasterOn" class="btn btn-primary" onclick="powerOnSystem()">Master On</button>
-                <button id="btnMasterOff" class="btn" onclick="powerOffSystem()">Master Off</button>
-                <button id="btnStart" class="btn btn-primary" onclick="startBot()">Start</button>
-                <button id="btnPause" class="btn" onclick="pauseBot()">Pause</button>
-                <button id="btnKill" class="btn btn-danger" onclick="killBot()">Kill</button>
-                <button id="btnCloseAll" class="btn" onclick="manualClose()">Close All</button>
+                <button id="btnMasterOn" class="btn btn-primary control-btn" onclick="powerOnSystem()">Master On</button>
+                <button id="btnMasterOff" class="btn control-btn" onclick="powerOffSystem()">Master Off</button>
+                <button id="btnStart" class="btn btn-primary control-btn" onclick="startBot()">Start</button>
+                <button id="btnPause" class="btn control-btn" onclick="pauseBot()">Pause</button>
+                <button id="btnKill" class="btn btn-danger control-btn" onclick="killBot()">Kill</button>
+                <button id="btnCloseAll" class="btn control-btn" onclick="manualClose()">Close All</button>
                 {% if page_label == 'SANDBOX' %}
-                <button id="btnResetSandbox" class="btn" onclick="resetSandbox()">Reset Sandbox</button>
+                <button id="btnResetSandbox" class="btn control-btn" onclick="resetSandbox()">Reset Sandbox</button>
                 {% endif %}
                 <a href="{{ trades_href }}" class="btn">Trades</a>
                 <a href="{{ results_href }}" class="btn">Results</a>
