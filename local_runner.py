@@ -146,8 +146,6 @@ def nearest_value(history, seconds_ago, field):
             candidate = item
         else:
             break
-    if candidate is None:
-        candidate = history[0]
     return candidate.get(field)
 
 
@@ -176,6 +174,11 @@ def rolling_block_changes(history, total_window=BLOCK_WINDOW_SECONDS, step=BLOCK
         return []
     changes.append({"label": "Latest", "pct": 0.0})
     return changes
+
+
+def has_three_real_5s_blocks(history):
+    checkpoints = (15, 10, 5, 0)
+    return bool(history) and all(nearest_value(history, seconds_ago, "mid") is not None for seconds_ago in checkpoints)
 
 
 FX_CODE_TO_NAME = {
@@ -687,6 +690,7 @@ class MarketUniverse:
                 "block_changes_5s": [None] * len(BLOCK_COLUMN_LABELS),
                 "latest_three_blocks": [],
                 "latest_three_increasing": False,
+                "has_live_data": bool(history and latest_mid > 0),
             }
             if not history or latest_mid < min_price:
                 leaders.append(leader)
@@ -756,6 +760,7 @@ class MarketUniverse:
                     "block_changes_5s": [None if item["pct"] is None else trim_float(item["pct"], 4) for item in block_changes],
                     "latest_three_blocks": [trim_float(value, 4) for value in latest_three_blocks],
                     "latest_three_increasing": latest_three_increasing,
+                    "has_live_data": True,
                 }
             )
             leaders.append(leader)
@@ -765,18 +770,25 @@ class MarketUniverse:
             and warmup_waiting
             and not last_error
         ):
-            last_error = "Waiting for 2m history."
+            last_error = "Waiting for three real 5s blocks."
         return {"leaders": leaders[:limit], "last_error": last_error}
 
     def diagnostics(self):
         with self.lock:
-            ready_2m = sum(1 for coin, history in self.history.items() if self._return_for(list(history), 120) is not None)
-            tracked = len(self.current_mids)
+            universe = list(self.universe)
+            histories = {coin: list(history) for coin, history in self.history.items()}
+            mids = dict(self.current_mids)
             age = max(0.0, time.time() - self.last_message_at) if self.last_message_at else 9999.0
             warmup_elapsed = max(0.0, time.time() - self.first_message_at) if self.first_message_at else 0.0
+            ready_2m = sum(1 for coin in universe if self._return_for(histories.get(coin, []), 120) is not None)
+            ready_entry = sum(1 for coin in universe if has_three_real_5s_blocks(histories.get(coin, [])))
+            tracked = sum(1 for coin in universe if float(mids.get(coin, 0.0) or 0.0) > 0.0)
             return {
+                "configured": len(universe),
                 "tracked": tracked,
+                "ready_entry": ready_entry,
                 "ready_2m": ready_2m,
+                "missing_feed": max(0, len(universe) - tracked),
                 "market_age": age,
                 "first_message_at": self.first_message_at,
                 "warmup_elapsed": warmup_elapsed,
@@ -795,7 +807,7 @@ class LocalSandboxBot:
         self.positions = {}
         self.trades = deque(maxlen=30)
         self.logs = deque(maxlen=12)
-        self.last_signal_reason = "Waiting for 2m history."
+        self.last_signal_reason = "Waiting for three real 5s blocks."
         self.last_scan_error = ""
         self.last_scan_at = 0.0
         self.hot_perps = []
@@ -1030,7 +1042,7 @@ class LocalSandboxBot:
             self.last_signal_reason = self.last_scan_error or "No candidates."
             return
         candidates_for_entry = sorted(
-            self.hot_perps,
+            [item for item in self.hot_perps if item.get("has_live_data")],
             key=lambda item: (
                 float(item.get("latest_5s_block", 0.0)),
                 float(item.get("previous_5s_block", 0.0)),
@@ -1067,10 +1079,14 @@ class LocalSandboxBot:
         diag = self.market.diagnostics()
         if diag["last_error"]:
             return f"WS issue: {diag['last_error']}"
-        if diag["ready_2m"] <= 0:
-            return "Waiting for 2m history."
+        if diag["tracked"] <= 0:
+            return "Waiting for live market data."
+        if diag["ready_entry"] <= 0:
+            return "Building first three 5s blocks."
         if self.positions:
             return f"Managing {len(self.positions)} position(s)."
+        if diag["missing_feed"] > 0:
+            return f"{diag['missing_feed']} symbols have no public feed in this runner."
         return self.last_signal_reason
 
 
@@ -1109,7 +1125,7 @@ def build_summary_table(bot, market):
         f"[bold]Available[/bold]\n{bot.available:,.2f} USDC",
         f"[bold]Equity[/bold]\n{bot.equity():,.2f} USDC",
         f"[bold]Live PnL[/bold]\n{bot.live_pnl():,.2f} USDC",
-        f"[bold]2m Ready[/bold]\n{diag['ready_2m']} / {diag['tracked']}",
+        f"[bold]Entry Ready[/bold]\n{diag['ready_entry']} / {diag['tracked']}",
         f"[bold]Open Positions[/bold]\n{len(bot.positions)}",
         f"[bold]Total PnL[/bold]\n{bot.stats['total_pnl']:,.2f} USDC",
         f"[bold]Trades[/bold]\n{bot.stats['trades_today']}",
@@ -1131,7 +1147,7 @@ def build_hot_table(bot):
         table.add_column(label, justify="right", no_wrap=True)
     leaders = bot.hot_perps
     if not leaders:
-        table.add_row(*(["-"] + [bot.last_scan_error or "Waiting for 2m history."] + (["-"] * (len(BLOCK_COLUMN_LABELS) - 1))))
+        table.add_row(*(["-"] + [bot.last_scan_error or "Waiting for three real 5s blocks."] + (["-"] * (len(BLOCK_COLUMN_LABELS) - 1))))
         return table
     for item in leaders:
         block_values = item.get("block_changes_5s") or []
@@ -1139,7 +1155,7 @@ def build_hot_table(bot):
         if len(block_cells) < len(BLOCK_COLUMN_LABELS):
             block_cells.extend(["-"] * (len(BLOCK_COLUMN_LABELS) - len(block_cells)))
         table.add_row(
-            item["coin"],
+            Text(item["coin"], style="bold white" if item.get("has_live_data") else "dim"),
             *block_cells,
         )
     return table
@@ -1246,7 +1262,7 @@ def build_warmup_bar(diag):
     filled = min(width, max(0, int(round(width * pct))))
     bar = ("█" * filled) + ("░" * (width - filled))
     style = "green" if pct >= 1.0 else "bold yellow"
-    return Text(f"2m Warm-up [{bar}] {int(elapsed)}/{int(total_seconds)}s ({pct * 100:0.0f}%)", style=style)
+    return Text(f"2m tape warm-up [{bar}] {int(elapsed)}/{int(total_seconds)}s ({pct * 100:0.0f}%)", style=style)
 
 
 def build_dashboard(bot, market):
@@ -1257,7 +1273,9 @@ def build_dashboard(bot, market):
         f"WS open {format_timestamp(diag['last_open_at']) or 'n/a'}",
         style="cyan",
     )
-    status = Text(bot.status_text(), style="bold yellow" if "Waiting" in bot.status_text() else "bold green")
+    status_value = bot.status_text()
+    status_style = "bold yellow" if any(word in status_value for word in ("Waiting", "Building")) else "bold green"
+    status = Text(status_value, style=status_style)
     warmup_bar = build_warmup_bar(diag)
     header_items = [title, subtitle, status]
     if warmup_bar is not None:
