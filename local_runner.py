@@ -1388,15 +1388,23 @@ def main():
     signal.signal(signal.SIGTERM, handle_stop)
 
     refresh_hz = 4
+    step_interval_seconds = 1.0 / refresh_hz
+
+    def bot_loop():
+        while not stop_event.is_set():
+            try:
+                bot.step()
+            except Exception as exc:
+                bot.log(f"Loop error: {exc}")
+            time.sleep(step_interval_seconds)
+
+    bot_thread = Thread(target=bot_loop, daemon=True, name="bot-step-loop")
+    bot_thread.start()
     try:
         with Live(build_dashboard(bot, market), console=console, refresh_per_second=refresh_hz, screen=True) as live:
             while not stop_event.is_set():
-                try:
-                    bot.step()
-                except Exception as exc:
-                    bot.log(f"Loop error: {exc}")
                 live.update(build_dashboard(bot, market))
-                time.sleep(1.0 / refresh_hz)
+                time.sleep(step_interval_seconds)
     finally:
         stop_event.set()
         market.stop()
