@@ -1428,15 +1428,22 @@ def reconcile_sandbox_balances(open_positions=None, total_live_pnl=None):
     config = get_config(SANDBOX_NS)
     stats = get_stats(SANDBOX_NS)
     positions = list(get_positions(SANDBOX_NS).values())
-    reserved_notional = sum(float(position.get('notional', 0.0)) for position in positions)
+    reserved_notional = sum(
+        float(
+            position.get(
+                'initial_margin',
+                float(position.get('notional', 0.0)) / max(1.0, float(position.get('leverage', 1.0))),
+            )
+        )
+        for position in positions
+    )
     reserved_entry_fees = sum(float(position.get('entry_fees_paid', 0.0)) for position in positions)
     starting_balance = float(config.get('starting_balance_usdc', DEFAULT_CONFIGS[SANDBOX_NS]['starting_balance_usdc']))
     realized_pnl = float(stats.get('total_pnl', 0.0))
     available = starting_balance + realized_pnl - reserved_notional - reserved_entry_fees
     available = trim_float(available, 6)
     if open_positions is not None and total_live_pnl is not None:
-        current_position_value = sum(float(view.get('notional', 0.0)) for view in open_positions) + float(total_live_pnl)
-        equity = trim_float(available + current_position_value, 6)
+        equity = trim_float(available + reserved_notional + float(total_live_pnl), 6)
     else:
         equity = trim_float(max(float(get_balances(SANDBOX_NS).get('equity', available)), available), 6)
     balances = {'available': available, 'equity': equity}
@@ -1764,13 +1771,15 @@ def compute_position_view(position, mid):
     size = float(position['size'])
     entry = float(position['filled_price'])
     current_price = float(mid)
-    gross = (mid - entry) * size
-    pnl_pct = pct_change(entry, mid)
+    side = position.get('side', 'LONG')
+    direction = 1.0 if side == 'LONG' else -1.0
+    gross = ((mid - entry) * size) * direction
+    pnl_pct = pct_change(entry, mid) * direction
     coin = position.get('coin') or MARKET_COIN
     return {
         'active': True,
         'coin': coin,
-        'side': position.get('side', 'LONG'),
+        'side': side,
         'size': trim_float(size, 4),
         'entry_price': trim_float(entry, 6),
         'current_price': trim_float(current_price, 6),
@@ -2738,6 +2747,13 @@ def build_coin_snapshot_and_metrics(coin, require_book=True):
 
 def build_position_targets(position, config):
     entry = float(position['filled_price'])
+    side = position.get('side', 'LONG')
+    if side == 'SHORT':
+        return {
+            'take_profit_price': trim_float(entry * (1.0 - (float(config['take_profit_pct']) / 100.0)), 6),
+            'stop_loss_price': trim_float(entry * (1.0 + (float(config['stop_loss_pct']) / 100.0)), 6),
+            'time_stop_seconds': int(config['time_stop_seconds']),
+        }
     return {
         'take_profit_price': trim_float(entry * (1.0 + (float(config['take_profit_pct']) / 100.0)), 6),
         'stop_loss_price': trim_float(entry * (1.0 - (float(config['stop_loss_pct']) / 100.0)), 6),
@@ -2822,16 +2838,20 @@ def place_sandbox_entry_multi(coin, snapshot):
     config = get_config(SANDBOX_NS)
     balances = get_balances(SANDBOX_NS)
     available = float(balances['available'])
-    notional = min(float(config['trade_notional_usdc']), float(config['max_notional_usdc']), available)
-    if notional < 10.0:
+    leverage = max(1.0, float(config.get('leverage', 1.0)))
+    requested_notional = float(config['trade_notional_usdc']) * leverage
+    notional = min(requested_notional, float(config['max_notional_usdc']), available * leverage)
+    initial_margin = notional / leverage if leverage > 0 else notional
+    if initial_margin < 10.0:
         push_text_log(SANDBOX_NS, f'Sandbox entry blocked for {coin}: available balance below 10 USDC minimum.')
         return False
-    submitted_price = float(snapshot['best_ask'])
+    submitted_price = float(snapshot['best_bid'])
     size = notional / submitted_price
+    side = 'sell'
     order = {
         'coin': coin,
         'phase': 'entry',
-        'side': 'buy',
+        'side': side,
         'maker_or_taker': 'taker',
         'order_type': 'marketable_limit',
         'submitted_price': submitted_price,
@@ -2840,11 +2860,13 @@ def place_sandbox_entry_multi(coin, snapshot):
         'timeout_seconds': int(config['entry_timeout_seconds']),
         'size': trim_float(size, 8),
         'notional': trim_float(notional, 6),
+        'initial_margin': trim_float(initial_margin, 6),
+        'leverage': trim_float(leverage, 4),
         'status': 'OPEN',
     }
     save_open_order_for_coin(SANDBOX_NS, coin, order)
     set_engine_status(SANDBOX_NS, f'ENTRY_ORDER_WORKING:{coin}')
-    push_text_log(SANDBOX_NS, f"Sandbox taker-style entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
+    push_text_log(SANDBOX_NS, f"Sandbox SHORT entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
     return True
 
 
@@ -2855,19 +2877,24 @@ def fill_sandbox_entry_multi(order, current_mid):
     submitted_price = float(order['submitted_price'])
     maker_or_taker = order.get('maker_or_taker', 'maker')
     entry_slippage_pct = config['taker_exit_slippage_pct'] if maker_or_taker == 'taker' else config['maker_entry_slippage_pct']
-    filled_price = apply_slippage(submitted_price, entry_slippage_pct, 'buy')
+    entry_side = order.get('side', 'sell')
+    filled_price = apply_slippage(submitted_price, entry_slippage_pct, entry_side)
     size = float(order['size'])
     notional = size * filled_price
+    leverage = max(1.0, float(order.get('leverage', config.get('leverage', 1.0))))
+    initial_margin = float(order.get('initial_margin', notional / leverage if leverage > 0 else notional))
     fee = apply_fee(notional, config['taker_fee_pct'] if maker_or_taker == 'taker' else config['maker_fee_pct'])
-    available = float(balances['available']) - notional - fee
+    available = float(balances['available']) - initial_margin - fee
     save_balances(SANDBOX_NS, {'available': available, 'equity': float(balances.get('equity', available))})
     position = {
         'coin': coin,
-        'side': 'LONG',
+        'side': 'SHORT' if entry_side == 'sell' else 'LONG',
         'size': size,
         'submitted_price': submitted_price,
         'filled_price': filled_price,
         'notional': notional,
+        'initial_margin': initial_margin,
+        'leverage': leverage,
         'entry_time': time.time(),
         'entry_fill_delay_seconds': time.time() - float(order['submitted_at']),
         'entry_maker_or_taker': maker_or_taker,
@@ -2905,21 +2932,26 @@ def fill_sandbox_exit_multi(position, exit_reason, maker_or_taker, current_mid, 
     config = get_config(SANDBOX_NS)
     balances = get_balances(SANDBOX_NS)
     submitted_price = float(submitted_price or current_mid)
+    side = position.get('side', 'LONG')
+    close_side = 'buy' if side == 'SHORT' else 'sell'
     slippage_pct = config['maker_exit_slippage_pct'] if maker_or_taker == 'maker' else config['taker_exit_slippage_pct']
-    fill_price = apply_slippage(submitted_price, slippage_pct, 'sell')
+    fill_price = apply_slippage(submitted_price, slippage_pct, close_side)
     size = float(position['size'])
-    gross_pnl = (fill_price - float(position['filled_price'])) * size
+    direction = 1.0 if side == 'LONG' else -1.0
+    gross_pnl = ((fill_price - float(position['filled_price'])) * size) * direction
     exit_notional = size * fill_price
     exit_fee = apply_fee(exit_notional, config['maker_fee_pct'] if maker_or_taker == 'maker' else config['taker_fee_pct'])
     entry_fee = float(position.get('entry_fees_paid', 0.0))
     net_pnl = gross_pnl - entry_fee - exit_fee
-    available = float(balances['available']) + exit_notional - exit_fee
+    leverage = max(1.0, float(position.get('leverage', 1.0)))
+    initial_margin = float(position.get('initial_margin', float(position.get('notional', 0.0)) / leverage))
+    available = float(balances['available']) + initial_margin + gross_pnl - exit_fee
     save_balances(SANDBOX_NS, {'available': available, 'equity': available})
     trade = {
         'timestamp': iso_now(),
         'environment': 'SANDBOX',
         'coin': coin,
-        'side': 'LONG',
+        'side': side,
         'order_type': 'post_only_limit' if maker_or_taker == 'maker' else 'market_exit',
         'maker_or_taker': f"maker->{maker_or_taker}",
         'submitted_price': trim_float(position.get('submitted_price', position['filled_price']), 6),
@@ -3221,7 +3253,10 @@ def manage_open_orders(namespace):
             if order['phase'] == 'entry' and (order.get('maker_or_taker') == 'taker' or current_mid <= float(order['submitted_price'])):
                 fill_sandbox_entry_multi(order, current_mid)
                 continue
-            if order['phase'] == 'exit' and current_mid >= float(order['submitted_price']):
+            if order['phase'] == 'exit' and (
+                (order.get('side') == 'sell' and current_mid >= float(order['submitted_price']))
+                or (order.get('side') == 'buy' and current_mid <= float(order['submitted_price']))
+            ):
                 position = get_position_for_coin(SANDBOX_NS, coin)
                 if position:
                     fill_sandbox_exit_multi(position, order['exit_reason'], 'maker', current_mid, submitted_price=float(order['submitted_price']))
@@ -3262,16 +3297,19 @@ def maybe_place_exit_order_multi(namespace, position, exit_reason, maker_or_take
     if open_order and open_order.get('phase') == 'exit':
         return False
     if namespace == SANDBOX_NS:
+        side = position.get('side', 'LONG')
+        exit_side = 'buy' if side == 'SHORT' else 'sell'
         if maker_or_taker == 'taker':
-            fill_sandbox_exit_multi(position, exit_reason, 'taker', float(snapshot['mid']), submitted_price=float(snapshot.get('best_bid', snapshot['mid'])))
+            submitted = float(snapshot.get('best_ask' if exit_side == 'buy' else 'best_bid', snapshot['mid']))
+            fill_sandbox_exit_multi(position, exit_reason, 'taker', float(snapshot['mid']), submitted_price=submitted)
             return True
         order = {
             'coin': coin,
             'phase': 'exit',
-            'side': 'sell',
+            'side': exit_side,
             'maker_or_taker': 'maker',
             'order_type': 'limit',
-            'submitted_price': float(snapshot.get('best_ask', snapshot['mid'])),
+            'submitted_price': float(snapshot.get('best_bid' if exit_side == 'buy' else 'best_ask', snapshot['mid'])),
             'submitted_at': time.time(),
             'submitted_at_ms': int(time.time() * 1000),
             'timeout_seconds': int(get_config(SANDBOX_NS)['entry_timeout_seconds']),
@@ -3319,7 +3357,9 @@ def manage_positions(namespace):
         total_positions += 1
         if get_bot_state(namespace) == 'KILLED':
             continue
-        change_pct = pct_change(float(position['filled_price']), current_mid)
+        side = position.get('side', 'LONG')
+        direction = 1.0 if side == 'LONG' else -1.0
+        change_pct = pct_change(float(position['filled_price']), current_mid) * direction
         seconds_open = time.time() - float(position['entry_time'])
         if change_pct <= -abs(float(config['emergency_exit_drop_pct'])) and seconds_open <= int(config['emergency_window_seconds']):
             maybe_place_exit_order_multi(namespace, position, 'EMERGENCY_EXIT', 'taker', {'coin': coin, 'mid': current_mid, 'best_bid': current_mid, 'best_ask': current_mid})
