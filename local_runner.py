@@ -843,7 +843,7 @@ def build_summary_table(bot, market):
 
 
 def build_hot_table(bot):
-    table = Table(expand=True)
+    table = Table(expand=True, padding=(0, 1))
     table.add_column("Perp", style="bold")
     table.add_column("Description")
     table.add_column("Basis")
@@ -871,7 +871,7 @@ def build_hot_table(bot):
 
 
 def build_positions_table(bot, market):
-    table = Table(expand=True)
+    table = Table(expand=True, padding=(0, 1))
     table.add_column("Perp", style="bold")
     table.add_column("Side")
     table.add_column("Entry", justify="right")
@@ -905,7 +905,7 @@ def build_positions_table(bot, market):
 
 
 def build_trades_table(bot):
-    table = Table(expand=True)
+    table = Table(expand=True, padding=(0, 1))
     table.add_column("Time")
     table.add_column("Perp")
     table.add_column("Side")
