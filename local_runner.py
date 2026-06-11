@@ -31,7 +31,7 @@ import requests
 from rich.console import Console, Group
 from rich.live import Live
 from rich import box
-from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -1293,13 +1293,19 @@ def build_dashboard(bot, market):
     header_items = [title, subtitle, status]
     if warmup_bar is not None:
         header_items.append(warmup_bar)
-    header = Panel(Group(*header_items), border_style="white")
-    summary = Panel(build_summary_table(bot, market), title="Account", border_style="white")
-    hot = Panel(build_hot_table(bot), title="Tracked Symbols", border_style="white")
-    positions = Panel(build_positions_table(bot, market), title="Open Positions", border_style="white")
-    trades = Panel(build_trades_table(bot), title="Recent Trades", border_style="white")
-    logs = Panel(build_logs_panel(bot), title="Action Log", border_style="white")
-    return Group(header, summary, hot, positions, trades, logs)
+    return Group(
+        *header_items,
+        Rule("Account", style="white"),
+        build_summary_table(bot, market),
+        Rule("Tracked Symbols", style="white"),
+        build_hot_table(bot),
+        Rule("Open Positions", style="white"),
+        build_positions_table(bot, market),
+        Rule("Recent Trades", style="white"),
+        build_trades_table(bot),
+        Rule("Action Log", style="white"),
+        build_logs_panel(bot),
+    )
 
 
 def parse_args():
