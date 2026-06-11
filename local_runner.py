@@ -1,0 +1,1003 @@
+#!/usr/bin/env python3
+"""
+Local terminal runner for the MuzzWorld 5m trend-following sandbox bot.
+
+This script is intentionally self-contained:
+- No Flask
+- No Postgres
+- No web UI
+- Hyperliquid allMids websocket feed
+- Real order-book snapshots for spread/liquidity checks
+- Rich terminal dashboard
+
+It simulates the current sandbox strategy locally so you can run and tune it
+from your own machine/network.
+"""
+
+import argparse
+import json
+import os
+import re
+import signal
+import sys
+import time
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from threading import Event, Lock, Thread
+
+import requests
+from rich.console import Console, Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
+try:
+    from hyperliquid.info import Info
+    from hyperliquid.utils import constants as hl_constants
+    import websocket
+
+    IMPORT_ERROR = ""
+except Exception as exc:  # pragma: no cover
+    Info = None
+    hl_constants = None
+    websocket = None
+    IMPORT_ERROR = str(exc)
+
+
+HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
+HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+MARKET_HISTORY_SECONDS = 3900
+MARKET_STALE_AFTER_SECONDS = 20.0
+META_REFRESH_SECONDS = 900.0
+SCAN_INTERVAL_SECONDS = 2.0
+
+console = Console()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def format_timestamp(ts):
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S")
+
+
+def pct_change(from_price, to_price):
+    if from_price <= 0:
+        return 0.0
+    return ((to_price - from_price) / from_price) * 100.0
+
+
+def trim_float(value, digits=6):
+    return round(float(value), digits)
+
+
+def read_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def apply_fee(notional, fee_pct):
+    return float(notional) * (float(fee_pct) / 100.0)
+
+
+def apply_slippage(price, slippage_pct, side):
+    if side == "buy":
+        return float(price) * (1.0 + (float(slippage_pct) / 100.0))
+    return float(price) * (1.0 - (float(slippage_pct) / 100.0))
+
+
+def nearest_value(history, seconds_ago, field):
+    if not history:
+        return None
+    target_ts = time.time() - seconds_ago
+    candidate = None
+    for item in history:
+        if item["ts"] <= target_ts:
+            candidate = item
+        else:
+            break
+    if candidate is None:
+        candidate = history[0]
+    return candidate.get(field)
+
+
+def min_mid_since(history, seconds_ago):
+    if not history:
+        return None
+    cutoff = time.time() - seconds_ago
+    mids = [item["mid"] for item in history if item["ts"] >= cutoff]
+    if not mids:
+        mids = [item["mid"] for item in history]
+    return min(mids) if mids else None
+
+
+FX_CODE_TO_NAME = {
+    "AUD": "Australian dollar",
+    "CAD": "Canadian dollar",
+    "CHF": "Swiss franc",
+    "EUR": "Euro",
+    "GBP": "British pound",
+    "JPY": "Japanese yen",
+    "NZD": "New Zealand dollar",
+    "USD": "US dollar",
+}
+
+KNOWN_PERP_METADATA = {
+    "SPX": ("Equity Index", "S&P 500 index"),
+    "NDX": ("Equity Index", "Nasdaq 100 index"),
+    "DJI": ("Equity Index", "Dow Jones Industrial Average"),
+    "VIX": ("Volatility Index", "Cboe Volatility Index"),
+    "XAU": ("Commodity", "Gold"),
+    "XAG": ("Commodity", "Silver"),
+    "WTI": ("Commodity", "WTI crude oil"),
+    "BRENT": ("Commodity", "Brent crude oil"),
+    "NATGAS": ("Commodity", "Natural gas"),
+    "COPPER": ("Commodity", "Copper"),
+}
+
+
+def infer_perp_metadata(coin, asset=None):
+    asset = asset or {}
+    raw_category = (
+        asset.get("category")
+        or asset.get("type")
+        or asset.get("sector")
+        or asset.get("group")
+        or asset.get("tag")
+        or ""
+    )
+    raw_description = (
+        asset.get("description")
+        or asset.get("displayName")
+        or asset.get("fullName")
+        or asset.get("longName")
+        or ""
+    )
+    if raw_category or raw_description:
+        return {
+            "category": raw_category or "Perp",
+            "description": raw_description or f"{coin} perp",
+        }
+
+    symbol = (coin or "").upper()
+    if symbol in KNOWN_PERP_METADATA:
+        category, description = KNOWN_PERP_METADATA[symbol]
+        return {"category": category, "description": description}
+
+    if re.fullmatch(r"[A-Z]{6}", symbol):
+        base = symbol[:3]
+        quote = symbol[3:]
+        if base in FX_CODE_TO_NAME and quote in FX_CODE_TO_NAME:
+            return {
+                "category": "FX",
+                "description": f"{FX_CODE_TO_NAME[base]} / {FX_CODE_TO_NAME[quote]}",
+            }
+
+    if symbol.startswith("K") and len(symbol) > 1:
+        return {"category": "Crypto", "description": f"{symbol[1:]} scaled crypto perp"}
+
+    return {"category": "Crypto", "description": f"{symbol} crypto perp"}
+
+
+def compute_market_metrics(snapshot, history):
+    mid = snapshot.get("mid", 0.0)
+    anchor_30s = nearest_value(history, 30, "mid")
+    anchor_1m = nearest_value(history, 60, "mid")
+    anchor_2m = nearest_value(history, 120, "mid")
+    anchor_5m = nearest_value(history, 300, "mid")
+    anchor_15m = nearest_value(history, 900, "mid")
+    anchor_60m = nearest_value(history, 3600, "mid")
+    low_2m = min_mid_since(history, 120)
+    imbalance_10s = nearest_value(history, 10, "book_imbalance")
+    return {
+        "mid": mid,
+        "best_bid": snapshot.get("best_bid", 0.0),
+        "best_ask": snapshot.get("best_ask", 0.0),
+        "spread_pct": snapshot.get("spread_pct", 0.0),
+        "book_imbalance": snapshot.get("book_imbalance", 0.5),
+        "book_imbalance_10s_ago": imbalance_10s if imbalance_10s is not None else snapshot.get("book_imbalance", 0.5),
+        "has_return_30s": anchor_30s is not None,
+        "has_return_1m": anchor_1m is not None,
+        "has_return_2m": anchor_2m is not None,
+        "has_return_5m": anchor_5m is not None,
+        "has_return_15m": anchor_15m is not None,
+        "has_return_60m": anchor_60m is not None,
+        "return_30s": pct_change(anchor_30s or mid, mid),
+        "return_1m": pct_change(anchor_1m or mid, mid),
+        "return_2m": pct_change(anchor_2m or mid, mid),
+        "return_5m": pct_change(anchor_5m or mid, mid),
+        "return_15m": pct_change(anchor_15m or mid, mid),
+        "return_60m": pct_change(anchor_60m or mid, mid),
+        "bounce_from_2m_low": pct_change(low_2m or mid, mid),
+        "market_data_age": max(0.0, time.time() - snapshot.get("ts", 0.0)),
+    }
+
+
+@dataclass
+class BotConfig:
+    trade_notional_usdc: float = 250.0
+    max_notional_usdc: float = 1000.0
+    max_open_positions: int = 10
+    leverage: float = 1.0
+    take_profit_pct: float = 0.25
+    stop_loss_pct: float = 0.25
+    time_stop_seconds: int = 60
+    emergency_exit_drop_pct: float = 0.20
+    emergency_window_seconds: int = 30
+    return_5m_trend_threshold_pct: float = 0.40
+    spread_pct_max: float = 0.025
+    min_top5_depth_usdc: float = 2000.0
+    starting_balance_usdc: float = 10000.0
+    maker_fee_pct: float = 0.015
+    taker_fee_pct: float = 0.045
+    maker_entry_slippage_pct: float = 0.0
+    maker_exit_slippage_pct: float = 0.0
+    taker_exit_slippage_pct: float = 0.02
+    min_price_usdc: float = 0.01
+
+
+class MarketUniverse:
+    def __init__(self, stop_event):
+        if Info is None or hl_constants is None or websocket is None:
+            raise RuntimeError(f"Hyperliquid dependencies unavailable: {IMPORT_ERROR}")
+        self.stop_event = stop_event
+        self.lock = Lock()
+        self.history = {}
+        self.current_mids = {}
+        self.universe = []
+        self.meta_by_coin = {}
+        self.sz_decimals = {}
+        self.last_message_at = 0.0
+        self.last_meta_refresh_at = 0.0
+        self.last_error = ""
+        self.last_open_at = 0.0
+        self.last_close_at = 0.0
+        self.last_close_code = ""
+        self.last_close_reason = ""
+        self.ws_app = None
+        self.ws_thread = None
+        self.loop_thread = None
+        self.rest_info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
+
+    def _post_info(self, payload):
+        response = requests.post(HYPERLIQUID_INFO_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    def refresh_meta(self, force=False):
+        now = time.time()
+        with self.lock:
+            if not force and self.universe and (now - self.last_meta_refresh_at) < META_REFRESH_SECONDS:
+                return
+        meta = self._post_info({"type": "meta"})
+        universe = []
+        meta_by_coin = {}
+        sz_decimals = {}
+        for asset in meta.get("universe") or []:
+            coin = asset.get("name")
+            if not coin:
+                continue
+            universe.append(coin)
+            meta_by_coin[coin] = infer_perp_metadata(coin, asset)
+            sz_decimals[coin] = int(asset.get("szDecimals", 0))
+        with self.lock:
+            self.universe = universe
+            self.meta_by_coin = meta_by_coin
+            self.sz_decimals = sz_decimals
+            self.last_meta_refresh_at = now
+
+    def start(self):
+        if self.loop_thread and self.loop_thread.is_alive():
+            return
+        self.loop_thread = Thread(target=self._loop, daemon=True, name="market-universe-loop")
+        self.loop_thread.start()
+
+    def stop(self):
+        ws_app = self.ws_app
+        self.ws_app = None
+        if ws_app:
+            try:
+                ws_app.close()
+            except Exception:
+                pass
+        if self.ws_thread and self.ws_thread.is_alive():
+            self.ws_thread.join(timeout=2)
+
+    def _record_mid_update(self, mids):
+        now = time.time()
+        with self.lock:
+            allowed = set(self.universe)
+            for coin, raw_mid in (mids or {}).items():
+                if allowed and coin not in allowed:
+                    continue
+                try:
+                    mid = float(raw_mid)
+                except Exception:
+                    continue
+                self.current_mids[coin] = mid
+                history = self.history.setdefault(coin, deque())
+                history.append({"ts": now, "mid": mid})
+                cutoff = now - MARKET_HISTORY_SECONDS
+                while history and history[0]["ts"] < cutoff:
+                    history.popleft()
+            self.last_message_at = now
+            self.last_error = ""
+
+    def _on_ws_open(self, ws_app):
+        self.refresh_meta(force=True)
+        with self.lock:
+            self.last_open_at = time.time()
+            self.last_error = ""
+        ws_app.send(json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}}))
+
+    def _on_ws_message(self, _ws_app, raw_message):
+        try:
+            if raw_message == "Websocket connection established.":
+                return
+            msg = json.loads(raw_message)
+        except Exception:
+            return
+        if msg.get("channel") in {"subscriptionResponse", None}:
+            return
+        if msg.get("channel") != "allMids":
+            return
+        data = msg.get("data") or {}
+        mids = data.get("mids") if isinstance(data, dict) and "mids" in data else data
+        if isinstance(mids, dict):
+            self._record_mid_update(mids)
+
+    def _on_ws_error(self, _ws_app, error):
+        with self.lock:
+            self.last_error = f"Websocket error: {error}"
+
+    def _on_ws_close(self, _ws_app, status_code, close_msg):
+        with self.lock:
+            self.last_close_at = time.time()
+            self.last_close_code = "" if status_code is None else str(status_code)
+            self.last_close_reason = close_msg or ""
+            if not self.last_error:
+                self.last_error = f"Websocket closed ({status_code}): {close_msg or 'no message'}"
+
+    def _connect_stream(self):
+        self.stop()
+        self.refresh_meta(force=True)
+        self.ws_app = websocket.WebSocketApp(
+            HYPERLIQUID_WS_URL,
+            on_open=self._on_ws_open,
+            on_message=self._on_ws_message,
+            on_error=self._on_ws_error,
+            on_close=self._on_ws_close,
+        )
+        self.ws_thread = Thread(
+            target=lambda: self.ws_app.run_forever(ping_interval=20, ping_timeout=10),
+            daemon=True,
+            name="allmids-websocket",
+        )
+        self.ws_thread.start()
+
+    def _loop(self):
+        while not self.stop_event.is_set():
+            try:
+                self._connect_stream()
+                while not self.stop_event.is_set():
+                    time.sleep(1)
+                    now = time.time()
+                    with self.lock:
+                        ws_thread = self.ws_thread
+                        last_message_at = self.last_message_at
+                        last_meta_refresh_at = self.last_meta_refresh_at
+                    if ws_thread and not ws_thread.is_alive():
+                        raise RuntimeError("Hyperliquid websocket thread exited unexpectedly.")
+                    if last_meta_refresh_at and (now - last_meta_refresh_at) > META_REFRESH_SECONDS:
+                        self.refresh_meta(force=True)
+                    if last_message_at and (now - last_message_at) > MARKET_STALE_AFTER_SECONDS:
+                        raise RuntimeError(f"Market data stale ({now - last_message_at:.1f}s).")
+            except Exception as exc:
+                with self.lock:
+                    self.last_error = str(exc)
+            finally:
+                self.stop()
+            time.sleep(2)
+
+    def build_book_snapshot(self, book_data):
+        levels = book_data.get("levels") or [[], []]
+        bids = levels[0] if len(levels) > 0 else []
+        asks = levels[1] if len(levels) > 1 else []
+        if not bids or not asks:
+            raise RuntimeError("Order book snapshot missing bids or asks.")
+        best_bid = float(bids[0]["px"])
+        best_ask = float(asks[0]["px"])
+        mid = (best_bid + best_ask) / 2.0
+        spread_pct = ((best_ask - best_bid) / mid) * 100.0 if mid > 0 else 0.0
+        bid_depth = sum(float(level["sz"]) for level in bids[:5])
+        ask_depth = sum(float(level["sz"]) for level in asks[:5])
+        total_depth = bid_depth + ask_depth
+        book_imbalance = (bid_depth / total_depth) if total_depth > 0 else 0.5
+        raw_time = book_data.get("time")
+        event_ts = (float(raw_time) / 1000.0) if raw_time else time.time()
+        return {
+            "ts": event_ts,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "mid": mid,
+            "spread_pct": spread_pct,
+            "bid_depth_top5": bid_depth,
+            "ask_depth_top5": ask_depth,
+            "book_imbalance": book_imbalance,
+        }
+
+    def fetch_coin_book_snapshot(self, coin):
+        book = self.rest_info.l2_snapshot(coin)
+        snapshot = self.build_book_snapshot(book)
+        snapshot["coin"] = coin
+        return snapshot
+
+    def get_metrics_for_coin(self, coin):
+        with self.lock:
+            history = list(self.history.get(coin, []))
+            latest_mid = float(self.current_mids.get(coin, 0.0))
+            last_message_at = self.last_message_at
+        if not history or latest_mid <= 0:
+            return None
+        return_1m = self._return_for(history, 60)
+        return_2m = self._return_for(history, 120)
+        return_5m = self._return_for(history, 300)
+        return_15m = self._return_for(history, 900)
+        return_60m = self._return_for(history, 3600)
+        now = time.time()
+        return {
+            "coin": coin,
+            "mid": latest_mid,
+            "has_return_1m": return_1m is not None,
+            "has_return_2m": return_2m is not None,
+            "has_return_5m": return_5m is not None,
+            "has_return_15m": return_15m is not None,
+            "has_return_60m": return_60m is not None,
+            "return_1m": return_1m or 0.0,
+            "return_2m": return_2m or 0.0,
+            "return_5m": return_5m or 0.0,
+            "return_15m": return_15m or 0.0,
+            "return_60m": return_60m or 0.0,
+            "market_data_age": max(0.0, now - last_message_at) if last_message_at else 9999.0,
+            "history": history,
+        }
+
+    def _return_for(self, history, seconds_ago):
+        if not history:
+            return None
+        target_ts = time.time() - seconds_ago
+        candidate = None
+        for item in history:
+            if item["ts"] <= target_ts:
+                candidate = item
+            else:
+                break
+        if candidate is None:
+            return None
+        latest_mid = history[-1]["mid"]
+        return pct_change(candidate["mid"], latest_mid)
+
+    def build_coin_snapshot_and_metrics(self, coin):
+        metrics = self.get_metrics_for_coin(coin)
+        if not metrics:
+            return None, None
+        snapshot = self.fetch_coin_book_snapshot(coin)
+        computed = compute_market_metrics(snapshot, metrics["history"])
+        computed["market_data_age"] = metrics["market_data_age"]
+        return snapshot, computed
+
+    def get_hot_perps(self, limit=10, primary_basis="5m", min_price=0.0, direction="abs"):
+        with self.lock:
+            histories = {coin: list(items) for coin, items in self.history.items()}
+            mids = dict(self.current_mids)
+            meta_by_coin = dict(self.meta_by_coin)
+            last_error = self.last_error
+        ranked = []
+        warmup_waiting = False
+        for coin, history in histories.items():
+            if not history or coin not in mids:
+                continue
+            latest_mid = mids[coin]
+            if latest_mid < min_price:
+                continue
+            return_30s = self._return_for(history, 30)
+            return_1m = self._return_for(history, 60)
+            return_5m = self._return_for(history, 300)
+            return_15m = self._return_for(history, 900)
+            if primary_basis == "5m" and return_5m is None:
+                warmup_waiting = True
+                continue
+            score = return_5m if return_5m is not None else 0.0
+            metadata = meta_by_coin.get(coin) or infer_perp_metadata(coin)
+            ranked.append(
+                {
+                    "coin": coin,
+                    "mid": trim_float(latest_mid, 6),
+                    "score_pct": trim_float(score, 4),
+                    "score_basis": "5m",
+                    "score_basis_description": "trend momentum",
+                    "category": metadata.get("category", "Crypto"),
+                    "description": metadata.get("description", f"{coin} crypto perp"),
+                    "return_30s": trim_float(return_30s or 0.0, 4),
+                    "return_1m": trim_float(return_1m or 0.0, 4),
+                    "return_5m": trim_float(return_5m or 0.0, 4),
+                    "return_15m": trim_float(return_15m or 0.0, 4),
+                }
+            )
+        if direction == "abs":
+            ranked.sort(key=lambda item: abs(float(item["score_pct"])), reverse=True)
+        else:
+            ranked.sort(key=lambda item: item["score_pct"], reverse=(direction != "down"))
+        if not ranked and primary_basis == "5m" and warmup_waiting and not last_error:
+            last_error = "Waiting for 5m history."
+        return {"leaders": ranked[:limit], "last_error": last_error}
+
+    def diagnostics(self):
+        with self.lock:
+            ready_5m = sum(1 for coin, history in self.history.items() if self._return_for(list(history), 300) is not None)
+            tracked = len(self.current_mids)
+            age = max(0.0, time.time() - self.last_message_at) if self.last_message_at else 9999.0
+            return {
+                "tracked": tracked,
+                "ready_5m": ready_5m,
+                "market_age": age,
+                "last_error": self.last_error,
+                "last_open_at": self.last_open_at,
+                "last_close_at": self.last_close_at,
+            }
+
+
+class LocalSandboxBot:
+    def __init__(self, market, config):
+        self.market = market
+        self.config = config
+        self.start_time = time.time()
+        self.available = float(config.starting_balance_usdc)
+        self.positions = {}
+        self.trades = deque(maxlen=30)
+        self.logs = deque(maxlen=12)
+        self.last_signal_reason = "Waiting for 5m history."
+        self.last_scan_error = ""
+        self.last_scan_at = 0.0
+        self.hot_perps = []
+        self.stats = {
+            "total_pnl": 0.0,
+            "daily_pnl": 0.0,
+            "consecutive_losses": 0,
+            "trades_today": 0,
+            "time_stops": 0,
+            "emergency_exits": 0,
+            "last_entry_fill_at": 0.0,
+        }
+        self.lock = Lock()
+        self.log("Local sandbox runner started.")
+
+    def log(self, message):
+        self.logs.appendleft(f"{format_timestamp(time.time())} {message}")
+
+    def live_pnl(self):
+        total = 0.0
+        for position in self.positions.values():
+            metrics = self.market.get_metrics_for_coin(position["coin"])
+            if not metrics:
+                continue
+            direction = 1.0 if position["side"] == "LONG" else -1.0
+            total += ((float(metrics["mid"]) - float(position["filled_price"])) * float(position["size"])) * direction
+        return total
+
+    def reserved_margin(self):
+        total = 0.0
+        for position in self.positions.values():
+            total += float(position.get("initial_margin", 0.0))
+        return total
+
+    def equity(self):
+        return self.available + self.reserved_margin() + self.live_pnl()
+
+    def update_position_extremes(self, position, current_mid):
+        position["highest_mid"] = max(position.get("highest_mid", current_mid), current_mid)
+        position["lowest_mid"] = min(position.get("lowest_mid", current_mid), current_mid)
+        entry = float(position["filled_price"])
+        side = position.get("side", "LONG")
+        direction = 1.0 if side == "LONG" else -1.0
+        favourable = pct_change(entry, position["highest_mid"]) * direction
+        adverse = pct_change(entry, position["lowest_mid"]) * direction
+        position["max_favourable_excursion"] = max(float(position.get("max_favourable_excursion", 0.0)), favourable)
+        position["max_adverse_excursion"] = min(float(position.get("max_adverse_excursion", 0.0)), adverse)
+
+    def evaluate_entry_candidate(self, coin, snapshot, metrics):
+        reasons = []
+        intended_side = "LONG"
+        if coin in self.positions:
+            reasons.append("position already active")
+        if len(self.positions) >= int(self.config.max_open_positions):
+            reasons.append("max open positions reached")
+        if metrics["market_data_age"] > MARKET_STALE_AFTER_SECONDS:
+            reasons.append("market data stale")
+        if float(snapshot.get("mid", 0.0)) < float(self.config.min_price_usdc):
+            reasons.append("price below minimum")
+        if not bool(metrics.get("has_return_5m", False)):
+            reasons.append("waiting for real 5m history")
+        r5m = float(metrics.get("return_5m", 0.0))
+        if abs(r5m) < abs(self.config.return_5m_trend_threshold_pct):
+            reasons.append(f"5m move {r5m:.4f}% below trigger")
+        intended_side = "LONG" if r5m >= 0 else "SHORT"
+        r30 = float(metrics.get("return_30s", 0.0))
+        if (r30 * r5m) <= 0:
+            reasons.append("30s move not confirming 5m trend")
+        if float(metrics.get("spread_pct", 0.0)) > float(self.config.spread_pct_max):
+            reasons.append(f"spread {metrics['spread_pct']:.4f}% above max")
+        bid_depth = float(snapshot.get("bid_depth_top5", 0.0) or 0.0)
+        ask_depth = float(snapshot.get("ask_depth_top5", 0.0) or 0.0)
+        depth_usdc = (bid_depth + ask_depth) * float(snapshot.get("mid", 0.0) or 0.0)
+        if self.config.min_top5_depth_usdc > 0 and depth_usdc < self.config.min_top5_depth_usdc:
+            reasons.append(f"top5 depth {depth_usdc:.0f} below minimum")
+        if reasons:
+            return False, " | ".join(reasons), intended_side
+        return True, "Entry conditions passed.", intended_side
+
+    def enter_position(self, coin, snapshot, intended_side):
+        leverage = max(1.0, float(self.config.leverage))
+        requested_notional = float(self.config.trade_notional_usdc) * leverage
+        notional = min(requested_notional, float(self.config.max_notional_usdc), self.available * leverage)
+        initial_margin = notional / leverage if leverage > 0 else notional
+        if initial_margin < 10.0:
+            self.log(f"Entry blocked for {coin}: available balance below 10 USDC minimum.")
+            return False
+        order_side = "buy" if intended_side == "LONG" else "sell"
+        submitted_price = float(snapshot["best_ask"] if order_side == "buy" else snapshot["best_bid"])
+        filled_price = apply_slippage(submitted_price, self.config.taker_exit_slippage_pct, order_side)
+        size = notional / filled_price
+        fee = apply_fee(notional, self.config.taker_fee_pct)
+        self.available -= initial_margin + fee
+        self.positions[coin] = {
+            "coin": coin,
+            "side": intended_side,
+            "size": size,
+            "submitted_price": submitted_price,
+            "filled_price": filled_price,
+            "notional": notional,
+            "initial_margin": initial_margin,
+            "leverage": leverage,
+            "entry_time": time.time(),
+            "entry_fees_paid": fee,
+            "highest_mid": snapshot["mid"],
+            "lowest_mid": snapshot["mid"],
+            "max_favourable_excursion": 0.0,
+            "max_adverse_excursion": 0.0,
+            "last_hold_check_at": 0.0,
+        }
+        self.stats["last_entry_fill_at"] = time.time()
+        self.log(f"{intended_side} entry filled for {coin} at {filled_price:.5f}. Fee {fee:.4f} USDC.")
+        return True
+
+    def exit_position(self, position, exit_reason):
+        coin = position["coin"]
+        snapshot = self.market.fetch_coin_book_snapshot(coin)
+        side = position.get("side", "LONG")
+        close_side = "buy" if side == "SHORT" else "sell"
+        submitted_price = float(snapshot["best_ask"] if close_side == "buy" else snapshot["best_bid"])
+        fill_price = apply_slippage(submitted_price, self.config.taker_exit_slippage_pct, close_side)
+        size = float(position["size"])
+        direction = 1.0 if side == "LONG" else -1.0
+        gross_pnl = ((fill_price - float(position["filled_price"])) * size) * direction
+        exit_notional = size * fill_price
+        exit_fee = apply_fee(exit_notional, self.config.taker_fee_pct)
+        entry_fee = float(position.get("entry_fees_paid", 0.0))
+        net_pnl = gross_pnl - entry_fee - exit_fee
+        initial_margin = float(position.get("initial_margin", 0.0))
+        self.available += initial_margin + gross_pnl - exit_fee
+        trade = {
+            "timestamp": time.time(),
+            "coin": coin,
+            "side": side,
+            "entry_price": float(position["filled_price"]),
+            "exit_price": fill_price,
+            "notional": float(position["notional"]),
+            "net_pnl": net_pnl,
+            "fees_paid": entry_fee + exit_fee,
+            "exit_reason": exit_reason,
+            "seconds_open": time.time() - float(position["entry_time"]),
+            "equity_after_trade": self.equity(),
+        }
+        self.trades.appendleft(trade)
+        del self.positions[coin]
+        self.stats["total_pnl"] += net_pnl
+        self.stats["daily_pnl"] += net_pnl
+        self.stats["trades_today"] += 1
+        if net_pnl < 0:
+            self.stats["consecutive_losses"] += 1
+        else:
+            self.stats["consecutive_losses"] = 0
+        if exit_reason == "TIME_STOP":
+            self.stats["time_stops"] += 1
+        if exit_reason == "EMERGENCY_EXIT":
+            self.stats["emergency_exits"] += 1
+        self.log(f"{side} exit {exit_reason} for {coin} at {fill_price:.5f}. Net PnL {net_pnl:.4f} USDC.")
+
+    def manage_positions(self):
+        for coin, position in list(self.positions.items()):
+            market_metrics = self.market.get_metrics_for_coin(coin)
+            if not market_metrics:
+                continue
+            current_mid = float(market_metrics["mid"])
+            self.update_position_extremes(position, current_mid)
+            side = position.get("side", "LONG")
+            direction = 1.0 if side == "LONG" else -1.0
+            change_pct = pct_change(float(position["filled_price"]), current_mid) * direction
+            seconds_open = time.time() - float(position["entry_time"])
+            if change_pct <= -abs(float(self.config.emergency_exit_drop_pct)) and seconds_open <= int(self.config.emergency_window_seconds):
+                self.exit_position(position, "EMERGENCY_EXIT")
+                continue
+            if change_pct <= -abs(float(self.config.stop_loss_pct)):
+                self.exit_position(position, "STOP_LOSS")
+                continue
+            if seconds_open < 60:
+                continue
+            if (time.time() - float(position.get("last_hold_check_at", 0.0) or 0.0)) < 10:
+                continue
+            if change_pct >= float(self.config.take_profit_pct):
+                self.exit_position(position, "TAKE_PROFIT")
+                continue
+            if change_pct <= 0 and (float(market_metrics.get("return_1m", 0.0)) * direction) < 0:
+                self.exit_position(position, "TIME_STOP")
+                continue
+            position["last_hold_check_at"] = time.time()
+
+    def attempt_entries(self):
+        if (time.time() - self.last_scan_at) < SCAN_INTERVAL_SECONDS:
+            return
+        self.last_scan_at = time.time()
+        hot = self.market.get_hot_perps(
+            limit=12,
+            primary_basis="5m",
+            min_price=float(self.config.min_price_usdc),
+            direction="abs",
+        )
+        self.hot_perps = hot["leaders"]
+        self.last_scan_error = hot["last_error"] or ""
+        if not self.hot_perps:
+            self.last_signal_reason = self.last_scan_error or "No candidates."
+            return
+        for candidate in self.hot_perps:
+            if len(self.positions) >= int(self.config.max_open_positions):
+                self.last_signal_reason = "Max open positions reached."
+                return
+            coin = candidate["coin"]
+            if coin in self.positions:
+                continue
+            try:
+                snapshot, metrics = self.market.build_coin_snapshot_and_metrics(coin)
+            except Exception as exc:
+                self.last_signal_reason = f"{coin}: snapshot error: {exc}"
+                continue
+            if not snapshot or not metrics:
+                continue
+            passed, reason, intended_side = self.evaluate_entry_candidate(coin, snapshot, metrics)
+            self.last_signal_reason = f"{coin}: {reason}"
+            if not passed:
+                continue
+            if self.enter_position(coin, snapshot, intended_side):
+                return
+
+    def step(self):
+        with self.lock:
+            self.manage_positions()
+            self.attempt_entries()
+
+    def status_text(self):
+        diag = self.market.diagnostics()
+        if diag["last_error"]:
+            return f"WS issue: {diag['last_error']}"
+        if diag["ready_5m"] <= 0:
+            return "Waiting for 5m history."
+        if self.positions:
+            return f"Managing {len(self.positions)} position(s)."
+        return self.last_signal_reason
+
+
+def style_pct(value):
+    if value > 0:
+        return "[green]"
+    if value < 0:
+        return "[red]"
+    return "[dim]"
+
+
+def build_summary_table(bot, market):
+    diag = market.diagnostics()
+    table = Table.grid(expand=True)
+    table.add_column(justify="left")
+    table.add_column(justify="left")
+    table.add_column(justify="left")
+    table.add_column(justify="left")
+    table.add_row(
+        f"[bold]Available[/bold]\n{bot.available:,.2f} USDC",
+        f"[bold]Equity[/bold]\n{bot.equity():,.2f} USDC",
+        f"[bold]Live PnL[/bold]\n{bot.live_pnl():,.2f} USDC",
+        f"[bold]5m Ready[/bold]\n{diag['ready_5m']} / {diag['tracked']}",
+    )
+    table.add_row(
+        f"[bold]Open Positions[/bold]\n{len(bot.positions)}",
+        f"[bold]Total PnL[/bold]\n{bot.stats['total_pnl']:,.2f} USDC",
+        f"[bold]Trades[/bold]\n{bot.stats['trades_today']}",
+        f"[bold]Feed Age[/bold]\n{diag['market_age']:.1f}s",
+    )
+    return table
+
+
+def build_hot_table(bot):
+    table = Table(expand=True)
+    table.add_column("Perp", style="bold")
+    table.add_column("Description")
+    table.add_column("Basis")
+    table.add_column("30s", justify="right")
+    table.add_column("1m", justify="right")
+    table.add_column("5m", justify="right")
+    table.add_column("15m", justify="right")
+    table.add_column("Price", justify="right")
+    leaders = bot.hot_perps[:10]
+    if not leaders:
+        table.add_row("-", bot.last_scan_error or "Waiting for 5m history.", "-", "-", "-", "-", "-", "-")
+        return table
+    for item in leaders:
+        table.add_row(
+            item["coin"],
+            item.get("description", ""),
+            f"{item['score_basis']} ({item['score_basis_description']})",
+            f"{item['return_30s']:.4f}%",
+            f"{item['return_1m']:.4f}%",
+            f"{item['return_5m']:.4f}%",
+            f"{item['return_15m']:.4f}%",
+            f"{item['mid']:.5f}",
+        )
+    return table
+
+
+def build_positions_table(bot, market):
+    table = Table(expand=True)
+    table.add_column("Perp", style="bold")
+    table.add_column("Side")
+    table.add_column("Entry", justify="right")
+    table.add_column("Current", justify="right")
+    table.add_column("Size", justify="right")
+    table.add_column("PnL", justify="right")
+    table.add_column("PnL %", justify="right")
+    table.add_column("Open", justify="right")
+    if not bot.positions:
+        table.add_row("-", "No active positions", "-", "-", "-", "-", "-", "-")
+        return table
+    for coin, position in sorted(bot.positions.items()):
+        metrics = market.get_metrics_for_coin(coin)
+        current_mid = float(metrics["mid"]) if metrics else float(position["filled_price"])
+        direction = 1.0 if position["side"] == "LONG" else -1.0
+        pnl = ((current_mid - float(position["filled_price"])) * float(position["size"])) * direction
+        pnl_pct = pct_change(float(position["filled_price"]), current_mid) * direction
+        pnl_style = style_pct(pnl)
+        table.add_row(
+            coin,
+            position["side"],
+            f"{position['filled_price']:.5f}",
+            f"{current_mid:.5f}",
+            f"{position['size']:.4f}",
+            f"{pnl_style}{pnl:,.4f}[/]",
+            f"{pnl_style}{pnl_pct:,.4f}%[/]",
+            f"{int(time.time() - float(position['entry_time']))}s",
+        )
+    return table
+
+
+def build_trades_table(bot):
+    table = Table(expand=True)
+    table.add_column("Time")
+    table.add_column("Perp")
+    table.add_column("Side")
+    table.add_column("Exit")
+    table.add_column("Entry USDC", justify="right")
+    table.add_column("Exit Equity", justify="right")
+    table.add_column("Net PnL", justify="right")
+    if not bot.trades:
+        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-")
+        return table
+    for trade in list(bot.trades)[:8]:
+        pnl_style = style_pct(trade["net_pnl"])
+        table.add_row(
+            format_timestamp(trade["timestamp"]),
+            trade["coin"],
+            trade["side"],
+            trade["exit_reason"],
+            f"{trade['notional']:,.2f}",
+            f"{trade['equity_after_trade']:,.2f}",
+            f"{pnl_style}{trade['net_pnl']:,.4f}[/]",
+        )
+    return table
+
+
+def build_logs_panel(bot):
+    lines = list(bot.logs)[:10]
+    if not lines:
+        lines = ["No logs yet."]
+    return "\n".join(lines)
+
+
+def build_dashboard(bot, market):
+    diag = market.diagnostics()
+    title = Text("MuzzWorld Local Sandbox Runner", style="bold white")
+    subtitle = Text(
+        f"5m trend-following | Runtime {int(time.time() - bot.start_time)}s | "
+        f"WS open {format_timestamp(diag['last_open_at']) or 'n/a'}",
+        style="cyan",
+    )
+    status = Text(bot.status_text(), style="bold yellow" if "Waiting" in bot.status_text() else "bold green")
+    header = Panel(Group(title, subtitle, status), border_style="cyan")
+    summary = Panel(build_summary_table(bot, market), title="Account", border_style="blue")
+    hot = Panel(build_hot_table(bot), title="Top Movers", border_style="magenta")
+    positions = Panel(build_positions_table(bot, market), title="Open Positions", border_style="green")
+    trades = Panel(build_trades_table(bot), title="Recent Trades", border_style="yellow")
+    logs = Panel(build_logs_panel(bot), title="Action Log", border_style="white")
+    return Group(header, summary, hot, positions, trades, logs)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Local MuzzWorld terminal runner")
+    parser.add_argument("--trade-notional", type=float, default=250.0, help="Base trade notional in USDC")
+    parser.add_argument("--max-notional", type=float, default=1000.0, help="Maximum notional per trade")
+    parser.add_argument("--max-open-positions", type=int, default=10, help="Maximum simultaneous sandbox positions")
+    parser.add_argument("--leverage", type=float, default=1.0, help="Sandbox leverage")
+    parser.add_argument("--starting-balance", type=float, default=10000.0, help="Starting sandbox balance in USDC")
+    parser.add_argument("--trend-trigger", type=float, default=0.40, help="Absolute 5m move required to consider entry")
+    parser.add_argument("--spread-max", type=float, default=0.025, help="Maximum spread percent allowed")
+    parser.add_argument("--min-top5-depth", type=float, default=2000.0, help="Minimum combined top5 book depth in USDC")
+    return parser.parse_args()
+
+
+def main():
+    if IMPORT_ERROR:
+        raise RuntimeError(f"Cannot start local runner: {IMPORT_ERROR}")
+    args = parse_args()
+    config = BotConfig(
+        trade_notional_usdc=args.trade_notional,
+        max_notional_usdc=args.max_notional,
+        max_open_positions=args.max_open_positions,
+        leverage=args.leverage,
+        starting_balance_usdc=args.starting_balance,
+        return_5m_trend_threshold_pct=args.trend_trigger,
+        spread_pct_max=args.spread_max,
+        min_top5_depth_usdc=args.min_top5_depth,
+    )
+    stop_event = Event()
+    market = MarketUniverse(stop_event)
+    bot = LocalSandboxBot(market, config)
+    market.start()
+
+    def handle_stop(_signum, _frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, handle_stop)
+    signal.signal(signal.SIGTERM, handle_stop)
+
+    refresh_hz = 4
+    try:
+        with Live(build_dashboard(bot, market), console=console, refresh_per_second=refresh_hz, screen=True) as live:
+            while not stop_event.is_set():
+                try:
+                    bot.step()
+                except Exception as exc:
+                    bot.log(f"Loop error: {exc}")
+                live.update(build_dashboard(bot, market))
+                time.sleep(1.0 / refresh_hz)
+    finally:
+        stop_event.set()
+        market.stop()
+        console.print("\nStopped local sandbox runner.")
+
+
+if __name__ == "__main__":
+    main()
