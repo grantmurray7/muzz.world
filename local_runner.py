@@ -57,6 +57,7 @@ SCAN_INTERVAL_SECONDS = 2.0
 BLOCK_WINDOW_SECONDS = 120
 BLOCK_STEP_SECONDS = 5
 BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)] + ["Latest"]
+# Standard Hyperliquid perps use bare asset names; HIP-3 perps use -USDC symbols.
 CURATED_PERP_SYMBOLS = [
     "BTC",
     "ETH",
@@ -78,6 +79,16 @@ CURATED_PERP_SYMBOLS = [
     "LTC",
     "SUI",
     "AVAX",
+    "GOLD-USDC",
+    "NVDA-USDC",
+    "AAPL-USDC",
+    "GOOGL-USDC",
+    "MSFT-USDC",
+    "SILVER-USDC",
+    "AMZN-USDC",
+    "META-USDC",
+    "TSLA-USDC",
+    "NFLX-USDC",
 ]
 
 console = Console()
@@ -189,6 +200,16 @@ KNOWN_PERP_METADATA = {
     "BRENT": ("Commodity", "Brent crude oil"),
     "NATGAS": ("Commodity", "Natural gas"),
     "COPPER": ("Commodity", "Copper"),
+    "GOLD-USDC": ("Commodity", "Gold"),
+    "SILVER-USDC": ("Commodity", "Silver"),
+    "AAPL-USDC": ("Equity", "Apple"),
+    "AMZN-USDC": ("Equity", "Amazon"),
+    "GOOGL-USDC": ("Equity", "Alphabet"),
+    "META-USDC": ("Equity", "Meta"),
+    "MSFT-USDC": ("Equity", "Microsoft"),
+    "NFLX-USDC": ("Equity", "Netflix"),
+    "NVDA-USDC": ("Equity", "NVIDIA"),
+    "TSLA-USDC": ("Equity", "Tesla"),
 }
 
 
@@ -378,11 +399,9 @@ class MarketUniverse:
             available_assets[coin] = asset
         for coin in CURATED_PERP_SYMBOLS:
             asset = available_assets.get(coin)
-            if not asset:
-                continue
             universe.append(coin)
             meta_by_coin[coin] = infer_perp_metadata(coin, asset)
-            sz_decimals[coin] = int(asset.get("szDecimals", 0))
+            sz_decimals[coin] = int(asset.get("szDecimals", 0)) if asset else 0
         with self.lock:
             self.universe = universe
             self.meta_by_coin = meta_by_coin
@@ -1245,7 +1264,7 @@ def build_dashboard(bot, market):
         header_items.append(warmup_bar)
     header = Panel(Group(*header_items), border_style="white")
     summary = Panel(build_summary_table(bot, market), title="Account", border_style="white")
-    hot = Panel(build_hot_table(bot), title="Top Movers", border_style="white")
+    hot = Panel(build_hot_table(bot), title="Tracked Symbols", border_style="white")
     positions = Panel(build_positions_table(bot, market), title="Open Positions", border_style="white")
     trades = Panel(build_trades_table(bot), title="Recent Trades", border_style="white")
     logs = Panel(build_logs_panel(bot), title="Action Log", border_style="white")
