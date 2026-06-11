@@ -1198,10 +1198,11 @@ def parse_args():
 
 
 def prompt_float_value(label, default):
-    if not sys.stdin or not sys.stdin.isatty():
-        return default
     while True:
-        raw = input(f"{label} [{default}]: ").strip()
+        try:
+            raw = input(f"{label} [{default}]: ").strip()
+        except EOFError:
+            return default
         if not raw:
             return default
         try:
