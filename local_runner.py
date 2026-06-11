@@ -783,10 +783,16 @@ class LocalSandboxBot:
         if self.config.min_top5_depth_usdc > 0 and depth_usdc < self.config.min_top5_depth_usdc:
             reasons.append(f"top5 depth {depth_usdc:.0f} below minimum")
         if reasons:
-            return False, " | ".join(reasons), intended_side
-        return True, "Entry conditions passed (three rising 5s blocks).", intended_side
+            return False, " | ".join(reasons), intended_side, ""
+        entry_context = (
+            f"Three rising 5s blocks: "
+            f"{latest_three_blocks[0]:.2f}% -> {latest_three_blocks[1]:.2f}% -> {latest_three_blocks[2]:.2f}% | "
+            f"spread {float(metrics.get('spread_pct', 0.0)):.4f}% | "
+            f"depth {depth_usdc:,.0f} USDC"
+        )
+        return True, "Entry conditions passed (three rising 5s blocks).", intended_side, entry_context
 
-    def enter_position(self, coin, snapshot, intended_side):
+    def enter_position(self, coin, snapshot, intended_side, entry_reason=""):
         leverage = max(1.0, float(self.config.leverage))
         requested_notional = float(self.config.trade_notional_usdc) * leverage
         notional = min(requested_notional, float(self.config.max_notional_usdc), self.available * leverage)
@@ -817,9 +823,10 @@ class LocalSandboxBot:
             "max_adverse_excursion": 0.0,
             "last_hold_check_at": 0.0,
             "extension_checks_completed": 0,
+            "entry_reason": entry_reason,
         }
         self.stats["last_entry_fill_at"] = time.time()
-        self.log(f"{intended_side} entry filled for {coin} at {filled_price:.5f}. Fee {fee:.4f} USDC.")
+        self.log(f"{intended_side} entry filled for {coin} at {filled_price:.5f}. Fee {fee:.4f} USDC. {entry_reason}")
         return True
 
     def exit_position(self, position, exit_reason):
@@ -926,11 +933,11 @@ class LocalSandboxBot:
                 continue
             if not snapshot or not metrics:
                 continue
-            passed, reason, intended_side = self.evaluate_entry_candidate(coin, snapshot, metrics)
+            passed, reason, intended_side, entry_reason = self.evaluate_entry_candidate(coin, snapshot, metrics)
             self.last_signal_reason = f"{coin}: {reason}"
             if not passed:
                 continue
-            if self.enter_position(coin, snapshot, intended_side):
+            if self.enter_position(coin, snapshot, intended_side, entry_reason):
                 return
 
     def step(self):
@@ -1030,8 +1037,9 @@ def build_positions_table(bot, market):
     table.add_column("Current", justify="right", no_wrap=True)
     table.add_column("Gain %", justify="right", no_wrap=True)
     table.add_column("Status", no_wrap=True, overflow="ellipsis", max_width=18)
+    table.add_column("Opened Why", overflow="fold")
     if not bot.positions:
-        table.add_row("-", "No active positions", "-", "-", "-", "-")
+        table.add_row("-", "No active positions", "-", "-", "-", "-", "-")
         return table
     for coin, position in sorted(bot.positions.items()):
         metrics = market.get_metrics_for_coin(coin)
@@ -1052,6 +1060,7 @@ def build_positions_table(bot, market):
             f"{current_mid:.5f}",
             f"{pnl_style}{pnl_pct:,.4f}%[/]",
             status,
+            position.get("entry_reason", ""),
         )
     return table
 
