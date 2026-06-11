@@ -1197,10 +1197,24 @@ def parse_args():
     return parser.parse_args()
 
 
+def prompt_float_value(label, default):
+    if not sys.stdin or not sys.stdin.isatty():
+        return default
+    while True:
+        raw = input(f"{label} [{default}]: ").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            console.print(f"Invalid number: {raw}", style="red")
+
+
 def main():
     if IMPORT_ERROR:
         raise RuntimeError(f"Cannot start local runner: {IMPORT_ERROR}")
     args = parse_args()
+    args.leverage = prompt_float_value("Leverage", args.leverage)
     config = BotConfig(
         trade_notional_usdc=args.trade_notional,
         max_notional_usdc=args.max_notional,
