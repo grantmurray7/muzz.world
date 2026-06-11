@@ -54,10 +54,11 @@ MARKET_HISTORY_SECONDS = 3900
 MARKET_STALE_AFTER_SECONDS = 20.0
 META_REFRESH_SECONDS = 900.0
 SCAN_INTERVAL_SECONDS = 2.0
+XYZ_PERP_DEX = "xyz"
 BLOCK_WINDOW_SECONDS = 120
 BLOCK_STEP_SECONDS = 5
 BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)] + ["Latest"]
-# Standard Hyperliquid perps use bare asset names; HIP-3 perps use -USDC symbols.
+# Standard Hyperliquid perps use bare asset names. XYZ HIP-3 perps use `xyz:<ticker>` in the API.
 CURATED_PERP_SYMBOLS = [
     "BTC",
     "ETH",
@@ -79,16 +80,16 @@ CURATED_PERP_SYMBOLS = [
     "LTC",
     "SUI",
     "AVAX",
-    "GOLD-USDC",
-    "NVDA-USDC",
-    "AAPL-USDC",
-    "GOOGL-USDC",
-    "MSFT-USDC",
-    "SILVER-USDC",
-    "AMZN-USDC",
-    "META-USDC",
-    "TSLA-USDC",
-    "NFLX-USDC",
+    "xyz:GOLD",
+    "xyz:NVDA",
+    "xyz:AAPL",
+    "xyz:GOOGL",
+    "xyz:MSFT",
+    "xyz:SILVER",
+    "xyz:AMZN",
+    "xyz:META",
+    "xyz:TSLA",
+    "xyz:NFLX",
 ]
 
 console = Console()
@@ -183,6 +184,14 @@ def has_three_real_5s_blocks(history):
     return bool(history) and all(nearest_value(history, seconds_ago, "mid") is not None for seconds_ago in checkpoints)
 
 
+def format_coin_label(coin):
+    if not coin:
+        return "-"
+    if coin.startswith(f"{XYZ_PERP_DEX}:"):
+        return f"{coin.split(':', 1)[1]}-USDC"
+    return coin
+
+
 FX_CODE_TO_NAME = {
     "AUD": "Australian dollar",
     "CAD": "Canadian dollar",
@@ -205,16 +214,16 @@ KNOWN_PERP_METADATA = {
     "BRENT": ("Commodity", "Brent crude oil"),
     "NATGAS": ("Commodity", "Natural gas"),
     "COPPER": ("Commodity", "Copper"),
-    "GOLD-USDC": ("Commodity", "Gold"),
-    "SILVER-USDC": ("Commodity", "Silver"),
-    "AAPL-USDC": ("Equity", "Apple"),
-    "AMZN-USDC": ("Equity", "Amazon"),
-    "GOOGL-USDC": ("Equity", "Alphabet"),
-    "META-USDC": ("Equity", "Meta"),
-    "MSFT-USDC": ("Equity", "Microsoft"),
-    "NFLX-USDC": ("Equity", "Netflix"),
-    "NVDA-USDC": ("Equity", "NVIDIA"),
-    "TSLA-USDC": ("Equity", "Tesla"),
+    "XYZ:GOLD": ("Commodity", "Gold"),
+    "XYZ:SILVER": ("Commodity", "Silver"),
+    "XYZ:AAPL": ("Equity", "Apple"),
+    "XYZ:AMZN": ("Equity", "Amazon"),
+    "XYZ:GOOGL": ("Equity", "Alphabet"),
+    "XYZ:META": ("Equity", "Meta"),
+    "XYZ:MSFT": ("Equity", "Microsoft"),
+    "XYZ:NFLX": ("Equity", "Netflix"),
+    "XYZ:NVDA": ("Equity", "NVIDIA"),
+    "XYZ:TSLA": ("Equity", "Tesla"),
 }
 
 
@@ -390,18 +399,19 @@ class MarketUniverse:
         with self.lock:
             if not force and self.universe and (now - self.last_meta_refresh_at) < META_REFRESH_SECONDS:
                 return
-        meta = self._post_info({"type": "meta"})
         universe = []
         meta_by_coin = {}
         sz_decimals = {}
         available_assets = {}
-        for asset in meta.get("universe") or []:
-            coin = asset.get("name")
-            if not coin:
-                continue
-            if asset.get("isDelisted"):
-                continue
-            available_assets[coin] = asset
+        for meta_payload in ({"type": "meta"}, {"type": "meta", "dex": XYZ_PERP_DEX}):
+            meta = self._post_info(meta_payload)
+            for asset in meta.get("universe") or []:
+                coin = asset.get("name")
+                if not coin:
+                    continue
+                if asset.get("isDelisted"):
+                    continue
+                available_assets[coin] = asset
         for coin in CURATED_PERP_SYMBOLS:
             asset = available_assets.get(coin)
             universe.append(coin)
@@ -458,6 +468,7 @@ class MarketUniverse:
             self.last_open_at = time.time()
             self.last_error = ""
         ws_app.send(json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}}))
+        ws_app.send(json.dumps({"method": "subscribe", "subscription": {"type": "allMids", "dex": XYZ_PERP_DEX}}))
 
     def _on_ws_message(self, _ws_app, raw_message):
         try:
@@ -556,7 +567,7 @@ class MarketUniverse:
         }
 
     def fetch_coin_book_snapshot(self, coin):
-        book = self.rest_info.l2_snapshot(coin)
+        book = self._post_info({"type": "l2Book", "coin": coin})
         snapshot = self.build_book_snapshot(book)
         snapshot["coin"] = coin
         return snapshot
@@ -1157,7 +1168,7 @@ def build_hot_table(bot):
         if len(block_cells) < len(BLOCK_COLUMN_LABELS):
             block_cells.extend(["-"] * (len(BLOCK_COLUMN_LABELS) - len(block_cells)))
         table.add_row(
-            Text(item["coin"], style="bold white" if item.get("has_live_data") else "dim"),
+            Text(format_coin_label(item["coin"]), style="bold white" if item.get("has_live_data") else "dim"),
             *block_cells,
         )
     return table
@@ -1194,7 +1205,7 @@ def build_positions_table(bot, market):
             extension_checks = int(position.get("extension_checks_completed", 0))
             status = "10s review due" if extension_checks <= 0 else f"10s extension - {extension_checks}"
         table.add_row(
-            coin,
+            format_coin_label(coin),
             position["side"],
             f"{position['filled_price']:.5f}",
             f"{current_mid:.5f}",
@@ -1232,7 +1243,7 @@ def build_trades_table(bot):
         pnl_style = style_pct(trade["net_pnl"])
         table.add_row(
             format_timestamp(trade["timestamp"]),
-            trade["coin"],
+            format_coin_label(trade["coin"]),
             trade["side"],
             trade["exit_reason"],
             f"{trade.get('entry_usdc', trade['notional']):,.2f}",
