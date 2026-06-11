@@ -1158,7 +1158,6 @@ class LocalSandboxBot:
             if len(latest_three_blocks) < 3:
                 reason = "waiting for three real 5s blocks."
                 self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
-                self.log_entry_rejection(coin, reason)
                 continue
             positive_blocks = sum(1 for value in latest_three_blocks if float(value) > 0.0)
             if positive_blocks < 2:
