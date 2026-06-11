@@ -957,6 +957,16 @@ def style_pct(value):
     return "[dim]"
 
 
+def render_block_pct(value):
+    if value > 0:
+        style = "bold black on green"
+    elif value < 0:
+        style = "bold white on red"
+    else:
+        style = "black on grey70"
+    return Text(f"{value:.2f}%", style=style)
+
+
 def build_summary_table(bot, market):
     diag = market.diagnostics()
     table = Table.grid(expand=True)
@@ -996,7 +1006,7 @@ def build_hot_table(bot):
         return table
     for item in leaders:
         block_values = item.get("block_changes_5s") or []
-        block_cells = [f"{value:.4f}%" for value in block_values]
+        block_cells = [render_block_pct(value) for value in block_values]
         if len(block_cells) < len(BLOCK_COLUMN_LABELS):
             block_cells.extend(["-"] * (len(BLOCK_COLUMN_LABELS) - len(block_cells)))
         table.add_row(
