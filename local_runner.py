@@ -59,7 +59,7 @@ BOOK_SNAPSHOT_TIMEOUT_SECONDS = 1.5
 MAX_BOOK_CHECKS_PER_SCAN = 3
 BLOCK_WINDOW_SECONDS = 120
 BLOCK_STEP_SECONDS = 5
-BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)] + ["Latest"]
+BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)]
 # Standard Hyperliquid perps use bare asset names. XYZ HIP-3 perps use `xyz:<ticker>` in the API.
 CURATED_PERP_SYMBOLS = [
     "BTC",
@@ -174,10 +174,6 @@ def rolling_block_changes(history, total_window=BLOCK_WINDOW_SECONDS, step=BLOCK
         newer_mid = nearest_value(history, newer_seconds_ago, "mid")
         pct = None if older_mid is None or newer_mid is None else pct_change(older_mid, newer_mid)
         changes.append({"label": f"-{start_seconds_ago}s", "pct": pct})
-    latest_mid = nearest_value(history, 0, "mid")
-    if latest_mid is None:
-        return []
-    changes.append({"label": "Latest", "pct": 0.0})
     return changes
 
 
@@ -295,7 +291,7 @@ def compute_market_metrics(snapshot, history):
     acceleration_15s = return_15s - prior_15s_return if anchor_30s is not None and anchor_15s is not None else 0.0
     acceleration_30s = return_30s - (prior_90s_return / 3.0) if anchor_2m is not None and anchor_30s is not None else 0.0
     block_changes_5s = rolling_block_changes(history)
-    real_block_changes_5s = [item for item in (block_changes_5s[:-1] if block_changes_5s else []) if item["pct"] is not None]
+    real_block_changes_5s = [item for item in block_changes_5s if item["pct"] is not None]
     latest_three_blocks = [item["pct"] for item in real_block_changes_5s[-3:]] if len(real_block_changes_5s) >= 3 else []
     latest_5s_block = float(real_block_changes_5s[-1]["pct"]) if real_block_changes_5s else 0.0
     latest_three_increasing = (
@@ -344,7 +340,7 @@ def compute_market_metrics(snapshot, history):
 class BotConfig:
     trade_notional_usdc: float = 2500.0
     max_notional_usdc: float = 2500.0
-    max_open_positions: int = 1
+    max_open_positions: int = 2
     leverage: float = 1.0
     take_profit_pct: float = 0.25
     stop_loss_pct: float = 0.25
@@ -358,6 +354,7 @@ class BotConfig:
     acceleration_5s_min_delta_pct: float = 0.015
     min_latest_5s_block_pct: float = 0.10
     min_sum_latest_three_blocks_pct: float = 0.25
+    equity_fraction_per_trade: float = 0.25
     spread_pct_max: float = 0.01
     min_top5_depth_usdc: float = 50000.0
     cooldown_after_exit_seconds: int = 30
@@ -747,7 +744,7 @@ class MarketUniverse:
                 or acceleration_5s is None
             ):
                 warmup_waiting = True
-            real_block_changes = [item for item in block_changes[:-1] if item["pct"] is not None]
+            real_block_changes = [item for item in block_changes if item["pct"] is not None]
             if not real_block_changes:
                 warmup_waiting = True
                 leaders.append(leader)
@@ -934,7 +931,11 @@ class LocalSandboxBot:
         leverage = max(1.0, float(self.config.leverage))
         fee_rate = float(self.config.taker_fee_pct) / 100.0
         max_affordable_notional = self.available / ((1.0 / leverage) + fee_rate) if leverage > 0 else self.available
-        requested_notional = float(self.config.trade_notional_usdc) * leverage
+        target_margin = min(
+            float(self.config.trade_notional_usdc),
+            max(0.0, self.equity()) * float(self.config.equity_fraction_per_trade),
+        )
+        requested_notional = target_margin * leverage
         target_notional = min(requested_notional, float(self.config.max_notional_usdc), max_affordable_notional)
         initial_margin = target_notional / leverage if leverage > 0 else target_notional
         if initial_margin < 10.0:
@@ -1269,15 +1270,13 @@ def build_trades_table(bot):
     table.add_column("Entry USDC", justify="right", no_wrap=True)
     table.add_column("Exit USDC", justify="right", no_wrap=True)
     table.add_column("Final %", justify="right", no_wrap=True)
-    table.add_column("PnL", justify="right", no_wrap=True)
     table.add_column("Net PnL", justify="right", no_wrap=True)
     table.add_column("Opened Why", overflow="fold")
     if not bot.trades:
-        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-", "-", "-", "-")
+        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-", "-", "-")
         return table
     for trade in list(bot.trades)[:8]:
         final_style = style_pct(float(trade.get("final_change_pct", 0.0)))
-        gross_style = style_pct(trade["gross_pnl"])
         pnl_style = style_pct(trade["net_pnl"])
         table.add_row(
             format_timestamp(trade["timestamp"]),
@@ -1287,7 +1286,6 @@ def build_trades_table(bot):
             f"{trade.get('entry_usdc', trade['notional']):,.2f}",
             f"{trade.get('exit_usdc', trade.get('equity_after_trade', 0.0)):,.2f}",
             f"{final_style}{trade.get('final_change_pct', 0.0):,.4f}%[/]",
-            f"{gross_style}{trade['gross_pnl']:,.4f}[/]",
             f"{pnl_style}{trade['net_pnl']:,.4f}[/]",
             trade.get("entry_reason", ""),
         )
@@ -1350,7 +1348,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Local MuzzWorld terminal runner")
     parser.add_argument("--trade-notional", type=float, default=2500.0, help="Base trade notional in USDC")
     parser.add_argument("--max-notional", type=float, default=2500.0, help="Maximum notional per trade")
-    parser.add_argument("--max-open-positions", type=int, default=1, help="Maximum simultaneous sandbox positions")
+    parser.add_argument("--max-open-positions", type=int, default=2, help="Maximum simultaneous sandbox positions")
     parser.add_argument("--leverage", type=float, default=1.0, help="Sandbox leverage")
     parser.add_argument("--starting-balance", type=float, default=10000.0, help="Starting sandbox balance in USDC")
     parser.add_argument("--trend-trigger", type=float, default=0.20, help="Minimum 2m move required to consider entry")
@@ -1360,6 +1358,7 @@ def parse_args():
     parser.add_argument("--early-30s-trigger", type=float, default=0.08, help="Minimum 30s move to allow early entry before full 2m trigger")
     parser.add_argument("--min-latest-5s-block", type=float, default=0.10, help="Minimum latest 5s block percent")
     parser.add_argument("--min-latest-three-sum", type=float, default=0.25, help="Minimum sum of latest three 5s blocks percent")
+    parser.add_argument("--equity-fraction-per-trade", type=float, default=0.25, help="Fraction of equity to stake per trade before cap")
     parser.add_argument("--spread-max", type=float, default=0.01, help="Maximum spread percent allowed")
     parser.add_argument("--min-top5-depth", type=float, default=50000.0, help="Minimum combined top5 book depth in USDC")
     parser.add_argument("--cooldown-after-exit", type=int, default=30, help="Seconds to wait after any exit before new entries")
@@ -1396,8 +1395,12 @@ def main():
         acceleration_15s_min_delta_pct=args.accel15_trigger,
         acceleration_5s_min_delta_pct=args.accel5_trigger,
         early_entry_return_30s_pct=args.early_30s_trigger,
+        min_latest_5s_block_pct=args.min_latest_5s_block,
+        min_sum_latest_three_blocks_pct=args.min_latest_three_sum,
+        equity_fraction_per_trade=args.equity_fraction_per_trade,
         spread_pct_max=args.spread_max,
         min_top5_depth_usdc=args.min_top5_depth,
+        cooldown_after_exit_seconds=args.cooldown_after_exit,
     )
     stop_event = Event()
     market = MarketUniverse(stop_event)
