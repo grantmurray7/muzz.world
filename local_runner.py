@@ -55,6 +55,8 @@ MARKET_STALE_AFTER_SECONDS = 20.0
 META_REFRESH_SECONDS = 900.0
 SCAN_INTERVAL_SECONDS = 2.0
 XYZ_PERP_DEX = "xyz"
+BOOK_SNAPSHOT_TIMEOUT_SECONDS = 1.5
+MAX_BOOK_CHECKS_PER_SCAN = 3
 BLOCK_WINDOW_SECONDS = 120
 BLOCK_STEP_SECONDS = 5
 BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)] + ["Latest"]
@@ -390,7 +392,8 @@ class MarketUniverse:
         self.rest_info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
 
     def _post_info(self, payload):
-        response = requests.post(HYPERLIQUID_INFO_URL, json=payload, timeout=10)
+        timeout = BOOK_SNAPSHOT_TIMEOUT_SECONDS if payload.get("type") == "l2Book" else 10
+        response = requests.post(HYPERLIQUID_INFO_URL, json=payload, timeout=timeout)
         response.raise_for_status()
         return response.json()
 
@@ -1062,6 +1065,7 @@ class LocalSandboxBot:
             ),
             reverse=True,
         )
+        checks_completed = 0
         for candidate in candidates_for_entry:
             if len(self.positions) >= int(self.config.max_open_positions):
                 self.last_signal_reason = "Max open positions reached."
@@ -1069,15 +1073,29 @@ class LocalSandboxBot:
             coin = candidate["coin"]
             if coin in self.positions:
                 continue
+            latest_three_blocks = candidate.get("latest_three_blocks") or []
+            if len(latest_three_blocks) < 3:
+                self.last_signal_reason = f"{format_coin_label(coin)}: waiting for three real 5s blocks."
+                continue
+            if latest_three_blocks[0] <= 0 or not (
+                latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]
+            ):
+                self.last_signal_reason = f"{format_coin_label(coin)}: latest three 5s blocks not sequentially increasing."
+                continue
+            if checks_completed >= MAX_BOOK_CHECKS_PER_SCAN:
+                self.last_signal_reason = f"Checked top {MAX_BOOK_CHECKS_PER_SCAN} symbols; waiting for next scan."
+                return
             try:
                 snapshot, metrics = self.market.build_coin_snapshot_and_metrics(coin)
+                checks_completed += 1
             except Exception as exc:
-                self.last_signal_reason = f"{coin}: snapshot error: {exc}"
+                checks_completed += 1
+                self.last_signal_reason = f"{format_coin_label(coin)}: snapshot error: {exc}"
                 continue
             if not snapshot or not metrics:
                 continue
             passed, reason, intended_side, entry_reason = self.evaluate_entry_candidate(coin, snapshot, metrics)
-            self.last_signal_reason = f"{coin}: {reason}"
+            self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
             if not passed:
                 continue
             if self.enter_position(coin, snapshot, intended_side, entry_reason):
