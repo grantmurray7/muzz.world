@@ -254,6 +254,7 @@ class MarketUniverse:
         self.universe = []
         self.meta_by_coin = {}
         self.sz_decimals = {}
+        self.first_message_at = 0.0
         self.last_message_at = 0.0
         self.last_meta_refresh_at = 0.0
         self.last_error = ""
@@ -313,6 +314,8 @@ class MarketUniverse:
     def _record_mid_update(self, mids):
         now = time.time()
         with self.lock:
+            if not self.first_message_at:
+                self.first_message_at = now
             allowed = set(self.universe)
             for coin, raw_mid in (mids or {}).items():
                 if allowed and coin not in allowed:
@@ -544,10 +547,13 @@ class MarketUniverse:
             ready_5m = sum(1 for coin, history in self.history.items() if self._return_for(list(history), 300) is not None)
             tracked = len(self.current_mids)
             age = max(0.0, time.time() - self.last_message_at) if self.last_message_at else 9999.0
+            warmup_elapsed = max(0.0, time.time() - self.first_message_at) if self.first_message_at else 0.0
             return {
                 "tracked": tracked,
                 "ready_5m": ready_5m,
                 "market_age": age,
+                "first_message_at": self.first_message_at,
+                "warmup_elapsed": warmup_elapsed,
                 "last_error": self.last_error,
                 "last_open_at": self.last_open_at,
                 "last_close_at": self.last_close_at,
@@ -927,6 +933,22 @@ def build_logs_panel(bot):
     return "\n".join(lines)
 
 
+def build_warmup_bar(diag):
+    if diag["ready_5m"] > 0:
+        return None
+    if not diag.get("first_message_at"):
+        return Text("Warm-up: waiting for first market data...", style="bold yellow")
+    total_seconds = 300.0
+    elapsed = min(total_seconds, float(diag.get("warmup_elapsed", 0.0)))
+    remaining = max(0.0, total_seconds - elapsed)
+    pct = elapsed / total_seconds if total_seconds > 0 else 1.0
+    width = 36
+    filled = min(width, max(0, int(round(width * pct))))
+    bar = ("█" * filled) + ("░" * (width - filled))
+    style = "green" if pct >= 1.0 else "bold yellow"
+    return Text(f"5m Warm-up [{bar}] {int(elapsed)}/{int(total_seconds)}s ({pct * 100:0.0f}%)", style=style)
+
+
 def build_dashboard(bot, market):
     diag = market.diagnostics()
     title = Text("MuzzWorld Local Sandbox Runner", style="bold white")
@@ -936,7 +958,11 @@ def build_dashboard(bot, market):
         style="cyan",
     )
     status = Text(bot.status_text(), style="bold yellow" if "Waiting" in bot.status_text() else "bold green")
-    header = Panel(Group(title, subtitle, status), border_style="cyan")
+    warmup_bar = build_warmup_bar(diag)
+    header_items = [title, subtitle, status]
+    if warmup_bar is not None:
+        header_items.append(warmup_bar)
+    header = Panel(Group(*header_items), border_style="cyan")
     summary = Panel(build_summary_table(bot, market), title="Account", border_style="blue")
     hot = Panel(build_hot_table(bot), title="Top Movers", border_style="magenta")
     positions = Panel(build_positions_table(bot, market), title="Open Positions", border_style="green")
