@@ -16,6 +16,7 @@ from your own machine/network.
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -78,6 +79,11 @@ def pct_change(from_price, to_price):
 
 def trim_float(value, digits=6):
     return round(float(value), digits)
+
+
+def floor_to_decimals(value, decimals):
+    factor = 10 ** max(0, int(decimals))
+    return math.floor(float(value) * factor) / factor if factor > 0 else float(value)
 
 
 def read_float(value, default=0.0):
@@ -498,6 +504,10 @@ class MarketUniverse:
         snapshot["coin"] = coin
         return snapshot
 
+    def get_sz_decimals(self, coin):
+        with self.lock:
+            return int(self.sz_decimals.get(coin, 0))
+
     def get_metrics_for_coin(self, coin):
         with self.lock:
             history = list(self.history.get(coin, []))
@@ -794,16 +804,25 @@ class LocalSandboxBot:
 
     def enter_position(self, coin, snapshot, intended_side, entry_reason=""):
         leverage = max(1.0, float(self.config.leverage))
+        fee_rate = float(self.config.taker_fee_pct) / 100.0
+        max_affordable_notional = self.available / ((1.0 / leverage) + fee_rate) if leverage > 0 else self.available
         requested_notional = float(self.config.trade_notional_usdc) * leverage
-        notional = min(requested_notional, float(self.config.max_notional_usdc), self.available * leverage)
-        initial_margin = notional / leverage if leverage > 0 else notional
+        target_notional = min(requested_notional, float(self.config.max_notional_usdc), max_affordable_notional)
+        initial_margin = target_notional / leverage if leverage > 0 else target_notional
         if initial_margin < 10.0:
             self.log(f"Entry blocked for {coin}: available balance below 10 USDC minimum.")
             return False
         order_side = "buy" if intended_side == "LONG" else "sell"
         submitted_price = float(snapshot["best_ask"] if order_side == "buy" else snapshot["best_bid"])
         filled_price = apply_slippage(submitted_price, self.config.taker_exit_slippage_pct, order_side)
-        size = notional / filled_price
+        sz_decimals = self.market.get_sz_decimals(coin)
+        raw_size = target_notional / filled_price if filled_price > 0 else 0.0
+        size = floor_to_decimals(raw_size, sz_decimals)
+        if size <= 0:
+            self.log(f"Entry blocked for {coin}: rounded size is zero at current price.")
+            return False
+        notional = size * filled_price
+        initial_margin = notional / leverage if leverage > 0 else notional
         fee = apply_fee(notional, self.config.taker_fee_pct)
         self.available -= initial_margin + fee
         self.positions[coin] = {
@@ -813,6 +832,7 @@ class LocalSandboxBot:
             "submitted_price": submitted_price,
             "filled_price": filled_price,
             "notional": notional,
+            "sz_decimals": sz_decimals,
             "initial_margin": initial_margin,
             "leverage": leverage,
             "entry_time": time.time(),
