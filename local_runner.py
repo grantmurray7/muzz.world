@@ -54,13 +54,12 @@ MARKET_HISTORY_SECONDS = 3900
 MARKET_STALE_AFTER_SECONDS = 20.0
 META_REFRESH_SECONDS = 900.0
 SCAN_INTERVAL_SECONDS = 2.0
-XYZ_PERP_DEX = "xyz"
 BOOK_SNAPSHOT_TIMEOUT_SECONDS = 1.5
 MAX_BOOK_CHECKS_PER_SCAN = 3
 BLOCK_WINDOW_SECONDS = 120
 BLOCK_STEP_SECONDS = 5
 BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)]
-# Standard Hyperliquid perps use bare asset names. XYZ HIP-3 perps use `xyz:<ticker>` in the API.
+# Curated standard Hyperliquid crypto perps only. HIP-3/non-crypto markets are excluded.
 CURATED_PERP_SYMBOLS = [
     "BTC",
     "ETH",
@@ -82,16 +81,11 @@ CURATED_PERP_SYMBOLS = [
     "LTC",
     "SUI",
     "AVAX",
-    "xyz:GOLD",
-    "xyz:NVDA",
-    "xyz:AAPL",
-    "xyz:GOOGL",
-    "xyz:MSFT",
-    "xyz:SILVER",
-    "xyz:AMZN",
-    "xyz:META",
-    "xyz:TSLA",
-    "xyz:NFLX",
+    "DOT",
+    "UNI",
+    "AAVE",
+    "ICP",
+    "NEAR",
 ]
 
 console = Console()
@@ -183,11 +177,7 @@ def has_three_real_5s_blocks(history):
 
 
 def format_coin_label(coin):
-    if not coin:
-        return "-"
-    if coin.startswith(f"{XYZ_PERP_DEX}:"):
-        return f"{coin.split(':', 1)[1]}-USDC"
-    return coin
+    return coin or "-"
 
 
 FX_CODE_TO_NAME = {
@@ -212,16 +202,6 @@ KNOWN_PERP_METADATA = {
     "BRENT": ("Commodity", "Brent crude oil"),
     "NATGAS": ("Commodity", "Natural gas"),
     "COPPER": ("Commodity", "Copper"),
-    "XYZ:GOLD": ("Commodity", "Gold"),
-    "XYZ:SILVER": ("Commodity", "Silver"),
-    "XYZ:AAPL": ("Equity", "Apple"),
-    "XYZ:AMZN": ("Equity", "Amazon"),
-    "XYZ:GOOGL": ("Equity", "Alphabet"),
-    "XYZ:META": ("Equity", "Meta"),
-    "XYZ:MSFT": ("Equity", "Microsoft"),
-    "XYZ:NFLX": ("Equity", "Netflix"),
-    "XYZ:NVDA": ("Equity", "NVIDIA"),
-    "XYZ:TSLA": ("Equity", "Tesla"),
 }
 
 
@@ -406,15 +386,14 @@ class MarketUniverse:
         meta_by_coin = {}
         sz_decimals = {}
         available_assets = {}
-        for meta_payload in ({"type": "meta"}, {"type": "meta", "dex": XYZ_PERP_DEX}):
-            meta = self._post_info(meta_payload)
-            for asset in meta.get("universe") or []:
-                coin = asset.get("name")
-                if not coin:
-                    continue
-                if asset.get("isDelisted"):
-                    continue
-                available_assets[coin] = asset
+        meta = self._post_info({"type": "meta"})
+        for asset in meta.get("universe") or []:
+            coin = asset.get("name")
+            if not coin:
+                continue
+            if asset.get("isDelisted"):
+                continue
+            available_assets[coin] = asset
         for coin in CURATED_PERP_SYMBOLS:
             asset = available_assets.get(coin)
             universe.append(coin)
@@ -471,7 +450,6 @@ class MarketUniverse:
             self.last_open_at = time.time()
             self.last_error = ""
         ws_app.send(json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}}))
-        ws_app.send(json.dumps({"method": "subscribe", "subscription": {"type": "allMids", "dex": XYZ_PERP_DEX}}))
 
     def _on_ws_message(self, _ws_app, raw_message):
         try:
