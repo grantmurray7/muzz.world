@@ -3577,6 +3577,8 @@ def require_login():
         'sandbox_get_state',
         'real_start',
         'sandbox_start',
+        'clear_real_trades',
+        'clear_sandbox_trades',
         'real_pause',
         'sandbox_pause',
         'real_kill',
@@ -3847,6 +3849,22 @@ def clear_real_logs():
 def clear_sandbox_logs():
     redis.delete(ns_key(SANDBOX_NS, 'action_logs'))
     push_text_log(SANDBOX_NS, 'SANDBOX action log cleared by operator.')
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/trades/clear', methods=['POST'])
+def clear_real_trades():
+    redis.delete(ns_key(REAL_NS, 'trade_log'))
+    set_last_trade(REAL_NS, {})
+    push_text_log(REAL_NS, 'REAL trade history wiped by operator.')
+    return jsonify({'status': 'success'})
+
+
+@app.route('/sandbox/api/trades/clear', methods=['POST'])
+def clear_sandbox_trades():
+    redis.delete(ns_key(SANDBOX_NS, 'trade_log'))
+    set_last_trade(SANDBOX_NS, {})
+    push_text_log(SANDBOX_NS, 'SANDBOX trade history wiped by operator.')
     return jsonify({'status': 'success'})
 
 

@@ -506,7 +506,10 @@
                         <div class="section-kicker">History</div>
                         <h2 class="section-title">Recent Trades</h2>
                     </div>
-                    <span id="tradeCountBadge" class="pill">0 Trades</span>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <span id="tradeCountBadge" class="pill">0 Trades</span>
+                        <button class="btn" onclick="wipeTrades()">Wipe</button>
+                    </div>
                 </div>
                     <div class="section-body table-wrap">
                     <table class="table table-compact mono">
@@ -974,6 +977,15 @@
             const res = await fetch(`${apiBase}/reset`, { method: 'POST' });
             const data = await res.json();
             if (!res.ok) alert(data.message || 'Sandbox reset failed.');
+            await refreshAll();
+        }
+
+        async function wipeTrades() {
+            const ok = confirm('Wipe trade history?');
+            if (!ok) return;
+            const res = await fetch(`${apiBase}/trades/clear`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) alert(data.message || 'Failed to wipe trades.');
             await refreshAll();
         }
 
