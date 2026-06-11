@@ -869,7 +869,7 @@ class LocalSandboxBot:
             "last_entry_fill_at": 0.0,
         }
         self.lock = Lock()
-        self._ensure_log_csv_exists()
+        self._reset_log_csv()
         self.log("Local sandbox runner started.")
 
     def log(self, message):
@@ -877,9 +877,7 @@ class LocalSandboxBot:
         self.logs.appendleft(f"{format_timestamp(now)} {message}")
         self._append_log_csv(now, message)
 
-    def _ensure_log_csv_exists(self):
-        if os.path.exists(self.log_csv_path):
-            return
+    def _reset_log_csv(self):
         try:
             with open(self.log_csv_path, "w", newline="", encoding="utf-8") as handle:
                 writer = csv.writer(handle)
