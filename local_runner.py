@@ -15,6 +15,7 @@ from your own machine/network.
 """
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -50,6 +51,7 @@ except Exception as exc:  # pragma: no cover
 
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+LOG_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.csv")
 MARKET_HISTORY_SECONDS = 45
 MARKET_STALE_AFTER_SECONDS = 20.0
 META_REFRESH_SECONDS = 900.0
@@ -854,6 +856,7 @@ class LocalSandboxBot:
         self.last_scan_at = 0.0
         self.rejection_log_cooldown_seconds = 12.0
         self.last_rejection_by_coin = {}
+        self.log_csv_path = LOG_CSV_PATH
         self.hot_perps = []
         self.stats = {
             "total_pnl": 0.0,
@@ -866,10 +869,31 @@ class LocalSandboxBot:
             "last_entry_fill_at": 0.0,
         }
         self.lock = Lock()
+        self._ensure_log_csv_exists()
         self.log("Local sandbox runner started.")
 
     def log(self, message):
-        self.logs.appendleft(f"{format_timestamp(time.time())} {message}")
+        now = time.time()
+        self.logs.appendleft(f"{format_timestamp(now)} {message}")
+        self._append_log_csv(now, message)
+
+    def _ensure_log_csv_exists(self):
+        if os.path.exists(self.log_csv_path):
+            return
+        try:
+            with open(self.log_csv_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["timestamp_utc", "epoch_ts", "message"])
+        except Exception:
+            pass
+
+    def _append_log_csv(self, ts, message):
+        try:
+            with open(self.log_csv_path, "a", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow([datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(), f"{ts:.3f}", message])
+        except Exception:
+            pass
 
     def log_entry_rejection(self, coin, reason):
         now = time.time()
@@ -933,8 +957,6 @@ class LocalSandboxBot:
         else:
             if latest_three_blocks[0] <= 0:
                 reasons.append("oldest of latest three 5s blocks not positive")
-            if not (latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]):
-                reasons.append("latest three 5s blocks not sequentially increasing")
             latest_block = float(latest_three_blocks[2])
             total_three_blocks = float(sum(latest_three_blocks))
             if latest_block < float(self.config.min_latest_5s_block_pct):
@@ -955,13 +977,13 @@ class LocalSandboxBot:
         if reasons:
             return False, " | ".join(reasons), intended_side, ""
         entry_context = (
-            f"Three rising 5s blocks: "
+            f"Latest 5s blocks: "
             f"{latest_three_blocks[0]:.3f}% -> {latest_three_blocks[1]:.3f}% -> {latest_three_blocks[2]:.3f}% | "
             f"sum {sum(latest_three_blocks):.3f}% | "
             f"spread {float(metrics.get('spread_pct', 0.0)):.4f}% | "
             f"depth {depth_usdc:,.0f} USDC"
         )
-        return True, "Entry conditions passed (high-conviction three-block burst).", intended_side, entry_context
+        return True, "Entry conditions passed.", intended_side, entry_context
 
     def enter_position(self, coin, snapshot, intended_side, entry_reason=""):
         leverage = max(1.0, float(self.config.leverage))
@@ -1136,10 +1158,8 @@ class LocalSandboxBot:
                 self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
                 self.log_entry_rejection(coin, reason)
                 continue
-            if latest_three_blocks[0] <= 0 or not (
-                latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]
-            ):
-                reason = "latest three 5s blocks not sequentially increasing."
+            if latest_three_blocks[0] <= 0:
+                reason = "oldest of latest three 5s blocks not positive."
                 self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
                 self.log_entry_rejection(coin, reason)
                 continue
