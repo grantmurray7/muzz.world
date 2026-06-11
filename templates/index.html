@@ -414,8 +414,8 @@
             <div class="metrics-grid">
                 <div class="card metric-card">
                     <div class="eyebrow">Portfolio Value</div>
-                    <div id="portfolioValue" class="metric-value mono">0.0000 USDC</div>
-                    <div id="portfolioSub" class="metric-sub mono">Available 0.0000 USDC | Live 0.0000 USDC</div>
+                    <div id="portfolioValue" class="metric-value mono">0.00 USDC</div>
+                    <div id="portfolioSub" class="metric-sub mono">Available 0.00 USDC | Live 0.00 USDC</div>
                     <div id="portfolioGbp" class="metric-sub mono">GBP equivalent loading...</div>
                 </div>
                 <div class="card metric-card">
@@ -625,6 +625,7 @@
             maximumFractionDigits: 2
         });
         let usdToGbpRate = null;
+        let configDirty = false;
 
         function fmt(value, digits = 4) {
             const key = String(digits);
@@ -661,14 +662,30 @@
         }
 
         async function refreshUsdToGbpRate() {
-            try {
-                const res = await fetch('https://api.frankfurter.dev/v2/latest?base=USD&symbols=GBP', { cache: 'no-store' });
-                if (!res.ok) throw new Error(`FX ${res.status}`);
-                const data = await res.json();
-                usdToGbpRate = Number((data.rates || {}).GBP || 0) || null;
-            } catch (_error) {
-                usdToGbpRate = null;
+            const sources = [
+                {
+                    url: 'https://api.frankfurter.app/latest?from=USD&to=GBP',
+                    parse: (data) => Number((data.rates || {}).GBP || 0) || null
+                },
+                {
+                    url: 'https://open.er-api.com/v6/latest/USD',
+                    parse: (data) => Number((data.rates || {}).GBP || 0) || null
+                }
+            ];
+            for (const source of sources) {
+                try {
+                    const res = await fetch(source.url, { cache: 'no-store' });
+                    if (!res.ok) continue;
+                    const data = await res.json();
+                    const rate = source.parse(data);
+                    if (rate) {
+                        usdToGbpRate = rate;
+                        return;
+                    }
+                } catch (_error) {
+                }
             }
+            usdToGbpRate = null;
         }
 
         function updatePortfolioGbp(equityUsdc) {
@@ -698,6 +715,10 @@
         }
 
         function applyConfig(config) {
+            const activeElement = document.activeElement;
+            if (configDirty || (activeElement && String(activeElement.id || '').startsWith('cfg_'))) {
+                return;
+            }
             configFields.forEach((field) => {
                 const el = document.getElementById(`cfg_${field}`);
                 if (el && field in config) el.value = config[field];
@@ -715,6 +736,19 @@
             const checkbox = document.getElementById('cfg_require_imbalance_improvement');
             if (checkbox) payload.require_imbalance_improvement = checkbox.checked;
             return payload;
+        }
+
+        function wireConfigInputs() {
+            configFields.forEach((field) => {
+                const el = document.getElementById(`cfg_${field}`);
+                if (!el) return;
+                el.addEventListener('input', () => { configDirty = true; });
+                el.addEventListener('change', () => { configDirty = true; });
+            });
+            const checkbox = document.getElementById('cfg_require_imbalance_improvement');
+            if (checkbox) {
+                checkbox.addEventListener('change', () => { configDirty = true; });
+            }
         }
 
         function valueClass(value) {
@@ -755,7 +789,7 @@
             const rows = positions || [];
             const count = rows.length;
             setText('positionHeadline', String(count));
-            setText('positionSub', `Live PnL ${fmtUsdc((portfolio || {}).total_live_pnl, 4)} | Slots ${(portfolio || {}).slots_used || 0}/${(portfolio || {}).max_open_positions || 0}`);
+                setText('positionSub', `Live PnL ${fmtUsdc((portfolio || {}).total_live_pnl, 2)} | Slots ${(portfolio || {}).slots_used || 0}/${(portfolio || {}).max_open_positions || 0}`);
             if (!count) {
                 body.innerHTML = '<tr><td colspan=\"8\" class=\"table-empty\">No active positions.</td></tr>';
                 return;
@@ -814,11 +848,11 @@
                 document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
                 setText('modeTitle', `${data.environment} Dashboard`);
                 setText('environmentBadge', data.environment);
-                setText('portfolioValue', fmtUsdc(balances.equity, 4));
-                setText('portfolioSub', `Available ${fmtUsdc(balances.available, 4)} | Live ${fmtUsdc((data.portfolio || {}).total_live_pnl, 4)}`);
+                setText('portfolioValue', fmtUsdc(balances.equity, 2));
+                setText('portfolioSub', `Available ${fmtUsdc(balances.available, 2)} | Live ${fmtUsdc((data.portfolio || {}).total_live_pnl, 2)}`);
                 updatePortfolioGbp(balances.equity);
-                setText('dailyPnlTop', fmtUsdc(stats.daily_pnl, 4));
-                setText('pnlSub', `Total ${fmtUsdc(stats.total_pnl, 4)}`);
+                setText('dailyPnlTop', fmtUsdc(stats.daily_pnl, 2));
+                setText('pnlSub', `Total ${fmtUsdc(stats.total_pnl, 2)}`);
                 document.getElementById('dailyPnlTop').className = `metric-value mono ${valueClass(stats.daily_pnl)}`.trim();
                 setText('botFeedHeadline', data.bot_state || 'N/A');
                 setText('botFeedSub', `${String(market.market_data_source || 'none').toUpperCase()} | ${fmt(market.market_data_age, 2)}s age | ${market.coin || 'N/A'}`);
@@ -929,6 +963,8 @@
                 alert(data.message || 'Config save failed.');
                 return;
             }
+            configDirty = false;
+            if (data.config) applyConfig(data.config);
             await refreshAll();
         }
 
@@ -941,6 +977,7 @@
             await Promise.allSettled([fetchState(), fetchTrades(), fetchHealth()]);
         }
 
+        wireConfigInputs();
         refreshUsdToGbpRate().finally(refreshAll);
         setInterval(fetchState, 2000);
         setInterval(fetchTrades, 5000);
