@@ -342,9 +342,9 @@ def compute_market_metrics(snapshot, history):
 
 @dataclass
 class BotConfig:
-    trade_notional_usdc: float = 250.0
-    max_notional_usdc: float = 1000.0
-    max_open_positions: int = 10
+    trade_notional_usdc: float = 2500.0
+    max_notional_usdc: float = 2500.0
+    max_open_positions: int = 1
     leverage: float = 1.0
     take_profit_pct: float = 0.25
     stop_loss_pct: float = 0.25
@@ -356,8 +356,11 @@ class BotConfig:
     early_entry_return_30s_pct: float = 0.08
     acceleration_15s_min_delta_pct: float = 0.03
     acceleration_5s_min_delta_pct: float = 0.015
-    spread_pct_max: float = 0.025
-    min_top5_depth_usdc: float = 2000.0
+    min_latest_5s_block_pct: float = 0.10
+    min_sum_latest_three_blocks_pct: float = 0.25
+    spread_pct_max: float = 0.01
+    min_top5_depth_usdc: float = 50000.0
+    cooldown_after_exit_seconds: int = 30
     starting_balance_usdc: float = 10000.0
     maker_fee_pct: float = 0.015
     taker_fee_pct: float = 0.045
@@ -834,6 +837,7 @@ class LocalSandboxBot:
             "trades_today": 0,
             "time_stops": 0,
             "emergency_exits": 0,
+            "last_exit_at": 0.0,
             "last_entry_fill_at": 0.0,
         }
         self.lock = Lock()
@@ -875,10 +879,14 @@ class LocalSandboxBot:
     def evaluate_entry_candidate(self, coin, snapshot, metrics):
         reasons = []
         intended_side = "LONG"
+        now = time.time()
         if coin in self.positions:
             reasons.append("position already active")
         if len(self.positions) >= int(self.config.max_open_positions):
             reasons.append("max open positions reached")
+        cooldown_remaining = float(self.config.cooldown_after_exit_seconds) - (now - float(self.stats.get("last_exit_at", 0.0) or 0.0))
+        if float(self.stats.get("last_exit_at", 0.0) or 0.0) > 0 and cooldown_remaining > 0:
+            reasons.append(f"post-exit cooldown {cooldown_remaining:.0f}s remaining")
         if metrics["market_data_age"] > MARKET_STALE_AFTER_SECONDS:
             reasons.append("market data stale")
         if float(snapshot.get("mid", 0.0)) < float(self.config.min_price_usdc):
@@ -894,6 +902,16 @@ class LocalSandboxBot:
                 reasons.append("oldest of latest three 5s blocks not positive")
             if not (latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]):
                 reasons.append("latest three 5s blocks not sequentially increasing")
+            latest_block = float(latest_three_blocks[2])
+            total_three_blocks = float(sum(latest_three_blocks))
+            if latest_block < float(self.config.min_latest_5s_block_pct):
+                reasons.append(
+                    f"latest 5s block {latest_block:.3f}% below {float(self.config.min_latest_5s_block_pct):.3f}%"
+                )
+            if total_three_blocks < float(self.config.min_sum_latest_three_blocks_pct):
+                reasons.append(
+                    f"latest three 5s sum {total_three_blocks:.3f}% below {float(self.config.min_sum_latest_three_blocks_pct):.3f}%"
+                )
         if float(metrics.get("spread_pct", 0.0)) > float(self.config.spread_pct_max):
             reasons.append(f"spread {metrics['spread_pct']:.4f}% above max")
         bid_depth = float(snapshot.get("bid_depth_top5", 0.0) or 0.0)
@@ -905,11 +923,12 @@ class LocalSandboxBot:
             return False, " | ".join(reasons), intended_side, ""
         entry_context = (
             f"Three rising 5s blocks: "
-            f"{latest_three_blocks[0]:.2f}% -> {latest_three_blocks[1]:.2f}% -> {latest_three_blocks[2]:.2f}% | "
+            f"{latest_three_blocks[0]:.3f}% -> {latest_three_blocks[1]:.3f}% -> {latest_three_blocks[2]:.3f}% | "
+            f"sum {sum(latest_three_blocks):.3f}% | "
             f"spread {float(metrics.get('spread_pct', 0.0)):.4f}% | "
             f"depth {depth_usdc:,.0f} USDC"
         )
-        return True, "Entry conditions passed (three rising 5s blocks).", intended_side, entry_context
+        return True, "Entry conditions passed (high-conviction three-block burst).", intended_side, entry_context
 
     def enter_position(self, coin, snapshot, intended_side, entry_reason=""):
         leverage = max(1.0, float(self.config.leverage))
@@ -998,6 +1017,7 @@ class LocalSandboxBot:
         self.stats["total_pnl"] += net_pnl
         self.stats["daily_pnl"] += net_pnl
         self.stats["trades_today"] += 1
+        self.stats["last_exit_at"] = time.time()
         if net_pnl < 0:
             self.stats["consecutive_losses"] += 1
         else:
@@ -1328,9 +1348,9 @@ def build_dashboard(bot, market):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Local MuzzWorld terminal runner")
-    parser.add_argument("--trade-notional", type=float, default=250.0, help="Base trade notional in USDC")
-    parser.add_argument("--max-notional", type=float, default=1000.0, help="Maximum notional per trade")
-    parser.add_argument("--max-open-positions", type=int, default=10, help="Maximum simultaneous sandbox positions")
+    parser.add_argument("--trade-notional", type=float, default=2500.0, help="Base trade notional in USDC")
+    parser.add_argument("--max-notional", type=float, default=2500.0, help="Maximum notional per trade")
+    parser.add_argument("--max-open-positions", type=int, default=1, help="Maximum simultaneous sandbox positions")
     parser.add_argument("--leverage", type=float, default=1.0, help="Sandbox leverage")
     parser.add_argument("--starting-balance", type=float, default=10000.0, help="Starting sandbox balance in USDC")
     parser.add_argument("--trend-trigger", type=float, default=0.20, help="Minimum 2m move required to consider entry")
@@ -1338,8 +1358,11 @@ def parse_args():
     parser.add_argument("--accel15-trigger", type=float, default=0.03, help="Minimum 15s acceleration edge versus prior 15s")
     parser.add_argument("--accel5-trigger", type=float, default=0.015, help="Minimum 5s acceleration edge versus prior 10s")
     parser.add_argument("--early-30s-trigger", type=float, default=0.08, help="Minimum 30s move to allow early entry before full 2m trigger")
-    parser.add_argument("--spread-max", type=float, default=0.025, help="Maximum spread percent allowed")
-    parser.add_argument("--min-top5-depth", type=float, default=2000.0, help="Minimum combined top5 book depth in USDC")
+    parser.add_argument("--min-latest-5s-block", type=float, default=0.10, help="Minimum latest 5s block percent")
+    parser.add_argument("--min-latest-three-sum", type=float, default=0.25, help="Minimum sum of latest three 5s blocks percent")
+    parser.add_argument("--spread-max", type=float, default=0.01, help="Maximum spread percent allowed")
+    parser.add_argument("--min-top5-depth", type=float, default=50000.0, help="Minimum combined top5 book depth in USDC")
+    parser.add_argument("--cooldown-after-exit", type=int, default=30, help="Seconds to wait after any exit before new entries")
     return parser.parse_args()
 
 
