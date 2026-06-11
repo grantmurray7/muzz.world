@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Local terminal runner for the MuzzWorld 2m acceleration sandbox bot.
+Local terminal runner for the MuzzWorld 45s burst sandbox bot.
 
 This script is intentionally self-contained:
 - No Flask
@@ -50,13 +50,13 @@ except Exception as exc:  # pragma: no cover
 
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
-MARKET_HISTORY_SECONDS = 3900
+MARKET_HISTORY_SECONDS = 45
 MARKET_STALE_AFTER_SECONDS = 20.0
 META_REFRESH_SECONDS = 900.0
 SCAN_INTERVAL_SECONDS = 2.0
 BOOK_SNAPSHOT_TIMEOUT_SECONDS = 1.5
 MAX_BOOK_CHECKS_PER_SCAN = 3
-BLOCK_WINDOW_SECONDS = 120
+BLOCK_WINDOW_SECONDS = 45
 BLOCK_STEP_SECONDS = 5
 BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)]
 # Curated standard Hyperliquid crypto perps only. HIP-3/non-crypto markets are excluded.
@@ -203,6 +203,27 @@ KNOWN_PERP_METADATA = {
     "NATGAS": ("Commodity", "Natural gas"),
     "COPPER": ("Commodity", "Copper"),
 }
+
+
+def is_non_crypto_perp(coin, asset=None):
+    symbol = (coin or "").upper()
+    if symbol in KNOWN_PERP_METADATA:
+        return True
+    if re.fullmatch(r"[A-Z]{6}", symbol):
+        base = symbol[:3]
+        quote = symbol[3:]
+        if base in FX_CODE_TO_NAME and quote in FX_CODE_TO_NAME:
+            return True
+    raw_category = (
+        (asset or {}).get("category")
+        or (asset or {}).get("type")
+        or (asset or {}).get("sector")
+        or (asset or {}).get("group")
+        or (asset or {}).get("tag")
+        or ""
+    )
+    category = str(raw_category).strip().lower()
+    return any(token in category for token in ("commodity", "fx", "index", "equity", "volatility"))
 
 
 def infer_perp_metadata(coin, asset=None):
@@ -396,6 +417,8 @@ class MarketUniverse:
             available_assets[coin] = asset
         for coin in CURATED_PERP_SYMBOLS:
             asset = available_assets.get(coin)
+            if not asset or is_non_crypto_perp(coin, asset):
+                continue
             universe.append(coin)
             meta_by_coin[coin] = infer_perp_metadata(coin, asset)
             sz_decimals[coin] = int(asset.get("szDecimals", 0)) if asset else 0
@@ -404,6 +427,7 @@ class MarketUniverse:
             self.meta_by_coin = meta_by_coin
             self.sz_decimals = sz_decimals
             self.last_meta_refresh_at = now
+            self._prune_history_locked(now)
 
     def start(self):
         if self.loop_thread and self.loop_thread.is_alive():
@@ -422,6 +446,26 @@ class MarketUniverse:
         if self.ws_thread and self.ws_thread.is_alive():
             self.ws_thread.join(timeout=2)
 
+    def _prune_history_locked(self, now=None):
+        now = time.time() if now is None else float(now)
+        cutoff = now - MARKET_HISTORY_SECONDS
+        allowed = set(self.universe)
+        stale_coins = []
+        for coin, history in list(self.history.items()):
+            if allowed and coin not in allowed:
+                stale_coins.append(coin)
+                continue
+            while history and history[0]["ts"] < cutoff:
+                history.popleft()
+            if not history:
+                stale_coins.append(coin)
+        for coin in stale_coins:
+            self.history.pop(coin, None)
+            self.current_mids.pop(coin, None)
+        for coin in list(self.current_mids):
+            if allowed and coin not in allowed:
+                self.current_mids.pop(coin, None)
+
     def _record_mid_update(self, mids):
         now = time.time()
         with self.lock:
@@ -438,9 +482,7 @@ class MarketUniverse:
                 self.current_mids[coin] = mid
                 history = self.history.setdefault(coin, deque())
                 history.append({"ts": now, "mid": mid})
-                cutoff = now - MARKET_HISTORY_SECONDS
-                while history and history[0]["ts"] < cutoff:
-                    history.popleft()
+            self._prune_history_locked(now)
             self.last_message_at = now
             self.last_error = ""
 
@@ -567,6 +609,7 @@ class MarketUniverse:
         return_5s = self._return_for(history, 5)
         return_15s = self._return_for(history, 15)
         return_30s = self._return_for(history, 30)
+        return_45s = self._return_for(history, MARKET_HISTORY_SECONDS)
         return_1m = self._return_for(history, 60)
         return_2m = self._return_for(history, 120)
         return_15m = self._return_for(history, 900)
@@ -596,6 +639,7 @@ class MarketUniverse:
             "has_return_5s": return_5s is not None,
             "has_return_15s": return_15s is not None,
             "has_return_30s": return_30s is not None,
+            "has_return_45s": return_45s is not None,
             "has_return_1m": return_1m is not None,
             "has_return_2m": return_2m is not None,
             "has_return_15m": return_15m is not None,
@@ -603,6 +647,7 @@ class MarketUniverse:
             "return_5s": return_5s or 0.0,
             "return_15s": return_15s or 0.0,
             "return_30s": return_30s or 0.0,
+            "return_45s": return_45s or 0.0,
             "return_1m": return_1m or 0.0,
             "return_2m": return_2m or 0.0,
             "return_15m": return_15m or 0.0,
@@ -650,7 +695,7 @@ class MarketUniverse:
         computed["market_data_age"] = metrics["market_data_age"]
         return snapshot, computed
 
-    def get_hot_perps(self, limit=10, primary_basis="2m_accel", min_price=0.0, direction="up"):
+    def get_hot_perps(self, limit=10, primary_basis="45s_burst", min_price=0.0, direction="up"):
         with self.lock:
             universe = list(self.universe)
             histories = {coin: list(items) for coin, items in self.history.items()}
@@ -676,6 +721,7 @@ class MarketUniverse:
                 "return_5s": 0.0,
                 "return_15s": 0.0,
                 "return_30s": 0.0,
+                "return_45s": 0.0,
                 "return_1m": 0.0,
                 "return_2m": 0.0,
                 "acceleration_5s": 0.0,
@@ -694,6 +740,7 @@ class MarketUniverse:
             return_5s = self._return_for(history, 5)
             return_15s = self._return_for(history, 15)
             return_30s = self._return_for(history, 30)
+            return_45s = self._return_for(history, MARKET_HISTORY_SECONDS)
             return_1m = self._return_for(history, 60)
             return_2m = self._return_for(history, 120)
             prior_10s_return = self._segment_return_for(history, 15, 5)
@@ -715,9 +762,9 @@ class MarketUniverse:
                 else None
             )
             block_changes = rolling_block_changes(history)
-            if primary_basis == "2m_accel" and (
-                return_2m is None
-                or acceleration_30s is None
+            if primary_basis == "45s_burst" and (
+                return_45s is None
+                or return_30s is None
                 or acceleration_15s is None
                 or acceleration_5s is None
             ):
@@ -746,6 +793,7 @@ class MarketUniverse:
                     "return_5s": trim_float(return_5s or 0.0, 4),
                     "return_15s": trim_float(return_15s or 0.0, 4),
                     "return_30s": trim_float(return_30s or 0.0, 4),
+                    "return_45s": trim_float(return_45s or 0.0, 4),
                     "return_1m": trim_float(return_1m or 0.0, 4),
                     "return_2m": trim_float(return_2m or 0.0, 4),
                     "acceleration_5s": trim_float(acceleration_5s or 0.0, 4),
@@ -760,7 +808,7 @@ class MarketUniverse:
             leaders.append(leader)
         if (
             not any(any(value is not None for value in (item.get("block_changes_5s") or [])) for item in leaders)
-            and primary_basis == "2m_accel"
+            and primary_basis == "45s_burst"
             and warmup_waiting
             and not last_error
         ):
@@ -774,14 +822,14 @@ class MarketUniverse:
             mids = dict(self.current_mids)
             age = max(0.0, time.time() - self.last_message_at) if self.last_message_at else 9999.0
             warmup_elapsed = max(0.0, time.time() - self.first_message_at) if self.first_message_at else 0.0
-            ready_2m = sum(1 for coin in universe if self._return_for(histories.get(coin, []), 120) is not None)
+            ready_tape = sum(1 for coin in universe if self._return_for(histories.get(coin, []), MARKET_HISTORY_SECONDS) is not None)
             ready_entry = sum(1 for coin in universe if has_three_real_5s_blocks(histories.get(coin, [])))
             tracked = sum(1 for coin in universe if float(mids.get(coin, 0.0) or 0.0) > 0.0)
             return {
                 "configured": len(universe),
                 "tracked": tracked,
                 "ready_entry": ready_entry,
-                "ready_2m": ready_2m,
+                "ready_tape": ready_tape,
                 "missing_feed": max(0, len(universe) - tracked),
                 "market_age": age,
                 "first_message_at": self.first_message_at,
@@ -1035,7 +1083,7 @@ class LocalSandboxBot:
             if change_pct >= float(self.config.take_profit_pct):
                 self.exit_position(position, "TAKE_PROFIT")
                 continue
-            if change_pct <= 0 and (float(market_metrics.get("return_1m", 0.0)) * direction) < 0:
+            if change_pct <= 0 and (float(market_metrics.get("return_30s", 0.0)) * direction) < 0:
                 self.exit_position(position, "TIME_STOP")
                 continue
             position["last_hold_check_at"] = time.time()
@@ -1047,7 +1095,7 @@ class LocalSandboxBot:
         self.last_scan_at = time.time()
         hot = self.market.get_hot_perps(
             limit=len(CURATED_PERP_SYMBOLS),
-            primary_basis="2m_accel",
+            primary_basis="45s_burst",
             min_price=float(self.config.min_price_usdc),
             direction="up",
         )
@@ -1278,25 +1326,25 @@ def build_logs_panel(bot):
 
 
 def build_warmup_bar(diag):
-    if diag["ready_2m"] > 0:
+    if diag["ready_tape"] > 0:
         return None
     if not diag.get("first_message_at"):
         return Text("Warm-up: waiting for first market data...", style="bold yellow")
-    total_seconds = 120.0
+    total_seconds = float(MARKET_HISTORY_SECONDS)
     elapsed = min(total_seconds, float(diag.get("warmup_elapsed", 0.0)))
     pct = elapsed / total_seconds if total_seconds > 0 else 1.0
     width = 36
     filled = min(width, max(0, int(round(width * pct))))
     bar = ("█" * filled) + ("░" * (width - filled))
     style = "green" if pct >= 1.0 else "bold yellow"
-    return Text(f"2m tape warm-up [{bar}] {int(elapsed)}/{int(total_seconds)}s ({pct * 100:0.0f}%)", style=style)
+    return Text(f"45s tape warm-up [{bar}] {int(elapsed)}/{int(total_seconds)}s ({pct * 100:0.0f}%)", style=style)
 
 
 def build_dashboard(bot, market):
     diag = market.diagnostics()
     title = Text("muzz.world", style="bold white")
     subtitle = Text(
-        f"2m acceleration scan | Runtime {int(time.time() - bot.start_time)}s | "
+        f"45s burst scan | Runtime {int(time.time() - bot.start_time)}s | "
         f"WS open {format_timestamp(diag['last_open_at']) or 'n/a'}",
         style="cyan",
     )
@@ -1329,11 +1377,11 @@ def parse_args():
     parser.add_argument("--max-open-positions", type=int, default=2, help="Maximum simultaneous sandbox positions")
     parser.add_argument("--leverage", type=float, default=1.0, help="Sandbox leverage")
     parser.add_argument("--starting-balance", type=float, default=10000.0, help="Starting sandbox balance in USDC")
-    parser.add_argument("--trend-trigger", type=float, default=0.20, help="Minimum 2m move required to consider entry")
-    parser.add_argument("--accel-trigger", type=float, default=0.05, help="Minimum 30s acceleration edge versus prior 90s")
+    parser.add_argument("--trend-trigger", type=float, default=0.20, help="Minimum 45s move required to consider entry")
+    parser.add_argument("--accel-trigger", type=float, default=0.05, help="Minimum 30s acceleration edge inside the 45s tape")
     parser.add_argument("--accel15-trigger", type=float, default=0.03, help="Minimum 15s acceleration edge versus prior 15s")
     parser.add_argument("--accel5-trigger", type=float, default=0.015, help="Minimum 5s acceleration edge versus prior 10s")
-    parser.add_argument("--early-30s-trigger", type=float, default=0.08, help="Minimum 30s move to allow early entry before full 2m trigger")
+    parser.add_argument("--early-30s-trigger", type=float, default=0.08, help="Minimum 30s move to allow early entry before the full 45s tape is built")
     parser.add_argument("--min-latest-5s-block", type=float, default=0.10, help="Minimum latest 5s block percent")
     parser.add_argument("--min-latest-three-sum", type=float, default=0.25, help="Minimum sum of latest three 5s blocks percent")
     parser.add_argument("--equity-fraction-per-trade", type=float, default=0.25, help="Fraction of equity to stake per trade before cap")
