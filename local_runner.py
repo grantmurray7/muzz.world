@@ -1163,7 +1163,6 @@ class LocalSandboxBot:
             if positive_blocks < 2:
                 reason = "fewer than two of latest three 5s blocks are positive."
                 self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
-                self.log_entry_rejection(coin, reason)
                 continue
             if checks_completed >= MAX_BOOK_CHECKS_PER_SCAN:
                 self.last_signal_reason = f"Checked top {MAX_BOOK_CHECKS_PER_SCAN} symbols; waiting for next scan."
@@ -1175,7 +1174,6 @@ class LocalSandboxBot:
                 checks_completed += 1
                 reason = f"snapshot error: {exc}"
                 self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
-                self.log_entry_rejection(coin, reason)
                 continue
             if not snapshot or not metrics:
                 continue
