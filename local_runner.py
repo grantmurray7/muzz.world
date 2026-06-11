@@ -355,11 +355,11 @@ class BotConfig:
     early_entry_return_30s_pct: float = 0.08
     acceleration_15s_min_delta_pct: float = 0.03
     acceleration_5s_min_delta_pct: float = 0.015
-    min_latest_5s_block_pct: float = 0.10
-    min_sum_latest_three_blocks_pct: float = 0.25
+    min_latest_5s_block_pct: float = 0.05
+    min_sum_latest_three_blocks_pct: float = 0.12
     equity_fraction_per_trade: float = 0.25
-    spread_pct_max: float = 0.01
-    min_top5_depth_usdc: float = 50000.0
+    spread_pct_max: float = 0.02
+    min_top5_depth_usdc: float = 25000.0
     cooldown_after_exit_seconds: int = 30
     starting_balance_usdc: float = 10000.0
     maker_fee_pct: float = 0.015
@@ -955,8 +955,9 @@ class LocalSandboxBot:
         if len(latest_three_blocks) < 3:
             reasons.append("latest 5s blocks unavailable")
         else:
-            if latest_three_blocks[0] <= 0:
-                reasons.append("oldest of latest three 5s blocks not positive")
+            positive_blocks = sum(1 for value in latest_three_blocks if float(value) > 0.0)
+            if positive_blocks < 2:
+                reasons.append("fewer than two of latest three 5s blocks are positive")
             latest_block = float(latest_three_blocks[2])
             total_three_blocks = float(sum(latest_three_blocks))
             if latest_block < float(self.config.min_latest_5s_block_pct):
@@ -979,6 +980,7 @@ class LocalSandboxBot:
         entry_context = (
             f"Latest 5s blocks: "
             f"{latest_three_blocks[0]:.3f}% -> {latest_three_blocks[1]:.3f}% -> {latest_three_blocks[2]:.3f}% | "
+            f"positive blocks {positive_blocks}/3 | "
             f"sum {sum(latest_three_blocks):.3f}% | "
             f"spread {float(metrics.get('spread_pct', 0.0)):.4f}% | "
             f"depth {depth_usdc:,.0f} USDC"
@@ -1158,8 +1160,9 @@ class LocalSandboxBot:
                 self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
                 self.log_entry_rejection(coin, reason)
                 continue
-            if latest_three_blocks[0] <= 0:
-                reason = "oldest of latest three 5s blocks not positive."
+            positive_blocks = sum(1 for value in latest_three_blocks if float(value) > 0.0)
+            if positive_blocks < 2:
+                reason = "fewer than two of latest three 5s blocks are positive."
                 self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
                 self.log_entry_rejection(coin, reason)
                 continue
