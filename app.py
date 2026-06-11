@@ -972,14 +972,24 @@ class MarketUniverseStore:
         if not history or latest_mid <= 0:
             return None
         now = time.time()
+        return_1m = self._return_for(history, 60)
+        return_2m = self._return_for(history, 120)
+        return_5m = self._return_for(history, 300)
+        return_15m = self._return_for(history, 900)
+        return_60m = self._return_for(history, 3600)
         return {
             'coin': coin,
             'mid': latest_mid,
-            'return_1m': self._return_for(history, 60) or 0.0,
-            'return_2m': self._return_for(history, 120) or 0.0,
-            'return_5m': self._return_for(history, 300) or 0.0,
-            'return_15m': self._return_for(history, 900) or 0.0,
-            'return_60m': self._return_for(history, 3600) or 0.0,
+            'has_return_1m': return_1m is not None,
+            'has_return_2m': return_2m is not None,
+            'has_return_5m': return_5m is not None,
+            'has_return_15m': return_15m is not None,
+            'has_return_60m': return_60m is not None,
+            'return_1m': return_1m or 0.0,
+            'return_2m': return_2m or 0.0,
+            'return_5m': return_5m or 0.0,
+            'return_15m': return_15m or 0.0,
+            'return_60m': return_60m or 0.0,
             'mid_2m_low': min_mid_since(history, 120) or latest_mid,
             'market_data_age': max(0.0, now - last_message_at) if last_message_at else 9999.0,
             'history': history,
@@ -995,6 +1005,7 @@ class MarketUniverseStore:
             meta_by_coin = dict(self.meta_by_coin)
             last_error = self.last_error
         ranked = []
+        warmup_waiting = False
         for coin, history in histories.items():
             if not history or coin not in mids:
                 continue
@@ -1007,6 +1018,9 @@ class MarketUniverseStore:
             return_15m = self._return_for(history, 900)
             oldest_mid = history[0]['mid']
             warmup_return = pct_change(oldest_mid, latest_mid) if len(history) > 1 else 0.0
+            if primary_basis == '5m' and return_5m is None:
+                warmup_waiting = True
+                continue
             basis_candidates = []
             fallback_bases = ('1m', '5m', 'warmup') if primary_basis == '30s' else ('5m', '1m', 'warmup')
             for basis_name in (primary_basis, *fallback_bases):
@@ -1064,6 +1078,8 @@ class MarketUniverseStore:
             ranked.sort(key=lambda item: abs(float(item['score_pct'])), reverse=True)
         else:
             ranked.sort(key=lambda item: item['score_pct'], reverse=(direction != 'down'))
+        if not ranked and primary_basis == '5m' and warmup_waiting and not last_error:
+            last_error = 'Waiting for 5m history.'
         return {'leaders': ranked[:limit], 'last_error': last_error}
 
 
@@ -1748,6 +1764,12 @@ def compute_market_metrics(snapshot, history):
         'spread_pct': snapshot.get('spread_pct', 0.0),
         'book_imbalance': snapshot.get('book_imbalance', 0.0),
         'book_imbalance_10s_ago': imbalance_10s if imbalance_10s is not None else snapshot.get('book_imbalance', 0.0),
+        'has_return_30s': anchor_30s is not None,
+        'has_return_1m': anchor_1m is not None,
+        'has_return_2m': anchor_2m is not None,
+        'has_return_5m': anchor_5m is not None,
+        'has_return_15m': anchor_15m is not None,
+        'has_return_60m': anchor_60m is not None,
         'return_30s': pct_change(anchor_30s or mid, mid),
         'return_1m': pct_change(anchor_1m or mid, mid),
         'return_2m': pct_change(anchor_2m or mid, mid),
@@ -2818,6 +2840,9 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
             config.get('return_5m_down_threshold_pct', 0.40),
         )
     )
+    if not bool(metrics.get('has_return_5m', False)):
+        reasons.append('waiting for real 5m history')
+    checks.append({'name': 'real 5m history ready', 'passed': bool(metrics.get('has_return_5m', False))})
     r5m = float(metrics.get('return_5m', 0.0))
     if abs(r5m) < abs(five_min_trend):
         reasons.append(f"return_5m {r5m:.4f}% below trend trigger {abs(five_min_trend):.2f}%")
