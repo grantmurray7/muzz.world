@@ -53,6 +53,9 @@ MARKET_HISTORY_SECONDS = 3900
 MARKET_STALE_AFTER_SECONDS = 20.0
 META_REFRESH_SECONDS = 900.0
 SCAN_INTERVAL_SECONDS = 2.0
+BLOCK_WINDOW_SECONDS = 120
+BLOCK_STEP_SECONDS = 5
+BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 5, -BLOCK_STEP_SECONDS)] + ["Latest"]
 
 console = Console()
 
@@ -117,6 +120,21 @@ def min_mid_since(history, seconds_ago):
     if not mids:
         mids = [item["mid"] for item in history]
     return min(mids) if mids else None
+
+
+def rolling_block_changes(history, total_window=BLOCK_WINDOW_SECONDS, step=BLOCK_STEP_SECONDS):
+    if not history:
+        return []
+    changes = []
+    for start_seconds_ago in range(total_window, 0, -step):
+        older_mid = nearest_value(history, start_seconds_ago, "mid")
+        newer_seconds_ago = max(start_seconds_ago - step, 0)
+        newer_mid = nearest_value(history, newer_seconds_ago, "mid")
+        if older_mid is None or newer_mid is None:
+            return []
+        label = "Latest" if start_seconds_ago == step else f"-{start_seconds_ago}s"
+        changes.append({"label": label, "pct": pct_change(older_mid, newer_mid)})
+    return changes
 
 
 FX_CODE_TO_NAME = {
@@ -209,6 +227,13 @@ def compute_market_metrics(snapshot, history):
     acceleration_5s = return_5s - (prior_10s_return / 2.0) if anchor_15s is not None and anchor_5s is not None else 0.0
     acceleration_15s = return_15s - prior_15s_return if anchor_30s is not None and anchor_15s is not None else 0.0
     acceleration_30s = return_30s - (prior_90s_return / 3.0) if anchor_2m is not None and anchor_30s is not None else 0.0
+    block_changes_5s = rolling_block_changes(history)
+    latest_three_blocks = [item["pct"] for item in block_changes_5s[-3:]] if len(block_changes_5s) >= 3 else []
+    latest_three_increasing = (
+        len(latest_three_blocks) == 3
+        and latest_three_blocks[0] > 0
+        and latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]
+    )
     return {
         "mid": mid,
         "best_bid": snapshot.get("best_bid", 0.0),
@@ -236,6 +261,9 @@ def compute_market_metrics(snapshot, history):
         "acceleration_5s": acceleration_5s,
         "acceleration_15s": acceleration_15s,
         "acceleration_30s": acceleration_30s,
+        "block_changes_5s": block_changes_5s,
+        "latest_three_blocks": latest_three_blocks,
+        "latest_three_increasing": latest_three_increasing,
         "bounce_from_2m_low": pct_change(low_2m or mid, mid),
         "market_data_age": max(0.0, time.time() - snapshot.get("ts", 0.0)),
     }
@@ -597,6 +625,10 @@ class MarketUniverse:
                 if return_30s is not None and prior_90s_return is not None
                 else None
             )
+            block_changes = rolling_block_changes(history)
+            if primary_basis == "2m_accel" and len(block_changes) != len(BLOCK_COLUMN_LABELS):
+                warmup_waiting = True
+                continue
             if primary_basis == "2m_accel" and (
                 return_2m is None
                 or acceleration_30s is None
@@ -605,13 +637,15 @@ class MarketUniverse:
             ):
                 warmup_waiting = True
                 continue
-            score = (
-                (float(acceleration_30s or 0.0) * 1.6)
-                + (float(acceleration_15s or 0.0) * 1.2)
-                + (float(acceleration_5s or 0.0) * 1.0)
-                + (max(float(return_30s or 0.0), 0.0) * 0.3)
-                + (max(float(return_2m or 0.0), 0.0) * 0.15)
+            latest_three_blocks = [item["pct"] for item in block_changes[-3:]] if len(block_changes) >= 3 else []
+            latest_three_increasing = (
+                len(latest_three_blocks) == 3
+                and latest_three_blocks[0] > 0
+                and latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]
             )
+            score = float(latest_three_blocks[-1]) if latest_three_blocks else 0.0
+            if latest_three_increasing:
+                score += 1000.0
             metadata = meta_by_coin.get(coin) or infer_perp_metadata(coin)
             ranked.append(
                 {
@@ -630,6 +664,9 @@ class MarketUniverse:
                     "acceleration_5s": trim_float(acceleration_5s or 0.0, 4),
                     "acceleration_15s": trim_float(acceleration_15s or 0.0, 4),
                     "acceleration_30s": trim_float(acceleration_30s or 0.0, 4),
+                    "block_changes_5s": [trim_float(item["pct"], 4) for item in block_changes],
+                    "latest_three_blocks": [trim_float(value, 4) for value in latest_three_blocks],
+                    "latest_three_increasing": latest_three_increasing,
                 }
             )
         ranked.sort(key=lambda item: item["score_pct"], reverse=(direction != "down"))
@@ -716,7 +753,6 @@ class LocalSandboxBot:
     def evaluate_entry_candidate(self, coin, snapshot, metrics):
         reasons = []
         intended_side = "LONG"
-        entry_mode = "standard"
         if coin in self.positions:
             reasons.append("position already active")
         if len(self.positions) >= int(self.config.max_open_positions):
@@ -725,33 +761,17 @@ class LocalSandboxBot:
             reasons.append("market data stale")
         if float(snapshot.get("mid", 0.0)) < float(self.config.min_price_usdc):
             reasons.append("price below minimum")
-        if not bool(metrics.get("has_return_2m", False)):
-            reasons.append("waiting for real 2m history")
-        r2m = float(metrics.get("return_2m", 0.0))
-        if r2m <= 0:
-            reasons.append("2m move not positive")
-        strong_2m = r2m >= float(self.config.return_2m_trend_threshold_pct)
-        r5 = float(metrics.get("return_5s", 0.0))
-        if r5 <= 0:
-            reasons.append("5s move not positive")
-        r15 = float(metrics.get("return_15s", 0.0))
-        if r15 <= 0:
-            reasons.append("15s move not positive")
-        r30 = float(metrics.get("return_30s", 0.0))
-        if r30 <= 0:
-            reasons.append("30s move not positive")
-        r1m = float(metrics.get("return_1m", 0.0))
-        if r1m <= 0:
-            reasons.append("1m move not positive")
-        accel5 = float(metrics.get("acceleration_5s", 0.0))
-        if accel5 < float(self.config.acceleration_5s_min_delta_pct):
-            reasons.append(f"5s accel {accel5:.4f}% below minimum")
-        accel15 = float(metrics.get("acceleration_15s", 0.0))
-        if accel15 < float(self.config.acceleration_15s_min_delta_pct):
-            reasons.append(f"15s accel {accel15:.4f}% below minimum")
-        accel = float(metrics.get("acceleration_30s", 0.0))
-        if accel < float(self.config.acceleration_min_delta_pct):
-            reasons.append(f"acceleration {accel:.4f}% below minimum")
+        block_changes = metrics.get("block_changes_5s") or []
+        if len(block_changes) != len(BLOCK_COLUMN_LABELS):
+            reasons.append("waiting for rolling 2m block history")
+        latest_three_blocks = metrics.get("latest_three_blocks") or []
+        if len(latest_three_blocks) < 3:
+            reasons.append("latest 5s blocks unavailable")
+        else:
+            if latest_three_blocks[0] <= 0:
+                reasons.append("oldest of latest three 5s blocks not positive")
+            if not (latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]):
+                reasons.append("latest three 5s blocks not sequentially increasing")
         if float(metrics.get("spread_pct", 0.0)) > float(self.config.spread_pct_max):
             reasons.append(f"spread {metrics['spread_pct']:.4f}% above max")
         bid_depth = float(snapshot.get("bid_depth_top5", 0.0) or 0.0)
@@ -761,11 +781,7 @@ class LocalSandboxBot:
             reasons.append(f"top5 depth {depth_usdc:.0f} below minimum")
         if reasons:
             return False, " | ".join(reasons), intended_side
-        if not strong_2m:
-            if r30 < float(self.config.early_entry_return_30s_pct):
-                return False, f"early 30s move {r30:.4f}% below trigger", intended_side
-            entry_mode = "early"
-        return True, f"Entry conditions passed ({entry_mode}).", intended_side
+        return True, "Entry conditions passed (three rising 5s blocks).", intended_side
 
     def enter_position(self, coin, snapshot, intended_side):
         leverage = max(1.0, float(self.config.leverage))
@@ -969,31 +985,20 @@ def build_hot_table(bot):
         box=box.SIMPLE_HEAD,
     )
     table.add_column("Perp", style="bold", no_wrap=True)
-    table.add_column("5s", justify="right", no_wrap=True)
-    table.add_column("15s", justify="right", no_wrap=True)
-    table.add_column("30s", justify="right", no_wrap=True)
-    table.add_column("1m", justify="right", no_wrap=True)
-    table.add_column("2m", justify="right", no_wrap=True)
-    table.add_column("A5", justify="right", no_wrap=True)
-    table.add_column("A15", justify="right", no_wrap=True)
-    table.add_column("A30", justify="right", no_wrap=True)
-    table.add_column("Price", justify="right", no_wrap=True)
+    for label in BLOCK_COLUMN_LABELS:
+        table.add_column(label, justify="right", no_wrap=True)
     leaders = bot.hot_perps[:10]
     if not leaders:
-        table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-", bot.last_scan_error or "Waiting for 2m history.")
+        table.add_row(*(["-"] + [bot.last_scan_error or "Waiting for 2m history."] + (["-"] * (len(BLOCK_COLUMN_LABELS) - 1))))
         return table
     for item in leaders:
+        block_values = item.get("block_changes_5s") or []
+        block_cells = [f"{value:.4f}%" for value in block_values]
+        if len(block_cells) < len(BLOCK_COLUMN_LABELS):
+            block_cells.extend(["-"] * (len(BLOCK_COLUMN_LABELS) - len(block_cells)))
         table.add_row(
             item["coin"],
-            f"{item['return_5s']:.4f}%",
-            f"{item['return_15s']:.4f}%",
-            f"{item['return_30s']:.4f}%",
-            f"{item['return_1m']:.4f}%",
-            f"{item['return_2m']:.4f}%",
-            f"{item['acceleration_5s']:.4f}%",
-            f"{item['acceleration_15s']:.4f}%",
-            f"{item['acceleration_30s']:.4f}%",
-            f"{item['mid']:.5f}",
+            *block_cells,
         )
     return table
 
