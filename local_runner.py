@@ -146,6 +146,8 @@ def nearest_value(history, seconds_ago, field):
             candidate = item
         else:
             break
+    if candidate is None:
+        return None
     return candidate.get(field)
 
 
