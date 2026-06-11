@@ -29,6 +29,7 @@ from threading import Event, Lock, Thread
 import requests
 from rich.console import Console, Group
 from rich.live import Live
+from rich import box
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -843,15 +844,21 @@ def build_summary_table(bot, market):
 
 
 def build_hot_table(bot):
-    table = Table(expand=True, padding=(0, 1))
-    table.add_column("Perp", style="bold")
-    table.add_column("Description")
-    table.add_column("Basis")
-    table.add_column("30s", justify="right")
-    table.add_column("1m", justify="right")
-    table.add_column("5m", justify="right")
-    table.add_column("15m", justify="right")
-    table.add_column("Price", justify="right")
+    table = Table(
+        expand=True,
+        padding=(0, 0),
+        pad_edge=False,
+        collapse_padding=True,
+        box=box.SIMPLE_HEAD,
+    )
+    table.add_column("Perp", style="bold", no_wrap=True)
+    table.add_column("Description", no_wrap=True, overflow="ellipsis", max_width=26)
+    table.add_column("Basis", no_wrap=True, overflow="ellipsis", max_width=12)
+    table.add_column("30s", justify="right", no_wrap=True)
+    table.add_column("1m", justify="right", no_wrap=True)
+    table.add_column("5m", justify="right", no_wrap=True)
+    table.add_column("15m", justify="right", no_wrap=True)
+    table.add_column("Price", justify="right", no_wrap=True)
     leaders = bot.hot_perps[:10]
     if not leaders:
         table.add_row("-", bot.last_scan_error or "Waiting for 5m history.", "-", "-", "-", "-", "-", "-")
@@ -860,7 +867,7 @@ def build_hot_table(bot):
         table.add_row(
             item["coin"],
             item.get("description", ""),
-            f"{item['score_basis']} ({item['score_basis_description']})",
+            f"{item['score_basis']} trend",
             f"{item['return_30s']:.4f}%",
             f"{item['return_1m']:.4f}%",
             f"{item['return_5m']:.4f}%",
@@ -871,13 +878,19 @@ def build_hot_table(bot):
 
 
 def build_positions_table(bot, market):
-    table = Table(expand=True, padding=(0, 1))
-    table.add_column("Perp", style="bold")
-    table.add_column("Side")
-    table.add_column("Entry", justify="right")
-    table.add_column("Current", justify="right")
-    table.add_column("Gain %", justify="right")
-    table.add_column("Status")
+    table = Table(
+        expand=True,
+        padding=(0, 0),
+        pad_edge=False,
+        collapse_padding=True,
+        box=box.SIMPLE_HEAD,
+    )
+    table.add_column("Perp", style="bold", no_wrap=True)
+    table.add_column("Side", no_wrap=True)
+    table.add_column("Entry", justify="right", no_wrap=True)
+    table.add_column("Current", justify="right", no_wrap=True)
+    table.add_column("Gain %", justify="right", no_wrap=True)
+    table.add_column("Status", no_wrap=True, overflow="ellipsis", max_width=18)
     if not bot.positions:
         table.add_row("-", "No active positions", "-", "-", "-", "-")
         return table
@@ -905,15 +918,21 @@ def build_positions_table(bot, market):
 
 
 def build_trades_table(bot):
-    table = Table(expand=True, padding=(0, 1))
-    table.add_column("Time")
-    table.add_column("Perp")
-    table.add_column("Side")
-    table.add_column("Exit")
-    table.add_column("Entry USDC", justify="right")
-    table.add_column("Exit USDC", justify="right")
-    table.add_column("PnL", justify="right")
-    table.add_column("Net PnL", justify="right")
+    table = Table(
+        expand=True,
+        padding=(0, 0),
+        pad_edge=False,
+        collapse_padding=True,
+        box=box.SIMPLE_HEAD,
+    )
+    table.add_column("Time", no_wrap=True)
+    table.add_column("Perp", no_wrap=True)
+    table.add_column("Side", no_wrap=True)
+    table.add_column("Exit", no_wrap=True, overflow="ellipsis", max_width=14)
+    table.add_column("Entry USDC", justify="right", no_wrap=True)
+    table.add_column("Exit USDC", justify="right", no_wrap=True)
+    table.add_column("PnL", justify="right", no_wrap=True)
+    table.add_column("Net PnL", justify="right", no_wrap=True)
     if not bot.trades:
         table.add_row("-", "No trades yet", "-", "-", "-", "-", "-", "-")
         return table
