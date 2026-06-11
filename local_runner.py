@@ -852,6 +852,8 @@ class LocalSandboxBot:
         self.last_signal_reason = "Waiting for three real 5s blocks."
         self.last_scan_error = ""
         self.last_scan_at = 0.0
+        self.rejection_log_cooldown_seconds = 12.0
+        self.last_rejection_by_coin = {}
         self.hot_perps = []
         self.stats = {
             "total_pnl": 0.0,
@@ -868,6 +870,14 @@ class LocalSandboxBot:
 
     def log(self, message):
         self.logs.appendleft(f"{format_timestamp(time.time())} {message}")
+
+    def log_entry_rejection(self, coin, reason):
+        now = time.time()
+        prior = self.last_rejection_by_coin.get(coin) or {}
+        if prior.get("reason") == reason and (now - float(prior.get("ts", 0.0))) < self.rejection_log_cooldown_seconds:
+            return
+        self.last_rejection_by_coin[coin] = {"reason": reason, "ts": now}
+        self.log(f"Entry rejected for {format_coin_label(coin)}: {reason}")
 
     def live_pnl(self):
         total = 0.0
@@ -1122,12 +1132,16 @@ class LocalSandboxBot:
                 continue
             latest_three_blocks = candidate.get("latest_three_blocks") or []
             if len(latest_three_blocks) < 3:
-                self.last_signal_reason = f"{format_coin_label(coin)}: waiting for three real 5s blocks."
+                reason = "waiting for three real 5s blocks."
+                self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
+                self.log_entry_rejection(coin, reason)
                 continue
             if latest_three_blocks[0] <= 0 or not (
                 latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]
             ):
-                self.last_signal_reason = f"{format_coin_label(coin)}: latest three 5s blocks not sequentially increasing."
+                reason = "latest three 5s blocks not sequentially increasing."
+                self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
+                self.log_entry_rejection(coin, reason)
                 continue
             if checks_completed >= MAX_BOOK_CHECKS_PER_SCAN:
                 self.last_signal_reason = f"Checked top {MAX_BOOK_CHECKS_PER_SCAN} symbols; waiting for next scan."
@@ -1137,13 +1151,16 @@ class LocalSandboxBot:
                 checks_completed += 1
             except Exception as exc:
                 checks_completed += 1
-                self.last_signal_reason = f"{format_coin_label(coin)}: snapshot error: {exc}"
+                reason = f"snapshot error: {exc}"
+                self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
+                self.log_entry_rejection(coin, reason)
                 continue
             if not snapshot or not metrics:
                 continue
             passed, reason, intended_side, entry_reason = self.evaluate_entry_candidate(coin, snapshot, metrics)
             self.last_signal_reason = f"{format_coin_label(coin)}: {reason}"
             if not passed:
+                self.log_entry_rejection(coin, reason)
                 continue
             if self.enter_position(coin, snapshot, intended_side, entry_reason):
                 return
