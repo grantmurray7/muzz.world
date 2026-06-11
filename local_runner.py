@@ -237,7 +237,9 @@ def compute_market_metrics(snapshot, history):
     acceleration_15s = return_15s - prior_15s_return if anchor_30s is not None and anchor_15s is not None else 0.0
     acceleration_30s = return_30s - (prior_90s_return / 3.0) if anchor_2m is not None and anchor_30s is not None else 0.0
     block_changes_5s = rolling_block_changes(history)
-    latest_three_blocks = [item["pct"] for item in block_changes_5s[-3:]] if len(block_changes_5s) >= 3 else []
+    real_block_changes_5s = block_changes_5s[:-1] if block_changes_5s else []
+    latest_three_blocks = [item["pct"] for item in real_block_changes_5s[-3:]] if len(real_block_changes_5s) >= 3 else []
+    latest_5s_block = float(real_block_changes_5s[-1]["pct"]) if real_block_changes_5s else 0.0
     latest_three_increasing = (
         len(latest_three_blocks) == 3
         and latest_three_blocks[0] > 0
@@ -271,7 +273,9 @@ def compute_market_metrics(snapshot, history):
         "acceleration_15s": acceleration_15s,
         "acceleration_30s": acceleration_30s,
         "block_changes_5s": block_changes_5s,
+        "real_block_changes_5s": real_block_changes_5s,
         "latest_three_blocks": latest_three_blocks,
+        "latest_5s_block": latest_5s_block,
         "latest_three_increasing": latest_three_increasing,
         "bounce_from_2m_low": pct_change(low_2m or mid, mid),
         "market_data_age": max(0.0, time.time() - snapshot.get("ts", 0.0)),
@@ -650,21 +654,24 @@ class MarketUniverse:
             ):
                 warmup_waiting = True
                 continue
-            latest_three_blocks = [item["pct"] for item in block_changes[-3:]] if len(block_changes) >= 3 else []
+            real_block_changes = block_changes[:-1]
+            latest_three_blocks = [item["pct"] for item in real_block_changes[-3:]] if len(real_block_changes) >= 3 else []
             latest_three_increasing = (
                 len(latest_three_blocks) == 3
                 and latest_three_blocks[0] > 0
                 and latest_three_blocks[0] < latest_three_blocks[1] < latest_three_blocks[2]
             )
-            score = float(latest_three_blocks[-1]) if latest_three_blocks else 0.0
-            if latest_three_increasing:
-                score += 1000.0
+            latest_5s_block = float(real_block_changes[-1]["pct"]) if real_block_changes else 0.0
+            previous_5s_block = float(real_block_changes[-2]["pct"]) if len(real_block_changes) >= 2 else 0.0
+            score = latest_5s_block
             metadata = meta_by_coin.get(coin) or infer_perp_metadata(coin)
             ranked.append(
                 {
                     "coin": coin,
                     "mid": trim_float(latest_mid, 6),
                     "score_pct": trim_float(score, 4),
+                    "latest_5s_block": trim_float(latest_5s_block, 4),
+                    "previous_5s_block": trim_float(previous_5s_block, 4),
                     "score_basis": "2m accel",
                     "score_basis_description": "5s/15s/30s pace building inside rolling 2m",
                     "category": metadata.get("category", "Crypto"),
@@ -682,7 +689,14 @@ class MarketUniverse:
                     "latest_three_increasing": latest_three_increasing,
                 }
             )
-        ranked.sort(key=lambda item: item["score_pct"], reverse=(direction != "down"))
+        ranked.sort(
+            key=lambda item: (
+                float(item.get("latest_5s_block", 0.0)),
+                float(item.get("previous_5s_block", 0.0)),
+                float(item.get("score_pct", 0.0)),
+            ),
+            reverse=(direction != "down"),
+        )
         if not ranked and primary_basis == "2m_accel" and warmup_waiting and not last_error:
             last_error = "Waiting for 2m history."
         return {"leaders": ranked[:limit], "last_error": last_error}
