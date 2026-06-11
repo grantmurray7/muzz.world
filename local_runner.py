@@ -57,6 +57,28 @@ SCAN_INTERVAL_SECONDS = 2.0
 BLOCK_WINDOW_SECONDS = 120
 BLOCK_STEP_SECONDS = 5
 BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)] + ["Latest"]
+CURATED_PERP_SYMBOLS = [
+    "BTC",
+    "ETH",
+    "BNB",
+    "XRP",
+    "SOL",
+    "TRX",
+    "HYPE",
+    "DOGE",
+    "ZEC",
+    "XMR",
+    "CC",
+    "XLM",
+    "ADA",
+    "LINK",
+    "TON",
+    "BCH",
+    "HBAR",
+    "LTC",
+    "SUI",
+    "AVAX",
+]
 
 console = Console()
 
@@ -346,9 +368,17 @@ class MarketUniverse:
         universe = []
         meta_by_coin = {}
         sz_decimals = {}
+        available_assets = {}
         for asset in meta.get("universe") or []:
             coin = asset.get("name")
             if not coin:
+                continue
+            if asset.get("isDelisted"):
+                continue
+            available_assets[coin] = asset
+        for coin in CURATED_PERP_SYMBOLS:
+            asset = available_assets.get(coin)
+            if not asset:
                 continue
             universe.append(coin)
             meta_by_coin[coin] = infer_perp_metadata(coin, asset)
@@ -606,17 +636,43 @@ class MarketUniverse:
 
     def get_hot_perps(self, limit=10, primary_basis="2m_accel", min_price=0.0, direction="up"):
         with self.lock:
+            universe = list(self.universe)
             histories = {coin: list(items) for coin, items in self.history.items()}
             mids = dict(self.current_mids)
             meta_by_coin = dict(self.meta_by_coin)
             last_error = self.last_error
-        ranked = []
+        leaders = []
         warmup_waiting = False
-        for coin, history in histories.items():
-            if not history or coin not in mids:
-                continue
-            latest_mid = mids[coin]
-            if latest_mid < min_price:
+        for coin in universe:
+            history = histories.get(coin, [])
+            latest_mid = float(mids.get(coin, 0.0) or 0.0)
+            metadata = meta_by_coin.get(coin) or infer_perp_metadata(coin)
+            leader = {
+                "coin": coin,
+                "mid": trim_float(latest_mid, 6),
+                "score_pct": 0.0,
+                "latest_5s_block": 0.0,
+                "previous_5s_block": 0.0,
+                "score_basis": "5s jump",
+                "score_basis_description": "fixed curated universe",
+                "category": metadata.get("category", "Crypto"),
+                "description": metadata.get("description", f"{coin} crypto perp"),
+                "return_5s": 0.0,
+                "return_15s": 0.0,
+                "return_30s": 0.0,
+                "return_1m": 0.0,
+                "return_2m": 0.0,
+                "acceleration_5s": 0.0,
+                "acceleration_15s": 0.0,
+                "acceleration_30s": 0.0,
+                "block_changes_5s": [None] * len(BLOCK_COLUMN_LABELS),
+                "latest_three_blocks": [],
+                "latest_three_increasing": False,
+            }
+            if not history or latest_mid < min_price:
+                leaders.append(leader)
+                if not history:
+                    warmup_waiting = True
                 continue
             return_5s = self._return_for(history, 5)
             return_15s = self._return_for(history, 15)
@@ -652,6 +708,7 @@ class MarketUniverse:
             real_block_changes = [item for item in block_changes[:-1] if item["pct"] is not None]
             if not real_block_changes:
                 warmup_waiting = True
+                leaders.append(leader)
                 continue
             latest_three_blocks = [item["pct"] for item in real_block_changes[-3:]] if len(real_block_changes) >= 3 else []
             latest_three_increasing = (
@@ -661,19 +718,14 @@ class MarketUniverse:
             )
             latest_5s_block = float(real_block_changes[-1]["pct"]) if real_block_changes else 0.0
             previous_5s_block = float(real_block_changes[-2]["pct"]) if len(real_block_changes) >= 2 else 0.0
-            score = latest_5s_block
-            metadata = meta_by_coin.get(coin) or infer_perp_metadata(coin)
-            ranked.append(
+            leader.update(
                 {
-                    "coin": coin,
                     "mid": trim_float(latest_mid, 6),
-                    "score_pct": trim_float(score, 4),
+                    "score_pct": trim_float(latest_5s_block, 4),
                     "latest_5s_block": trim_float(latest_5s_block, 4),
                     "previous_5s_block": trim_float(previous_5s_block, 4),
-                    "score_basis": "2m accel",
-                    "score_basis_description": "5s/15s/30s pace building inside rolling 2m",
-                    "category": metadata.get("category", "Crypto"),
-                    "description": metadata.get("description", f"{coin} crypto perp"),
+                    "score_basis": "5s jump",
+                    "score_basis_description": "fixed curated universe",
                     "return_5s": trim_float(return_5s or 0.0, 4),
                     "return_15s": trim_float(return_15s or 0.0, 4),
                     "return_30s": trim_float(return_30s or 0.0, 4),
@@ -687,17 +739,15 @@ class MarketUniverse:
                     "latest_three_increasing": latest_three_increasing,
                 }
             )
-        ranked.sort(
-            key=lambda item: (
-                float(item.get("latest_5s_block", 0.0)),
-                float(item.get("previous_5s_block", 0.0)),
-                float(item.get("score_pct", 0.0)),
-            ),
-            reverse=(direction != "down"),
-        )
-        if not ranked and primary_basis == "2m_accel" and warmup_waiting and not last_error:
+            leaders.append(leader)
+        if (
+            not any(any(value is not None for value in (item.get("block_changes_5s") or [])) for item in leaders)
+            and primary_basis == "2m_accel"
+            and warmup_waiting
+            and not last_error
+        ):
             last_error = "Waiting for 2m history."
-        return {"leaders": ranked[:limit], "last_error": last_error}
+        return {"leaders": leaders[:limit], "last_error": last_error}
 
     def diagnostics(self):
         with self.lock:
@@ -950,7 +1000,7 @@ class LocalSandboxBot:
             return
         self.last_scan_at = time.time()
         hot = self.market.get_hot_perps(
-            limit=12,
+            limit=len(CURATED_PERP_SYMBOLS),
             primary_basis="2m_accel",
             min_price=float(self.config.min_price_usdc),
             direction="up",
@@ -960,7 +1010,15 @@ class LocalSandboxBot:
         if not self.hot_perps:
             self.last_signal_reason = self.last_scan_error or "No candidates."
             return
-        for candidate in self.hot_perps:
+        candidates_for_entry = sorted(
+            self.hot_perps,
+            key=lambda item: (
+                float(item.get("latest_5s_block", 0.0)),
+                float(item.get("previous_5s_block", 0.0)),
+            ),
+            reverse=True,
+        )
+        for candidate in candidates_for_entry:
             if len(self.positions) >= int(self.config.max_open_positions):
                 self.last_signal_reason = "Max open positions reached."
                 return
@@ -1052,7 +1110,7 @@ def build_hot_table(bot):
     table.add_column("Perp", style="bold", no_wrap=True)
     for label in BLOCK_COLUMN_LABELS:
         table.add_column(label, justify="right", no_wrap=True)
-    leaders = bot.hot_perps[:10]
+    leaders = bot.hot_perps
     if not leaders:
         table.add_row(*(["-"] + [bot.last_scan_error or "Waiting for 2m history."] + (["-"] * (len(BLOCK_COLUMN_LABELS) - 1))))
         return table
