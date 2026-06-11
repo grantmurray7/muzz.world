@@ -189,6 +189,8 @@ def infer_perp_metadata(coin, asset=None):
 
 def compute_market_metrics(snapshot, history):
     mid = snapshot.get("mid", 0.0)
+    anchor_5s = nearest_value(history, 5, "mid")
+    anchor_15s = nearest_value(history, 15, "mid")
     anchor_30s = nearest_value(history, 30, "mid")
     anchor_1m = nearest_value(history, 60, "mid")
     anchor_2m = nearest_value(history, 120, "mid")
@@ -196,10 +198,16 @@ def compute_market_metrics(snapshot, history):
     anchor_60m = nearest_value(history, 3600, "mid")
     low_2m = min_mid_since(history, 120)
     imbalance_10s = nearest_value(history, 10, "book_imbalance")
+    return_5s = pct_change(anchor_5s or mid, mid)
+    return_15s = pct_change(anchor_15s or mid, mid)
     return_30s = pct_change(anchor_30s or mid, mid)
     return_1m = pct_change(anchor_1m or mid, mid)
     return_2m = pct_change(anchor_2m or mid, mid)
+    prior_10s_return = pct_change(anchor_15s, anchor_5s) if anchor_15s is not None and anchor_5s is not None else 0.0
+    prior_15s_return = pct_change(anchor_30s, anchor_15s) if anchor_30s is not None and anchor_15s is not None else 0.0
     prior_90s_return = pct_change(anchor_2m, anchor_30s) if anchor_2m is not None and anchor_30s is not None else 0.0
+    acceleration_5s = return_5s - (prior_10s_return / 2.0) if anchor_15s is not None and anchor_5s is not None else 0.0
+    acceleration_15s = return_15s - prior_15s_return if anchor_30s is not None and anchor_15s is not None else 0.0
     acceleration_30s = return_30s - (prior_90s_return / 3.0) if anchor_2m is not None and anchor_30s is not None else 0.0
     return {
         "mid": mid,
@@ -208,17 +216,25 @@ def compute_market_metrics(snapshot, history):
         "spread_pct": snapshot.get("spread_pct", 0.0),
         "book_imbalance": snapshot.get("book_imbalance", 0.5),
         "book_imbalance_10s_ago": imbalance_10s if imbalance_10s is not None else snapshot.get("book_imbalance", 0.5),
+        "has_return_5s": anchor_5s is not None,
+        "has_return_15s": anchor_15s is not None,
         "has_return_30s": anchor_30s is not None,
         "has_return_1m": anchor_1m is not None,
         "has_return_2m": anchor_2m is not None,
         "has_return_15m": anchor_15m is not None,
         "has_return_60m": anchor_60m is not None,
+        "return_5s": return_5s,
+        "return_15s": return_15s,
         "return_30s": return_30s,
         "return_1m": return_1m,
         "return_2m": return_2m,
         "return_15m": pct_change(anchor_15m or mid, mid),
         "return_60m": pct_change(anchor_60m or mid, mid),
+        "prior_10s_return": prior_10s_return,
+        "prior_15s_return": prior_15s_return,
         "prior_90s_return": prior_90s_return,
+        "acceleration_5s": acceleration_5s,
+        "acceleration_15s": acceleration_15s,
         "acceleration_30s": acceleration_30s,
         "bounce_from_2m_low": pct_change(low_2m or mid, mid),
         "market_data_age": max(0.0, time.time() - snapshot.get("ts", 0.0)),
@@ -238,6 +254,9 @@ class BotConfig:
     emergency_window_seconds: int = 30
     return_2m_trend_threshold_pct: float = 0.20
     acceleration_min_delta_pct: float = 0.05
+    early_entry_return_30s_pct: float = 0.08
+    acceleration_15s_min_delta_pct: float = 0.03
+    acceleration_5s_min_delta_pct: float = 0.015
     spread_pct_max: float = 0.025
     min_top5_depth_usdc: float = 2000.0
     starting_balance_usdc: float = 10000.0
@@ -455,12 +474,26 @@ class MarketUniverse:
             last_message_at = self.last_message_at
         if not history or latest_mid <= 0:
             return None
+        return_5s = self._return_for(history, 5)
+        return_15s = self._return_for(history, 15)
         return_30s = self._return_for(history, 30)
         return_1m = self._return_for(history, 60)
         return_2m = self._return_for(history, 120)
         return_15m = self._return_for(history, 900)
         return_60m = self._return_for(history, 3600)
+        prior_10s_return = self._segment_return_for(history, 15, 5)
+        prior_15s_return = self._segment_return_for(history, 30, 15)
         prior_90s_return = self._segment_return_for(history, 120, 30)
+        acceleration_5s = (
+            float(return_5s) - (float(prior_10s_return) / 2.0)
+            if return_5s is not None and prior_10s_return is not None
+            else 0.0
+        )
+        acceleration_15s = (
+            float(return_15s) - float(prior_15s_return)
+            if return_15s is not None and prior_15s_return is not None
+            else 0.0
+        )
         acceleration_30s = (
             float(return_30s) - (float(prior_90s_return) / 3.0)
             if return_30s is not None and prior_90s_return is not None
@@ -470,17 +503,25 @@ class MarketUniverse:
         return {
             "coin": coin,
             "mid": latest_mid,
+            "has_return_5s": return_5s is not None,
+            "has_return_15s": return_15s is not None,
             "has_return_30s": return_30s is not None,
             "has_return_1m": return_1m is not None,
             "has_return_2m": return_2m is not None,
             "has_return_15m": return_15m is not None,
             "has_return_60m": return_60m is not None,
+            "return_5s": return_5s or 0.0,
+            "return_15s": return_15s or 0.0,
             "return_30s": return_30s or 0.0,
             "return_1m": return_1m or 0.0,
             "return_2m": return_2m or 0.0,
             "return_15m": return_15m or 0.0,
             "return_60m": return_60m or 0.0,
+            "prior_10s_return": prior_10s_return or 0.0,
+            "prior_15s_return": prior_15s_return or 0.0,
             "prior_90s_return": prior_90s_return or 0.0,
+            "acceleration_5s": acceleration_5s,
+            "acceleration_15s": acceleration_15s,
             "acceleration_30s": acceleration_30s,
             "market_data_age": max(0.0, now - last_message_at) if last_message_at else 9999.0,
             "history": history,
@@ -533,19 +574,44 @@ class MarketUniverse:
             latest_mid = mids[coin]
             if latest_mid < min_price:
                 continue
+            return_5s = self._return_for(history, 5)
+            return_15s = self._return_for(history, 15)
             return_30s = self._return_for(history, 30)
             return_1m = self._return_for(history, 60)
             return_2m = self._return_for(history, 120)
+            prior_10s_return = self._segment_return_for(history, 15, 5)
+            prior_15s_return = self._segment_return_for(history, 30, 15)
             prior_90s_return = self._segment_return_for(history, 120, 30)
+            acceleration_5s = (
+                float(return_5s) - (float(prior_10s_return) / 2.0)
+                if return_5s is not None and prior_10s_return is not None
+                else None
+            )
+            acceleration_15s = (
+                float(return_15s) - float(prior_15s_return)
+                if return_15s is not None and prior_15s_return is not None
+                else None
+            )
             acceleration_30s = (
                 float(return_30s) - (float(prior_90s_return) / 3.0)
                 if return_30s is not None and prior_90s_return is not None
                 else None
             )
-            if primary_basis == "2m_accel" and (return_2m is None or acceleration_30s is None):
+            if primary_basis == "2m_accel" and (
+                return_2m is None
+                or acceleration_30s is None
+                or acceleration_15s is None
+                or acceleration_5s is None
+            ):
                 warmup_waiting = True
                 continue
-            score = acceleration_30s if acceleration_30s is not None else 0.0
+            score = (
+                (float(acceleration_30s or 0.0) * 1.6)
+                + (float(acceleration_15s or 0.0) * 1.2)
+                + (float(acceleration_5s or 0.0) * 1.0)
+                + (max(float(return_30s or 0.0), 0.0) * 0.3)
+                + (max(float(return_2m or 0.0), 0.0) * 0.15)
+            )
             metadata = meta_by_coin.get(coin) or infer_perp_metadata(coin)
             ranked.append(
                 {
@@ -553,12 +619,16 @@ class MarketUniverse:
                     "mid": trim_float(latest_mid, 6),
                     "score_pct": trim_float(score, 4),
                     "score_basis": "2m accel",
-                    "score_basis_description": "recent 30s outrunning prior 90s",
+                    "score_basis_description": "5s/15s/30s pace building inside rolling 2m",
                     "category": metadata.get("category", "Crypto"),
                     "description": metadata.get("description", f"{coin} crypto perp"),
+                    "return_5s": trim_float(return_5s or 0.0, 4),
+                    "return_15s": trim_float(return_15s or 0.0, 4),
                     "return_30s": trim_float(return_30s or 0.0, 4),
                     "return_1m": trim_float(return_1m or 0.0, 4),
                     "return_2m": trim_float(return_2m or 0.0, 4),
+                    "acceleration_5s": trim_float(acceleration_5s or 0.0, 4),
+                    "acceleration_15s": trim_float(acceleration_15s or 0.0, 4),
                     "acceleration_30s": trim_float(acceleration_30s or 0.0, 4),
                 }
             )
@@ -646,6 +716,7 @@ class LocalSandboxBot:
     def evaluate_entry_candidate(self, coin, snapshot, metrics):
         reasons = []
         intended_side = "LONG"
+        entry_mode = "standard"
         if coin in self.positions:
             reasons.append("position already active")
         if len(self.positions) >= int(self.config.max_open_positions):
@@ -657,14 +728,27 @@ class LocalSandboxBot:
         if not bool(metrics.get("has_return_2m", False)):
             reasons.append("waiting for real 2m history")
         r2m = float(metrics.get("return_2m", 0.0))
-        if r2m < float(self.config.return_2m_trend_threshold_pct):
-            reasons.append(f"2m move {r2m:.4f}% below trigger")
+        if r2m <= 0:
+            reasons.append("2m move not positive")
+        strong_2m = r2m >= float(self.config.return_2m_trend_threshold_pct)
+        r5 = float(metrics.get("return_5s", 0.0))
+        if r5 <= 0:
+            reasons.append("5s move not positive")
+        r15 = float(metrics.get("return_15s", 0.0))
+        if r15 <= 0:
+            reasons.append("15s move not positive")
         r30 = float(metrics.get("return_30s", 0.0))
         if r30 <= 0:
             reasons.append("30s move not positive")
         r1m = float(metrics.get("return_1m", 0.0))
         if r1m <= 0:
             reasons.append("1m move not positive")
+        accel5 = float(metrics.get("acceleration_5s", 0.0))
+        if accel5 < float(self.config.acceleration_5s_min_delta_pct):
+            reasons.append(f"5s accel {accel5:.4f}% below minimum")
+        accel15 = float(metrics.get("acceleration_15s", 0.0))
+        if accel15 < float(self.config.acceleration_15s_min_delta_pct):
+            reasons.append(f"15s accel {accel15:.4f}% below minimum")
         accel = float(metrics.get("acceleration_30s", 0.0))
         if accel < float(self.config.acceleration_min_delta_pct):
             reasons.append(f"acceleration {accel:.4f}% below minimum")
@@ -677,7 +761,11 @@ class LocalSandboxBot:
             reasons.append(f"top5 depth {depth_usdc:.0f} below minimum")
         if reasons:
             return False, " | ".join(reasons), intended_side
-        return True, "Entry conditions passed.", intended_side
+        if not strong_2m:
+            if r30 < float(self.config.early_entry_return_30s_pct):
+                return False, f"early 30s move {r30:.4f}% below trigger", intended_side
+            entry_mode = "early"
+        return True, f"Entry conditions passed ({entry_mode}).", intended_side
 
     def enter_position(self, coin, snapshot, intended_side):
         leverage = max(1.0, float(self.config.leverage))
@@ -881,23 +969,29 @@ def build_hot_table(bot):
         box=box.SIMPLE_HEAD,
     )
     table.add_column("Perp", style="bold", no_wrap=True)
-    table.add_column("Description", no_wrap=True, overflow="ellipsis", max_width=26)
+    table.add_column("5s", justify="right", no_wrap=True)
+    table.add_column("15s", justify="right", no_wrap=True)
     table.add_column("30s", justify="right", no_wrap=True)
     table.add_column("1m", justify="right", no_wrap=True)
     table.add_column("2m", justify="right", no_wrap=True)
-    table.add_column("Accel", justify="right", no_wrap=True)
+    table.add_column("A5", justify="right", no_wrap=True)
+    table.add_column("A15", justify="right", no_wrap=True)
+    table.add_column("A30", justify="right", no_wrap=True)
     table.add_column("Price", justify="right", no_wrap=True)
     leaders = bot.hot_perps[:10]
     if not leaders:
-        table.add_row("-", bot.last_scan_error or "Waiting for 2m history.", "-", "-", "-", "-", "-")
+        table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-", bot.last_scan_error or "Waiting for 2m history.")
         return table
     for item in leaders:
         table.add_row(
             item["coin"],
-            item.get("description", ""),
+            f"{item['return_5s']:.4f}%",
+            f"{item['return_15s']:.4f}%",
             f"{item['return_30s']:.4f}%",
             f"{item['return_1m']:.4f}%",
             f"{item['return_2m']:.4f}%",
+            f"{item['acceleration_5s']:.4f}%",
+            f"{item['acceleration_15s']:.4f}%",
             f"{item['acceleration_30s']:.4f}%",
             f"{item['mid']:.5f}",
         )
@@ -1032,6 +1126,9 @@ def parse_args():
     parser.add_argument("--starting-balance", type=float, default=10000.0, help="Starting sandbox balance in USDC")
     parser.add_argument("--trend-trigger", type=float, default=0.20, help="Minimum 2m move required to consider entry")
     parser.add_argument("--accel-trigger", type=float, default=0.05, help="Minimum 30s acceleration edge versus prior 90s")
+    parser.add_argument("--accel15-trigger", type=float, default=0.03, help="Minimum 15s acceleration edge versus prior 15s")
+    parser.add_argument("--accel5-trigger", type=float, default=0.015, help="Minimum 5s acceleration edge versus prior 10s")
+    parser.add_argument("--early-30s-trigger", type=float, default=0.08, help="Minimum 30s move to allow early entry before full 2m trigger")
     parser.add_argument("--spread-max", type=float, default=0.025, help="Maximum spread percent allowed")
     parser.add_argument("--min-top5-depth", type=float, default=2000.0, help="Minimum combined top5 book depth in USDC")
     return parser.parse_args()
@@ -1049,6 +1146,9 @@ def main():
         starting_balance_usdc=args.starting_balance,
         return_2m_trend_threshold_pct=args.trend_trigger,
         acceleration_min_delta_pct=args.accel_trigger,
+        acceleration_15s_min_delta_pct=args.accel15_trigger,
+        acceleration_5s_min_delta_pct=args.accel5_trigger,
+        early_entry_return_30s_pct=args.early_30s_trigger,
         spread_pct_max=args.spread_max,
         min_top5_depth_usdc=args.min_top5_depth,
     )
