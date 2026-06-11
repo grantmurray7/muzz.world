@@ -842,7 +842,7 @@
                     <td>${trade.exit_reason || 'N/A'}</td>
                     <td class="num">${fmt(trade.size, 4)}</td>
                     <td class="num">${fmtUsdc(trade.notional, 2)}</td>
-                    <td class="num">${fmtUsdc(trade.balance_after_trade, 2)}</td>
+                    <td class="num">${fmtUsdc(trade.equity_after_trade ?? trade.balance_after_trade, 2)}</td>
                     <td class="num">${fmt(trade.fees_paid, 4)}</td>
                     <td class="num ${valueClass(trade.net_pnl)}">${fmt(trade.net_pnl, 4)}</td>
                 </tr>

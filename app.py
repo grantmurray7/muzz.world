@@ -2972,9 +2972,20 @@ def fill_sandbox_exit_multi(position, exit_reason, maker_or_taker, current_mid, 
         'max_favourable_excursion': trim_float(position.get('max_favourable_excursion', 0.0), 6),
         'max_adverse_excursion': trim_float(position.get('max_adverse_excursion', 0.0), 6),
     }
-    record_trade(SANDBOX_NS, trade)
     save_position_for_coin(SANDBOX_NS, coin, None)
     save_open_order_for_coin(SANDBOX_NS, coin, None)
+    open_positions, total_live_pnl = compute_open_position_views(SANDBOX_NS)
+    reserved_margin = sum(
+        float(
+            pos.get(
+                'initial_margin',
+                float(pos.get('notional', 0.0)) / max(1.0, float(pos.get('leverage', 1.0))),
+            )
+        )
+        for pos in get_positions(SANDBOX_NS).values()
+    )
+    trade['equity_after_trade'] = trim_float(float(available) + float(reserved_margin) + float(total_live_pnl), 6)
+    record_trade(SANDBOX_NS, trade)
     stats = get_stats(SANDBOX_NS)
     stats['total_pnl'] = float(stats.get('total_pnl', 0.0)) + net_pnl
     stats['daily_pnl'] = float(stats.get('daily_pnl', 0.0)) + net_pnl
