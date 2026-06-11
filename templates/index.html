@@ -524,8 +524,8 @@
                                 <th>Perp</th>
                                 <th>Exit</th>
                                 <th class="num">Size</th>
-                                <th class="num">Entry</th>
-                                <th class="num">Exit</th>
+                                <th class="num">Entry USDC</th>
+                                <th class="num">Exit USDC</th>
                                 <th class="num">Fees</th>
                                 <th class="num">Net PnL</th>
                             </tr>
@@ -841,8 +841,8 @@
                     <td>${trade.coin || 'N/A'}</td>
                     <td>${trade.exit_reason || 'N/A'}</td>
                     <td class="num">${fmt(trade.size, 4)}</td>
-                    <td class="num">${fmt(trade.filled_price, 5)}</td>
-                    <td class="num">${fmt(trade.exit_price, 5)}</td>
+                    <td class="num">${fmtUsdc(trade.notional, 2)}</td>
+                    <td class="num">${fmtUsdc(trade.balance_after_trade, 2)}</td>
                     <td class="num">${fmt(trade.fees_paid, 4)}</td>
                     <td class="num ${valueClass(trade.net_pnl)}">${fmt(trade.net_pnl, 4)}</td>
                 </tr>
