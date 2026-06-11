@@ -1306,6 +1306,26 @@ def save_balances(namespace, balances):
     ns_set_json(namespace, 'balances', balances)
 
 
+def reconcile_sandbox_balances(open_positions=None, total_live_pnl=None):
+    config = get_config(SANDBOX_NS)
+    stats = get_stats(SANDBOX_NS)
+    positions = list(get_positions(SANDBOX_NS).values())
+    reserved_notional = sum(float(position.get('notional', 0.0)) for position in positions)
+    reserved_entry_fees = sum(float(position.get('entry_fees_paid', 0.0)) for position in positions)
+    starting_balance = float(config.get('starting_balance_usdc', DEFAULT_CONFIGS[SANDBOX_NS]['starting_balance_usdc']))
+    realized_pnl = float(stats.get('total_pnl', 0.0))
+    available = starting_balance + realized_pnl - reserved_notional - reserved_entry_fees
+    available = trim_float(available, 6)
+    if open_positions is not None and total_live_pnl is not None:
+        current_position_value = sum(float(view.get('notional', 0.0)) for view in open_positions) + float(total_live_pnl)
+        equity = trim_float(available + current_position_value, 6)
+    else:
+        equity = trim_float(max(float(get_balances(SANDBOX_NS).get('equity', available)), available), 6)
+    balances = {'available': available, 'equity': equity}
+    save_balances(SANDBOX_NS, balances)
+    return balances
+
+
 def get_bot_state(namespace):
     return ns_get(namespace, 'bot_state', 'PAUSED')
 
@@ -3270,12 +3290,12 @@ def build_state_payload(namespace):
     market_universe.ensure_running()
     if namespace == REAL_NS:
         sync_real_account_state()
-    balances = get_balances(namespace)
     stats = get_stats(namespace)
     open_positions, total_live_pnl = compute_open_position_views(namespace)
     if namespace == SANDBOX_NS:
-        balances['equity'] = float(balances.get('available', 0.0)) + total_live_pnl + sum(float(view.get('notional', 0.0)) for view in open_positions)
-        save_balances(namespace, balances)
+        balances = reconcile_sandbox_balances(open_positions=open_positions, total_live_pnl=total_live_pnl)
+    else:
+        balances = get_balances(namespace)
     config = get_config(namespace)
     focus_market = build_market_focus()
     hot_primary_basis = '30s' if namespace == SANDBOX_NS else '5m'
@@ -3370,6 +3390,8 @@ def trade_loop(namespace):
             redis.set(lock_key, INSTANCE_ID, ex=15)
             if namespace == REAL_NS:
                 sync_real_account_state()
+            else:
+                reconcile_sandbox_balances()
             manage_open_orders(namespace)
             manage_positions(namespace)
             if get_bot_state(namespace) != 'RUNNING':
