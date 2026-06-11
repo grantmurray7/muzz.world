@@ -368,17 +368,19 @@ DEFAULT_CONFIGS = {
         'entry_cooldown_seconds': 0,
         'take_profit_pct': 0.25,
         'stop_loss_pct': 0.25,
-        'time_stop_seconds': 120,
+        'time_stop_seconds': 60,
         'emergency_exit_drop_pct': 0.20,
         'emergency_window_seconds': 30,
         'entry_timeout_seconds': 10,
         'return_30s_threshold_pct': 0.25,
         'return_1m_threshold_pct': 0.25,
+        'return_5m_down_threshold_pct': 0.40,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
         'return_60m_min_pct': -99.0,
         'spread_pct_max': 0.025,
         'book_imbalance_min': 0.50,
+        'min_top5_depth_usdc': 2000.0,
         'require_imbalance_improvement': False,
         'starting_balance_usdc': 10000.0,
     },
@@ -403,11 +405,13 @@ DEFAULT_CONFIGS = {
         'entry_timeout_seconds': 10,
         'return_30s_threshold_pct': 0.25,
         'return_1m_threshold_pct': 0.25,
+        'return_5m_down_threshold_pct': 0.40,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
         'return_60m_min_pct': -1.00,
         'spread_pct_max': 0.025,
         'book_imbalance_min': 0.52,
+        'min_top5_depth_usdc': 0.0,
         'require_imbalance_improvement': True,
         'simulate_slippage': False,
     },
@@ -436,11 +440,13 @@ EDITABLE_CONFIG_FIELDS = {
     'entry_timeout_seconds',
     'return_30s_threshold_pct',
     'return_1m_threshold_pct',
+    'return_5m_down_threshold_pct',
     'return_2m_threshold_pct',
     'bounce_from_2m_low_threshold_pct',
     'return_60m_min_pct',
     'spread_pct_max',
     'book_imbalance_min',
+    'min_top5_depth_usdc',
     'require_imbalance_improvement',
     'starting_balance_usdc',
 }
@@ -976,7 +982,7 @@ class MarketUniverseStore:
             'history': history,
         }
 
-    def get_hot_perps(self, limit=10, primary_basis='5m', min_price=0.0):
+    def get_hot_perps(self, limit=10, primary_basis='5m', min_price=0.0, direction='up'):
         if not system_power_enabled():
             return {'leaders': [], 'last_error': 'System power is OFF.'}
         self.ensure_running()
@@ -1051,7 +1057,7 @@ class MarketUniverseStore:
                     'return_15m': trim_float(return_15m or 0.0, 4),
                 }
             )
-        ranked.sort(key=lambda item: item['score_pct'], reverse=True)
+        ranked.sort(key=lambda item: item['score_pct'], reverse=(direction != 'down'))
         return {'leaders': ranked[:limit], 'last_error': last_error}
 
 
