@@ -375,6 +375,7 @@ DEFAULT_CONFIGS = {
         'return_30s_threshold_pct': 0.25,
         'return_1m_threshold_pct': 0.25,
         'return_5m_down_threshold_pct': 0.40,
+        'return_5m_trend_threshold_pct': 0.40,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
         'return_60m_min_pct': -99.0,
@@ -406,6 +407,7 @@ DEFAULT_CONFIGS = {
         'return_30s_threshold_pct': 0.25,
         'return_1m_threshold_pct': 0.25,
         'return_5m_down_threshold_pct': 0.40,
+        'return_5m_trend_threshold_pct': 0.40,
         'return_2m_threshold_pct': -0.20,
         'bounce_from_2m_low_threshold_pct': 0.05,
         'return_60m_min_pct': -1.00,
@@ -441,6 +443,7 @@ EDITABLE_CONFIG_FIELDS = {
     'return_30s_threshold_pct',
     'return_1m_threshold_pct',
     'return_5m_down_threshold_pct',
+    'return_5m_trend_threshold_pct',
     'return_2m_threshold_pct',
     'bounce_from_2m_low_threshold_pct',
     'return_60m_min_pct',
@@ -1057,7 +1060,10 @@ class MarketUniverseStore:
                     'return_15m': trim_float(return_15m or 0.0, 4),
                 }
             )
-        ranked.sort(key=lambda item: item['score_pct'], reverse=(direction != 'down'))
+        if direction == 'abs':
+            ranked.sort(key=lambda item: abs(float(item['score_pct'])), reverse=True)
+        else:
+            ranked.sort(key=lambda item: item['score_pct'], reverse=(direction != 'down'))
         return {'leaders': ranked[:limit], 'last_error': last_error}
 
 
@@ -1830,15 +1836,13 @@ def sync_real_account_state():
             size = read_float(pos.get('szi'), 0.0)
             if abs(size) <= 0:
                 continue
-            if size < 0:
-                stats['unsupported_external_position'] = f'Detected unsupported external SHORT {coin} position.'
-                continue
+            side = 'SHORT' if size < 0 else 'LONG'
             entry_px = read_float(pos.get('entryPx'), 0.0)
-            position_value = read_float(pos.get('positionValue'), size * entry_px)
+            position_value = abs(read_float(pos.get('positionValue'), abs(size) * entry_px))
             existing = existing_positions.get(coin, {})
             active_position = {
                 'coin': coin,
-                'side': 'LONG',
+                'side': side,
                 'size': abs(size),
                 'submitted_price': existing.get('submitted_price', entry_px),
                 'filled_price': entry_px,
@@ -2794,6 +2798,7 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
     open_orders = get_open_orders(namespace)
     reasons = []
     checks = []
+    intended_side = 'LONG'
     bot_state = get_bot_state(namespace)
     if bot_state != 'RUNNING':
         reasons.append(f'bot_state == {bot_state}')
@@ -2807,46 +2812,39 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
         reasons.append('max open positions reached')
     if float(snapshot.get('mid', 0.0)) < float(config.get('min_price_usdc', 0.0)):
         reasons.append(f"price {float(snapshot.get('mid', 0.0)):.6f} below minimum")
-    if namespace == SANDBOX_NS:
-        five_min_down = float(config.get('return_5m_down_threshold_pct', 0.40))
-        if metrics['return_5m'] >= -abs(five_min_down):
-            reasons.append(f"return_5m {metrics['return_5m']:.4f}% not below -{abs(five_min_down):.2f}%")
-        checks.append({'name': f'return_5m <= -{abs(five_min_down):.2f}%', 'passed': metrics['return_5m'] <= -abs(five_min_down)})
-        if metrics.get('return_30s', 0.0) <= 0.0:
-            reasons.append(f"return_30s {metrics.get('return_30s', 0.0):.4f}% not stabilising")
-        checks.append({'name': 'return_30s > 0', 'passed': metrics.get('return_30s', 0.0) > 0.0})
-        if metrics['spread_pct'] > float(config['spread_pct_max']):
-            reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
-        checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
-        bid_depth = float(snapshot.get('bid_depth_top5', 0.0) or 0.0)
-        ask_depth = float(snapshot.get('ask_depth_top5', 0.0) or 0.0)
-        depth_usdc = (bid_depth + ask_depth) * float(snapshot.get('mid', 0.0) or 0.0)
-        min_depth = float(config.get('min_top5_depth_usdc', 0.0))
-        if min_depth > 0 and depth_usdc < min_depth:
-            reasons.append(f"top5_depth {depth_usdc:.0f} USDC below minimum {min_depth:.0f}")
-        checks.append({'name': f'top5_depth >= {min_depth:.0f} USDC', 'passed': (min_depth <= 0) or (depth_usdc >= min_depth)})
+    five_min_trend = float(
+        config.get(
+            'return_5m_trend_threshold_pct',
+            config.get('return_5m_down_threshold_pct', 0.40),
+        )
+    )
+    r5m = float(metrics.get('return_5m', 0.0))
+    if abs(r5m) < abs(five_min_trend):
+        reasons.append(f"return_5m {r5m:.4f}% below trend trigger {abs(five_min_trend):.2f}%")
+    checks.append({'name': f'abs(return_5m) >= {abs(five_min_trend):.2f}%', 'passed': abs(r5m) >= abs(five_min_trend)})
+    intended_side = 'LONG' if r5m >= 0 else 'SHORT'
+    r30 = float(metrics.get('return_30s', 0.0))
+    if (r30 * r5m) <= 0:
+        reasons.append(f"return_30s {r30:.4f}% not confirming 5m trend")
+    checks.append({'name': 'return_30s confirms 5m', 'passed': (r30 * r5m) > 0})
+    if r5m >= 0:
+        checks.append({'name': 'intended_side LONG', 'passed': True})
     else:
-        five_min_down = float(config.get('return_5m_down_threshold_pct', 0.40))
-        if metrics['return_5m'] >= -abs(five_min_down):
-            reasons.append(f"return_5m {metrics['return_5m']:.4f}% not below -{abs(five_min_down):.2f}%")
-        checks.append({'name': f'return_5m <= -{abs(five_min_down):.2f}%', 'passed': metrics['return_5m'] <= -abs(five_min_down)})
-        if metrics.get('return_30s', 0.0) <= 0.0:
-            reasons.append(f"return_30s {metrics.get('return_30s', 0.0):.4f}% not stabilising")
-        checks.append({'name': 'return_30s > 0', 'passed': metrics.get('return_30s', 0.0) > 0.0})
-        if metrics['return_60m'] <= float(config['return_60m_min_pct']):
+        checks.append({'name': 'intended_side SHORT', 'passed': True})
+    if metrics['spread_pct'] > float(config['spread_pct_max']):
+        reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
+    checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
+    bid_depth = float(snapshot.get('bid_depth_top5', 0.0) or 0.0)
+    ask_depth = float(snapshot.get('ask_depth_top5', 0.0) or 0.0)
+    depth_usdc = (bid_depth + ask_depth) * float(snapshot.get('mid', 0.0) or 0.0)
+    min_depth = float(config.get('min_top5_depth_usdc', 0.0))
+    if min_depth > 0 and depth_usdc < min_depth:
+        reasons.append(f"top5_depth {depth_usdc:.0f} USDC below minimum {min_depth:.0f}")
+    checks.append({'name': f'top5_depth >= {min_depth:.0f} USDC', 'passed': (min_depth <= 0) or (depth_usdc >= min_depth)})
+    if namespace != SANDBOX_NS:
+        if float(metrics.get('return_60m', 0.0)) <= float(config['return_60m_min_pct']):
             reasons.append(f"return_60m {metrics['return_60m']:.4f}% below minimum")
         checks.append({'name': 'return_60m above minimum', 'passed': metrics['return_60m'] > float(config['return_60m_min_pct'])})
-    if namespace != SANDBOX_NS:
-        if metrics['spread_pct'] > float(config['spread_pct_max']):
-            reasons.append(f"spread_pct {metrics['spread_pct']:.4f}% above max")
-        checks.append({'name': 'spread_pct <= max', 'passed': metrics['spread_pct'] <= float(config['spread_pct_max'])})
-        bid_depth = float(snapshot.get('bid_depth_top5', 0.0) or 0.0)
-        ask_depth = float(snapshot.get('ask_depth_top5', 0.0) or 0.0)
-        depth_usdc = (bid_depth + ask_depth) * float(snapshot.get('mid', 0.0) or 0.0)
-        min_depth = float(config.get('min_top5_depth_usdc', 0.0))
-        if min_depth > 0 and depth_usdc < min_depth:
-            reasons.append(f"top5_depth {depth_usdc:.0f} USDC below minimum {min_depth:.0f}")
-        checks.append({'name': f'top5_depth >= {min_depth:.0f} USDC', 'passed': (min_depth <= 0) or (depth_usdc >= min_depth)})
         if metrics['book_imbalance'] < max(0.5, float(config['book_imbalance_min']) - 0.02):
             reasons.append(f"book_imbalance {metrics['book_imbalance']:.4f} below min")
         checks.append({'name': 'book imbalance healthy', 'passed': metrics['book_imbalance'] >= max(0.5, float(config['book_imbalance_min']) - 0.02)})
@@ -2862,10 +2860,10 @@ def evaluate_entry_candidate(namespace, coin, snapshot, metrics):
     last_loss_at = read_float(stats.get('last_loss_at'), 0.0)
     if namespace != SANDBOX_NS and int(config.get('cooldown_after_loss_seconds', 0)) > 0 and last_loss_at and (time.time() - last_loss_at) < int(config['cooldown_after_loss_seconds']):
         reasons.append('loss cooldown active')
-    return len(reasons) == 0, build_rejection_reason(reasons), checks
+    return len(reasons) == 0, build_rejection_reason(reasons), checks, intended_side
 
 
-def place_sandbox_entry_multi(coin, snapshot):
+def place_sandbox_entry_multi(coin, snapshot, intended_side):
     config = get_config(SANDBOX_NS)
     balances = get_balances(SANDBOX_NS)
     available = float(balances['available'])
@@ -2876,9 +2874,9 @@ def place_sandbox_entry_multi(coin, snapshot):
     if initial_margin < 10.0:
         push_text_log(SANDBOX_NS, f'Sandbox entry blocked for {coin}: available balance below 10 USDC minimum.')
         return False
-    submitted_price = float(snapshot['best_ask'])
+    side = 'buy' if intended_side == 'LONG' else 'sell'
+    submitted_price = float(snapshot['best_ask'] if side == 'buy' else snapshot['best_bid'])
     size = notional / submitted_price
-    side = 'buy'
     order = {
         'coin': coin,
         'phase': 'entry',
@@ -2897,7 +2895,7 @@ def place_sandbox_entry_multi(coin, snapshot):
     }
     save_open_order_for_coin(SANDBOX_NS, coin, order)
     set_engine_status(SANDBOX_NS, f'ENTRY_ORDER_WORKING:{coin}')
-    push_text_log(SANDBOX_NS, f"Sandbox LONG entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
+    push_text_log(SANDBOX_NS, f"Sandbox {intended_side} entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.")
     return True
 
 
@@ -3046,16 +3044,16 @@ def weighted_fill_details_for_coin(fills, coin, oid=None):
         matched.append(fill)
     if not matched:
         return 0.0, 0.0, 0.0, 0.0
-    total_size = sum(read_float(fill.get('sz'), 0.0) for fill in matched)
+    total_size = sum(abs(read_float(fill.get('sz'), 0.0)) for fill in matched)
     if total_size <= 0:
         return 0.0, 0.0, 0.0, 0.0
-    weighted_px = sum(read_float(fill.get('px'), 0.0) * read_float(fill.get('sz'), 0.0) for fill in matched) / total_size
+    weighted_px = sum(read_float(fill.get('px'), 0.0) * abs(read_float(fill.get('sz'), 0.0)) for fill in matched) / total_size
     latest_ts = max(read_float(fill.get('time'), 0.0) for fill in matched) / 1000.0
     crossed = any(bool(fill.get('crossed')) for fill in matched)
     return total_size, weighted_px, latest_ts, 1.0 if crossed else 0.0
 
 
-def submit_real_entry_multi(coin, snapshot):
+def submit_real_entry_multi(coin, snapshot, intended_side):
     bundle = get_real_clients()
     exchange = bundle['exchange']
     config = get_config(REAL_NS)
@@ -3065,12 +3063,13 @@ def submit_real_entry_multi(coin, snapshot):
     if notional < 10.0:
         push_text_log(REAL_NS, f'REAL entry blocked for {coin}: available balance below 10 USDC minimum.')
         return False
-    submitted_price = float(snapshot['best_bid'])
+    is_buy = intended_side == 'LONG'
+    submitted_price = float(snapshot['best_bid'] if is_buy else snapshot['best_ask'])
     size = round_down(notional / submitted_price, get_size_decimals(coin))
     if size <= 0:
         push_text_log(REAL_NS, f'REAL entry blocked for {coin}: rounded size is zero.')
         return False
-    response = exchange.order(coin, True, size, submitted_price, {'limit': {'tif': 'Alo'}})
+    response = exchange.order(coin, is_buy, size, submitted_price, {'limit': {'tif': 'Alo'}})
     status = ((response or {}).get('response') or {}).get('data', {}).get('statuses', [{}])[0]
     if 'error' in status:
         raise RuntimeError(status['error'])
@@ -3078,7 +3077,7 @@ def submit_real_entry_multi(coin, snapshot):
     order = {
         'coin': coin,
         'phase': 'entry',
-        'side': 'buy',
+        'side': 'buy' if is_buy else 'sell',
         'maker_or_taker': 'maker',
         'order_type': 'limit',
         'submitted_price': submitted_price,
@@ -3093,7 +3092,7 @@ def submit_real_entry_multi(coin, snapshot):
         order['exchange_oid'] = status['resting']['oid']
         save_open_order_for_coin(REAL_NS, coin, order)
         set_engine_status(REAL_NS, f'ENTRY_ORDER_WORKING:{coin}')
-        push_text_log(REAL_NS, f'REAL maker entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.')
+        push_text_log(REAL_NS, f'REAL {intended_side} maker entry posted for {coin} at {submitted_price:.5f} for {size:.6f}.')
         return True
     fills = fetch_real_fills_since(order['submitted_at_ms'])
     matched = [fill for fill in fills if fill.get('coin') == coin]
@@ -3113,9 +3112,11 @@ def handle_real_entry_fill_multi(order, fills):
     entry_notional = total_size * weighted_px
     fee_pct = config['taker_fee_pct'] if crossed_flag else config['maker_fee_pct']
     entry_fee = apply_fee(entry_notional, fee_pct)
+    entry_side = order.get('side', 'buy')
+    side = 'SHORT' if entry_side == 'sell' else 'LONG'
     position = {
         'coin': coin,
-        'side': 'LONG',
+        'side': side,
         'size': total_size,
         'submitted_price': order['submitted_price'],
         'filled_price': weighted_px,
@@ -3166,7 +3167,9 @@ def handle_real_exit_fill_multi(position, fills, exit_reason, intended_order_typ
         return False
     config = get_config(REAL_NS)
     size = min(float(position['size']), total_size)
-    gross_pnl = (weighted_px - float(position['filled_price'])) * size
+    side = position.get('side', 'LONG')
+    direction = 1.0 if side == 'LONG' else -1.0
+    gross_pnl = ((weighted_px - float(position['filled_price'])) * size) * direction
     exit_notional = size * weighted_px
     fee_pct = config['taker_fee_pct'] if maker_or_taker == 'taker' or crossed_flag else config['maker_fee_pct']
     exit_fee = apply_fee(exit_notional, fee_pct)
@@ -3178,7 +3181,7 @@ def handle_real_exit_fill_multi(position, fills, exit_reason, intended_order_typ
         'timestamp': iso_now(),
         'environment': 'REAL',
         'coin': coin,
-        'side': 'LONG',
+        'side': side,
         'order_type': intended_order_type,
         'maker_or_taker': f"maker->{maker_or_taker}",
         'submitted_price': trim_float(submitted_price, 6),
@@ -3226,15 +3229,17 @@ def submit_real_maker_exit_multi(position, snapshot, exit_reason):
     coin = position['coin']
     bundle = get_real_clients()
     exchange = bundle['exchange']
-    submitted_price = float(snapshot['best_ask'])
-    response = exchange.order(coin, False, float(position['size']), submitted_price, {'limit': {'tif': 'Alo'}}, reduce_only=True)
+    side = position.get('side', 'LONG')
+    is_buy = side == 'SHORT'
+    submitted_price = float(snapshot['best_bid'] if is_buy else snapshot['best_ask'])
+    response = exchange.order(coin, is_buy, float(position['size']), submitted_price, {'limit': {'tif': 'Alo'}}, reduce_only=True)
     status = ((response or {}).get('response') or {}).get('data', {}).get('statuses', [{}])[0]
     if 'error' in status:
         raise RuntimeError(status['error'])
     order = {
         'coin': coin,
         'phase': 'exit',
-        'side': 'sell',
+        'side': 'buy' if is_buy else 'sell',
         'maker_or_taker': 'maker',
         'order_type': 'limit',
         'submitted_price': submitted_price,
@@ -3264,7 +3269,8 @@ def execute_real_taker_exit_multi(position, exit_reason, snapshot=None):
     bundle = get_real_clients()
     exchange = bundle['exchange']
     snapshot = snapshot or fetch_coin_book_snapshot(coin)
-    submitted_price = snapshot.get('best_bid', position['filled_price'])
+    side = position.get('side', 'LONG')
+    submitted_price = snapshot.get('best_ask' if side == 'SHORT' else 'best_bid', position['filled_price'])
     started_ms = int(time.time() * 1000)
     exchange.market_close(coin, sz=float(position['size']), px=submitted_price, slippage=REAL_MARKET_ORDER_TOLERANCE)
     time.sleep(0.6)
@@ -3418,7 +3424,7 @@ def manage_positions(namespace):
             if change_pct >= float(config['take_profit_pct']):
                 maybe_place_exit_order_multi(namespace, position, 'TAKE_PROFIT', 'taker', fetch_coin_book_snapshot(coin))
                 continue
-            if change_pct <= 0 and float(market_metrics.get('return_1m', 0.0)) < 0:
+            if change_pct <= 0 and (float(market_metrics.get('return_1m', 0.0)) * direction) < 0:
                 maybe_place_exit_order_multi(namespace, position, 'TIME_STOP', 'taker', fetch_coin_book_snapshot(coin))
                 continue
             position['last_hold_check_at'] = time.time()
@@ -3443,7 +3449,7 @@ def attempt_entries(namespace):
     if slots_left <= 0:
         return
     primary_basis = '5m'
-    direction = 'down'
+    direction = 'abs'
     candidates = market_universe.get_hot_perps(
         limit=12,
         primary_basis=primary_basis,
@@ -3459,15 +3465,15 @@ def attempt_entries(namespace):
         snapshot, metrics = build_coin_snapshot_and_metrics(coin, require_book=True)
         if not snapshot or not metrics:
             continue
-        passed, reason, checks = evaluate_entry_candidate(namespace, coin, snapshot, metrics)
+        passed, reason, checks, intended_side = evaluate_entry_candidate(namespace, coin, snapshot, metrics)
         record_signal(namespace, snapshot, metrics, passed, reason, checks)
         if not passed:
             continue
         if namespace == SANDBOX_NS:
-            if place_sandbox_entry_multi(coin, snapshot):
+            if place_sandbox_entry_multi(coin, snapshot, intended_side):
                 slots_left -= 1
         else:
-            if submit_real_entry_multi(coin, snapshot):
+            if submit_real_entry_multi(coin, snapshot, intended_side):
                 slots_left -= 1
 
 
@@ -3624,7 +3630,7 @@ def build_state_payload(namespace):
         limit=10,
         primary_basis=hot_primary_basis,
         min_price=float(config.get('min_price_usdc', 0.0)),
-        direction='down',
+        direction='abs',
     )
     open_orders = get_open_orders(namespace)
     active_position = open_positions[0] if open_positions else {'active': False}
