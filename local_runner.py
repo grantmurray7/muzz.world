@@ -870,6 +870,7 @@ class LocalSandboxBot:
         fill_price = apply_slippage(submitted_price, self.config.taker_exit_slippage_pct, close_side)
         size = float(position["size"])
         direction = 1.0 if side == "LONG" else -1.0
+        final_change_pct = pct_change(float(position["filled_price"]), fill_price) * direction
         gross_pnl = ((fill_price - float(position["filled_price"])) * size) * direction
         exit_notional = size * fill_price
         exit_fee = apply_fee(exit_notional, self.config.taker_fee_pct)
@@ -886,6 +887,8 @@ class LocalSandboxBot:
             "notional": float(position["notional"]),
             "entry_usdc": initial_margin,
             "exit_usdc": initial_margin + net_pnl,
+            "entry_reason": position.get("entry_reason", ""),
+            "final_change_pct": final_change_pct,
             "gross_pnl": gross_pnl,
             "net_pnl": net_pnl,
             "fees_paid": entry_fee + exit_fee,
@@ -906,7 +909,11 @@ class LocalSandboxBot:
             self.stats["time_stops"] += 1
         if exit_reason == "EMERGENCY_EXIT":
             self.stats["emergency_exits"] += 1
-        self.log(f"{side} exit {exit_reason} for {coin} at {fill_price:.5f}. Net PnL {net_pnl:.4f} USDC.")
+        self.log(
+            f"{side} exit {exit_reason} for {coin} at {fill_price:.5f}. "
+            f"Final {final_change_pct:.4f}%. Net PnL {net_pnl:.4f} USDC. "
+            f"{position.get('entry_reason', '')}"
+        )
 
     def manage_positions(self):
         for coin, position in list(self.positions.items()):
@@ -1117,12 +1124,15 @@ def build_trades_table(bot):
     table.add_column("Exit", no_wrap=True, overflow="ellipsis", max_width=14)
     table.add_column("Entry USDC", justify="right", no_wrap=True)
     table.add_column("Exit USDC", justify="right", no_wrap=True)
+    table.add_column("Final %", justify="right", no_wrap=True)
     table.add_column("PnL", justify="right", no_wrap=True)
     table.add_column("Net PnL", justify="right", no_wrap=True)
+    table.add_column("Opened Why", overflow="fold")
     if not bot.trades:
-        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-", "-")
+        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-", "-", "-", "-")
         return table
     for trade in list(bot.trades)[:8]:
+        final_style = style_pct(float(trade.get("final_change_pct", 0.0)))
         gross_style = style_pct(trade["gross_pnl"])
         pnl_style = style_pct(trade["net_pnl"])
         table.add_row(
@@ -1132,8 +1142,10 @@ def build_trades_table(bot):
             trade["exit_reason"],
             f"{trade.get('entry_usdc', trade['notional']):,.2f}",
             f"{trade.get('exit_usdc', trade.get('equity_after_trade', 0.0)):,.2f}",
+            f"{final_style}{trade.get('final_change_pct', 0.0):,.4f}%[/]",
             f"{gross_style}{trade['gross_pnl']:,.4f}[/]",
             f"{pnl_style}{trade['net_pnl']:,.4f}[/]",
+            trade.get("entry_reason", ""),
         )
     return table
 
