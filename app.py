@@ -118,6 +118,19 @@ class PostgresStateStore:
                     )
                     '''
                 )
+                cur.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS state_list_items (
+                        id BIGSERIAL PRIMARY KEY,
+                        key TEXT NOT NULL,
+                        value TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    '''
+                )
+                cur.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_state_list_items_key_id ON state_list_items (key, id DESC)'
+                )
 
     def ping(self):
         with self.connection() as conn:
@@ -188,6 +201,8 @@ class PostgresStateStore:
                 cur.execute('DELETE FROM state_kv WHERE key = ANY(%s)', (key_list,))
                 deleted = cur.rowcount
                 cur.execute('DELETE FROM state_lists WHERE key = ANY(%s)', (key_list,))
+                deleted += cur.rowcount
+                cur.execute('DELETE FROM state_list_items WHERE key = ANY(%s)', (key_list,))
                 return deleted + cur.rowcount
 
     def incr(self, key):
@@ -245,28 +260,79 @@ class PostgresStateStore:
             (key, Json(items)),
         )
 
+    def _maybe_migrate_list(self, cur, key):
+        cur.execute('SELECT 1 FROM state_list_items WHERE key = %s LIMIT 1', (key,))
+        if cur.fetchone() is not None:
+            return
+        cur.execute('SELECT items FROM state_lists WHERE key = %s', (key,))
+        row = cur.fetchone()
+        if row is None:
+            return
+        items = list(row[0]) if row[0] is not None else []
+        if not items:
+            cur.execute('DELETE FROM state_lists WHERE key = %s', (key,))
+            return
+        cur.executemany(
+            'INSERT INTO state_list_items (key, value) VALUES (%s, %s)',
+            [(key, str(item)) for item in reversed(items)],
+        )
+        cur.execute('DELETE FROM state_lists WHERE key = %s', (key,))
+
     def lpush(self, key, value):
         with self.connection() as conn:
             with conn.cursor() as cur:
-                items = self._get_list(cur, key, for_update=True)
-                items.insert(0, str(value))
-                self._write_list(cur, key, items)
-                return len(items)
+                self._maybe_migrate_list(cur, key)
+                cur.execute('INSERT INTO state_list_items (key, value) VALUES (%s, %s)', (key, str(value)))
+                cur.execute('SELECT COUNT(*) FROM state_list_items WHERE key = %s', (key,))
+                return int(cur.fetchone()[0])
 
     def ltrim(self, key, start, end):
         with self.connection() as conn:
             with conn.cursor() as cur:
-                items = self._slice_redis_range(self._get_list(cur, key, for_update=True), start, end)
-                if items:
-                    self._write_list(cur, key, items)
-                else:
-                    cur.execute('DELETE FROM state_lists WHERE key = %s', (key,))
+                self._maybe_migrate_list(cur, key)
+                if end < start:
+                    cur.execute('DELETE FROM state_list_items WHERE key = %s', (key,))
+                    return True
+                keep = (end - start) + 1
+                if keep <= 0:
+                    cur.execute('DELETE FROM state_list_items WHERE key = %s', (key,))
+                    return True
+                if start == 0:
+                    cur.execute(
+                        'SELECT id FROM state_list_items WHERE key = %s ORDER BY id DESC OFFSET %s LIMIT 1',
+                        (key, keep - 1),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        return True
+                    threshold_id = int(row[0])
+                    cur.execute('DELETE FROM state_list_items WHERE key = %s AND id < %s', (key, threshold_id))
                 return True
 
     def lrange(self, key, start, end):
         with self.connection() as conn:
             with conn.cursor() as cur:
-                return self._slice_redis_range(self._get_list(cur, key), start, end)
+                self._maybe_migrate_list(cur, key)
+                cur.execute('SELECT COUNT(*) FROM state_list_items WHERE key = %s', (key,))
+                length = int(cur.fetchone()[0])
+                if length <= 0:
+                    return []
+                if start < 0:
+                    start += length
+                if end < 0:
+                    end += length
+                start = max(start, 0)
+                if start >= length or end < 0:
+                    return []
+                end = min(end, length - 1)
+                if end < start:
+                    return []
+                limit = (end - start) + 1
+                cur.execute(
+                    'SELECT value FROM state_list_items WHERE key = %s ORDER BY id DESC OFFSET %s LIMIT %s',
+                    (key, start, limit),
+                )
+                return [row[0] for row in cur.fetchall()]
 
 
 redis = PostgresStateStore(RENDER_INTERNAL_DATABASE)
