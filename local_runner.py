@@ -1326,12 +1326,12 @@ def build_logs_panel(bot):
 
 
 def build_warmup_bar(diag):
-    if diag["ready_tape"] > 0:
-        return None
     if not diag.get("first_message_at"):
         return Text("Warm-up: waiting for first market data...", style="bold yellow")
     total_seconds = float(MARKET_HISTORY_SECONDS)
     elapsed = min(total_seconds, float(diag.get("warmup_elapsed", 0.0)))
+    if elapsed >= total_seconds:
+        return None
     pct = elapsed / total_seconds if total_seconds > 0 else 1.0
     width = 36
     filled = min(width, max(0, int(round(width * pct))))
