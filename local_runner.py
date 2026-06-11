@@ -1017,13 +1017,15 @@ def build_summary_table(bot, market):
     table.add_column(justify="left")
     table.add_column(justify="left")
     table.add_column(justify="left")
+    table.add_column(justify="left")
+    table.add_column(justify="left")
+    table.add_column(justify="left")
+    table.add_column(justify="left")
     table.add_row(
         f"[bold]Available[/bold]\n{bot.available:,.2f} USDC",
         f"[bold]Equity[/bold]\n{bot.equity():,.2f} USDC",
         f"[bold]Live PnL[/bold]\n{bot.live_pnl():,.2f} USDC",
         f"[bold]2m Ready[/bold]\n{diag['ready_2m']} / {diag['tracked']}",
-    )
-    table.add_row(
         f"[bold]Open Positions[/bold]\n{len(bot.positions)}",
         f"[bold]Total PnL[/bold]\n{bot.stats['total_pnl']:,.2f} USDC",
         f"[bold]Trades[/bold]\n{bot.stats['trades_today']}",
