@@ -1146,7 +1146,7 @@ def build_warmup_bar(diag):
 
 def build_dashboard(bot, market):
     diag = market.diagnostics()
-    title = Text("MuzzWorld Local Sandbox Runner", style="bold white")
+    title = Text("muzz.world", style="bold white")
     subtitle = Text(
         f"2m acceleration scan | Runtime {int(time.time() - bot.start_time)}s | "
         f"WS open {format_timestamp(diag['last_open_at']) or 'n/a'}",
@@ -1157,11 +1157,11 @@ def build_dashboard(bot, market):
     header_items = [title, subtitle, status]
     if warmup_bar is not None:
         header_items.append(warmup_bar)
-    header = Panel(Group(*header_items), border_style="cyan")
-    summary = Panel(build_summary_table(bot, market), title="Account", border_style="blue")
-    hot = Panel(build_hot_table(bot), title="Top Movers", border_style="magenta")
-    positions = Panel(build_positions_table(bot, market), title="Open Positions", border_style="green")
-    trades = Panel(build_trades_table(bot), title="Recent Trades", border_style="yellow")
+    header = Panel(Group(*header_items), border_style="white")
+    summary = Panel(build_summary_table(bot, market), title="Account", border_style="white")
+    hot = Panel(build_hot_table(bot), title="Top Movers", border_style="white")
+    positions = Panel(build_positions_table(bot, market), title="Open Positions", border_style="white")
+    trades = Panel(build_trades_table(bot), title="Recent Trades", border_style="white")
     logs = Panel(build_logs_panel(bot), title="Action Log", border_style="white")
     return Group(header, summary, hot, positions, trades, logs)
 
