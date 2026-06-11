@@ -1,8 +1,0 @@
-Flask
-hyperliquid-python-sdk
-eth-account
-websocket-client
-psycopg2-binary
-requests
-gunicorn
-rich
