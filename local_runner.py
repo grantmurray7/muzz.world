@@ -55,7 +55,7 @@ META_REFRESH_SECONDS = 900.0
 SCAN_INTERVAL_SECONDS = 2.0
 BLOCK_WINDOW_SECONDS = 120
 BLOCK_STEP_SECONDS = 5
-BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 5, -BLOCK_STEP_SECONDS)] + ["Latest"]
+BLOCK_COLUMN_LABELS = [f"-{sec}s" for sec in range(BLOCK_WINDOW_SECONDS, 0, -BLOCK_STEP_SECONDS)] + ["Latest"]
 
 console = Console()
 
@@ -132,8 +132,11 @@ def rolling_block_changes(history, total_window=BLOCK_WINDOW_SECONDS, step=BLOCK
         newer_mid = nearest_value(history, newer_seconds_ago, "mid")
         if older_mid is None or newer_mid is None:
             return []
-        label = "Latest" if start_seconds_ago == step else f"-{start_seconds_ago}s"
-        changes.append({"label": label, "pct": pct_change(older_mid, newer_mid)})
+        changes.append({"label": f"-{start_seconds_ago}s", "pct": pct_change(older_mid, newer_mid)})
+    latest_mid = nearest_value(history, 0, "mid")
+    if latest_mid is None:
+        return []
+    changes.append({"label": "Latest", "pct": 0.0})
     return changes
 
 
