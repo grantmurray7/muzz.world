@@ -388,6 +388,8 @@
                 </div>
             </div>
             <div class="top-actions">
+                <button class="btn btn-primary" onclick="powerOnSystem()">Master On</button>
+                <button class="btn" onclick="powerOffSystem()">Master Off</button>
                 <button class="btn btn-primary" onclick="startBot()">Start</button>
                 <button class="btn" onclick="pauseBot()">Pause</button>
                 <button class="btn btn-danger" onclick="killBot()">Kill</button>
@@ -845,6 +847,7 @@
                 const market = data.market || {};
                 const balances = data.balances || {};
                 const stats = data.stats || {};
+                const systemPower = data.system_power || 'OFF';
                 document.getElementById('realWarning').classList.toggle('hidden', !data.real_warning);
                 setText('modeTitle', `${data.environment} Dashboard`);
                 setText('environmentBadge', data.environment);
@@ -855,7 +858,7 @@
                 setText('pnlSub', `Total ${fmtUsdc(stats.total_pnl, 2)}`);
                 document.getElementById('dailyPnlTop').className = `metric-value mono ${valueClass(stats.daily_pnl)}`.trim();
                 setText('botFeedHeadline', data.bot_state || 'N/A');
-                setText('botFeedSub', `${String(market.market_data_source || 'none').toUpperCase()} | ${fmt(market.market_data_age, 2)}s age | ${market.coin || 'N/A'}`);
+                setText('botFeedSub', `POWER ${systemPower} | ${String(market.market_data_source || 'none').toUpperCase()} | ${fmt(market.market_data_age, 2)}s age | ${market.coin || 'N/A'}`);
                 renderPositions(data.positions || [], data.portfolio || {});
                 renderHotPerps(data.hot_perps || [], data.hot_perps_error || '');
                 document.getElementById('logBox').value = (data.logs || []).join('\n');
@@ -914,7 +917,29 @@
                 const data = await res.json();
                 if (!res.ok) alert(data.message || 'Failed to start REAL mode.');
             } else {
-                await fetch(`${apiBase}/start`, { method: 'POST' });
+                const res = await fetch(`${apiBase}/start`, { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) alert(data.message || 'Failed to start SANDBOX mode.');
+            }
+            await refreshAll();
+        }
+
+        async function powerOnSystem() {
+            const res = await fetch('/api/system/power/on', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(data.message || 'Failed to turn system power on.');
+                return;
+            }
+            await refreshAll();
+        }
+
+        async function powerOffSystem() {
+            const res = await fetch('/api/system/power/off', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(data.message || 'Failed to turn system power off.');
+                return;
             }
             await refreshAll();
         }

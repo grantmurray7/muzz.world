@@ -56,6 +56,9 @@ REAL_NS = 'real'
 SANDBOX_NS = 'sandbox'
 ENVIRONMENTS = (REAL_NS, SANDBOX_NS)
 INSTANCE_ID = str(uuid.uuid4())[:8]
+SYSTEM_POWER_KEY = 'system_power'
+SYSTEM_POWER_ON = 'ON'
+SYSTEM_POWER_OFF = 'OFF'
 
 MARKET_COIN = 'HYPE'
 MARKET_POLL_INTERVAL = 1.0
@@ -419,6 +422,8 @@ class MarketDataStore:
             pass
 
     def ensure_running(self):
+        if not system_power_enabled():
+            return False
         with self.lock:
             loop_thread = self.loop_thread
             if loop_thread and loop_thread.is_alive():
@@ -587,6 +592,14 @@ class MarketDataStore:
 
     def loop(self):
         while True:
+            if not system_power_enabled():
+                with self.lock:
+                    self.status = 'STOPPED'
+                    self.error = ''
+                    self.last_loop_heartbeat_at = time.time()
+                self.close_stream()
+                time.sleep(1)
+                continue
             try:
                 with self.lock:
                     self.last_loop_heartbeat_at = time.time()
@@ -618,6 +631,8 @@ class MarketDataStore:
             time.sleep(2)
 
     def get_snapshot(self):
+        if not system_power_enabled():
+            return {}, [], 'STOPPED', 'System power is OFF.'
         self.ensure_running()
         with self.lock:
             snapshot = dict(self.snapshot)
@@ -717,6 +732,8 @@ class MarketUniverseStore:
             self.last_meta_refresh_at = now
 
     def ensure_running(self):
+        if not system_power_enabled():
+            return False
         with self.lock:
             loop_thread = self.loop_thread
             if loop_thread and loop_thread.is_alive():
@@ -815,6 +832,12 @@ class MarketUniverseStore:
 
     def loop(self):
         while True:
+            if not system_power_enabled():
+                with self.lock:
+                    self.last_error = ''
+                self.close_stream()
+                time.sleep(1)
+                continue
             try:
                 self.connect_stream()
                 while True:
@@ -853,6 +876,8 @@ class MarketUniverseStore:
         return pct_change(candidate['mid'], latest_mid)
 
     def get_metrics_for_coin(self, coin):
+        if not system_power_enabled():
+            return None
         self.ensure_running()
         with self.lock:
             history = list(self.history.get(coin, []))
@@ -875,6 +900,8 @@ class MarketUniverseStore:
         }
 
     def get_hot_perps(self, limit=10, primary_basis='5m', min_price=0.0):
+        if not system_power_enabled():
+            return {'leaders': [], 'last_error': 'System power is OFF.'}
         self.ensure_running()
         with self.lock:
             histories = {coin: list(items) for coin, items in self.history.items()}
@@ -955,6 +982,8 @@ market_data = MarketDataStore()
 market_universe = MarketUniverseStore()
 real_client_lock = Lock()
 real_client_bundle = {'info': None, 'exchange': None, 'account_address': '', 'size_decimals': 2}
+trade_loop_threads = {}
+trade_loop_threads_lock = Lock()
 
 
 def ns_key(namespace, key):
@@ -984,6 +1013,18 @@ def ns_delete(namespace, *keys):
 
 def ns_incr(namespace, key):
     return int(redis.incr(ns_key(namespace, key)))
+
+
+def get_system_power():
+    return ns_get(GLOBAL_NS, SYSTEM_POWER_KEY, SYSTEM_POWER_OFF)
+
+
+def system_power_enabled():
+    return get_system_power() == SYSTEM_POWER_ON
+
+
+def set_system_power(value):
+    ns_set(GLOBAL_NS, SYSTEM_POWER_KEY, value)
 
 
 def ns_get_json(namespace, key, default=None):
@@ -1468,41 +1509,97 @@ def reset_sandbox_state(clear_logs=False):
         },
     )
     ns_set_json(SANDBOX_NS, 'stats', stats_default(SANDBOX_NS))
-    set_engine_status(SANDBOX_NS, 'PAUSED_WAITING_FOR_START')
-    set_bot_state(SANDBOX_NS, 'PAUSED')
-    set_reason_not_taken(SANDBOX_NS, 'Waiting for manual START.')
+    if system_power_enabled():
+        set_engine_status(SANDBOX_NS, 'PAUSED_WAITING_FOR_START')
+        set_bot_state(SANDBOX_NS, 'PAUSED')
+        set_reason_not_taken(SANDBOX_NS, 'Waiting for manual START.')
+    else:
+        set_engine_status(SANDBOX_NS, 'SYSTEM_STOPPED')
+        set_bot_state(SANDBOX_NS, 'STOPPED')
+        set_reason_not_taken(SANDBOX_NS, 'System power is OFF. Turn on master power.')
     set_last_signal(SANDBOX_NS, {})
     if clear_logs:
         redis.delete(ns_key(SANDBOX_NS, 'signal_log'))
         redis.delete(ns_key(SANDBOX_NS, 'trade_log'))
         redis.delete(ns_key(SANDBOX_NS, 'action_logs'))
-    push_text_log(SANDBOX_NS, 'Sandbox reset to starting balance and paused.')
+    push_text_log(SANDBOX_NS, 'Sandbox reset to starting balance.')
 
 
 def bootstrap_environment(namespace):
     save_config(namespace, get_config(namespace))
-    set_bot_state(namespace, 'PAUSED')
-    set_engine_status(namespace, 'PAUSED_WAITING_FOR_START')
-    set_reason_not_taken(namespace, 'Waiting for manual START.')
+    set_bot_state(namespace, 'STOPPED')
+    set_engine_status(namespace, 'SYSTEM_STOPPED')
+    set_reason_not_taken(namespace, 'System power is OFF. Turn on master power.')
     if not get_last_signal(namespace):
         set_last_signal(namespace, {})
     if not get_last_trade(namespace):
         set_last_trade(namespace, {})
     if namespace == SANDBOX_NS:
-        reset_sandbox_state(clear_logs=False)
+        if not ns_get_json(namespace, 'balances', None):
+            save_balances(
+                SANDBOX_NS,
+                {
+                    'available': float(get_config(SANDBOX_NS)['starting_balance_usdc']),
+                    'equity': float(get_config(SANDBOX_NS)['starting_balance_usdc']),
+                },
+            )
+        if not ns_get_json(namespace, 'stats', None):
+            save_stats(SANDBOX_NS, stats_default(SANDBOX_NS))
+        if ns_get_json(namespace, 'positions', None) is None and ns_get_json(namespace, 'position', None) is None:
+            save_positions(SANDBOX_NS, {})
+        if ns_get_json(namespace, 'open_orders', None) is None and ns_get_json(namespace, 'open_order', None) is None:
+            save_open_orders(SANDBOX_NS, {})
     else:
-        save_open_order(namespace, None)
+        save_open_orders(namespace, get_open_orders(namespace))
         save_stats(namespace, get_stats(namespace))
         save_balances(namespace, get_balances(namespace))
-        save_position(namespace, None)
-        push_text_log(namespace, 'REAL environment booted in PAUSED mode. No orders submitted.')
+        save_positions(namespace, get_positions(namespace))
+        push_text_log(namespace, 'REAL environment booted in STOPPED mode. No orders submitted.')
 
 
+set_system_power(SYSTEM_POWER_OFF)
 for env_name in ENVIRONMENTS:
     bootstrap_environment(env_name)
 
 
+def ensure_trade_loop_running(namespace):
+    if not system_power_enabled():
+        return False
+    with trade_loop_threads_lock:
+        loop_thread = trade_loop_threads.get(namespace)
+        if loop_thread and loop_thread.is_alive():
+            return False
+        loop_thread = Thread(target=trade_loop, args=(namespace,), daemon=True, name=f'{namespace}-trade-loop')
+        trade_loop_threads[namespace] = loop_thread
+    loop_thread.start()
+    return True
+
+
+def enable_system_power():
+    set_system_power(SYSTEM_POWER_ON)
+    for namespace in ENVIRONMENTS:
+        if get_bot_state(namespace) == 'STOPPED':
+            set_bot_state(namespace, 'PAUSED')
+            set_engine_status(namespace, 'PAUSED_WAITING_FOR_START')
+            set_reason_not_taken(namespace, 'Waiting for manual START.')
+    market_data.ensure_running()
+    market_universe.ensure_running()
+    for namespace in ENVIRONMENTS:
+        ensure_trade_loop_running(namespace)
+
+
+def disable_system_power():
+    set_system_power(SYSTEM_POWER_OFF)
+    for namespace in ENVIRONMENTS:
+        set_bot_state(namespace, 'STOPPED')
+        set_engine_status(namespace, 'SYSTEM_STOPPED')
+        set_reason_not_taken(namespace, 'System power is OFF. Turn on master power.')
+    market_data.close_stream()
+    market_universe.close_stream()
+
+
 def nearest_value(history, seconds_ago, field):
+
     if not history:
         return None
     target_ts = time.time() - seconds_ago
@@ -3191,6 +3288,27 @@ def compute_open_position_views(namespace):
 
 
 def build_market_focus():
+    if not system_power_enabled():
+        return {
+            'coin': 'N/A',
+            'mid': 0.0,
+            'best_bid': 0.0,
+            'best_ask': 0.0,
+            'spread_pct': 0.0,
+            'return_30s': 0.0,
+            'return_1m': 0.0,
+            'return_2m': 0.0,
+            'return_5m': 0.0,
+            'return_15m': 0.0,
+            'return_60m': 0.0,
+            'bounce_from_2m_low': 0.0,
+            'book_imbalance': 0.5,
+            'book_imbalance_10s_ago': 0.5,
+            'market_data_status': 'STOPPED',
+            'market_data_source': 'stopped',
+            'market_data_error': 'System power is OFF.',
+            'market_data_age': 0.0,
+        }
     hot = market_universe.get_hot_perps(limit=1).get('leaders', [])
     if not hot:
         return {
@@ -3236,7 +3354,8 @@ def build_market_focus():
 
 
 def build_health_payload(namespace):
-    market_universe.ensure_running()
+    if system_power_enabled():
+        market_universe.ensure_running()
     with market_universe.lock:
         universe_last_message_at = market_universe.last_message_at
         universe_last_error = market_universe.last_error
@@ -3250,8 +3369,9 @@ def build_health_payload(namespace):
         'database': 'OK',
         'hyperliquid_sdk': 'OK' if not HYPERLIQUID_IMPORT_ERROR else 'ERROR',
         'hyperliquid_api': 'N/A',
-        'market_data': 'LIVE' if universe_last_message_at and (time.time() - universe_last_message_at) <= MARKET_STALE_AFTER_SECONDS else 'STALE',
-        'market_data_source': 'allMids',
+        'system_power': get_system_power(),
+        'market_data': 'STOPPED' if not system_power_enabled() else ('LIVE' if universe_last_message_at and (time.time() - universe_last_message_at) <= MARKET_STALE_AFTER_SECONDS else 'STALE'),
+        'market_data_source': 'stopped' if not system_power_enabled() else 'allMids',
         'market_loop_alive': universe_loop_alive,
         'ws_thread_alive': universe_ws_alive,
         'ws_reconnect_count': 0,
@@ -3287,8 +3407,9 @@ def build_health_payload(namespace):
 
 
 def build_state_payload(namespace):
-    market_universe.ensure_running()
-    if namespace == REAL_NS:
+    if system_power_enabled():
+        market_universe.ensure_running()
+    if namespace == REAL_NS and system_power_enabled():
         sync_real_account_state()
     stats = get_stats(namespace)
     open_positions, total_live_pnl = compute_open_position_views(namespace)
@@ -3308,6 +3429,7 @@ def build_state_payload(namespace):
     active_position = open_positions[0] if open_positions else {'active': False}
     payload = {
         'environment': namespace.upper(),
+        'system_power': get_system_power(),
         'bot_state': get_bot_state(namespace),
         'engine_status': get_engine_status(namespace),
         'real_warning': namespace == REAL_NS,
@@ -3379,8 +3501,11 @@ def build_state_payload(namespace):
 
 
 def trade_loop(namespace):
-    market_universe.ensure_running()
     while True:
+        if not system_power_enabled():
+            time.sleep(1)
+            continue
+        market_universe.ensure_running()
         try:
             lock_key = ns_key(namespace, 'loop_lock')
             acquired = redis.set(lock_key, INSTANCE_ID, nx=True, ex=15)
@@ -3463,6 +3588,8 @@ def require_login():
         'save_sandbox_config',
         'clear_real_logs',
         'clear_sandbox_logs',
+        'system_power_on',
+        'system_power_off',
     }
     if request.endpoint not in allowed_routes and not session.get('logged_in'):
         return redirect(url_for('login'))
@@ -3571,6 +3698,8 @@ def sandbox_get_results():
 
 @app.route('/api/start', methods=['POST'])
 def real_start():
+    if not system_power_enabled():
+        return jsonify({'status': 'error', 'message': 'System power is OFF. Turn on master power first.'}), 409
     data = request.json or {}
     confirm_text = str(data.get('confirm_text', '')).strip()
     if confirm_text != REAL_START_CONFIRM_TEXT:
@@ -3588,6 +3717,8 @@ def real_start():
 
 @app.route('/sandbox/api/start', methods=['POST'])
 def sandbox_start():
+    if not system_power_enabled():
+        return jsonify({'status': 'error', 'message': 'System power is OFF. Turn on master power first.'}), 409
     set_bot_state(SANDBOX_NS, 'RUNNING')
     set_engine_status(SANDBOX_NS, 'RUNNING_WAITING_FOR_SIGNAL')
     push_text_log(SANDBOX_NS, 'SANDBOX bot started by operator.')
@@ -3719,9 +3850,23 @@ def clear_sandbox_logs():
     return jsonify({'status': 'success'})
 
 
-Thread(target=market_data.loop, daemon=True).start()
-Thread(target=trade_loop, args=(REAL_NS,), daemon=True).start()
-Thread(target=trade_loop, args=(SANDBOX_NS,), daemon=True).start()
+@app.route('/api/system/power/on', methods=['POST'])
+def system_power_on():
+    enable_system_power()
+    push_text_log(REAL_NS, 'Master system power turned ON by operator.')
+    push_text_log(SANDBOX_NS, 'Master system power turned ON by operator.')
+    return jsonify({'status': 'success', 'system_power': get_system_power()})
+
+
+@app.route('/api/system/power/off', methods=['POST'])
+def system_power_off():
+    for namespace in ENVIRONMENTS:
+        if get_positions(namespace) or get_open_orders(namespace):
+            return jsonify({'status': 'error', 'message': f'Cannot turn system OFF while {namespace.upper()} has open positions or orders.'}), 400
+    disable_system_power()
+    push_text_log(REAL_NS, 'Master system power turned OFF by operator.')
+    push_text_log(SANDBOX_NS, 'Master system power turned OFF by operator.')
+    return jsonify({'status': 'success', 'system_power': get_system_power()})
 
 
 if __name__ == '__main__':
