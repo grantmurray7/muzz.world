@@ -1221,16 +1221,24 @@ def build_dashboard(trader, market):
         ),
         Text(status_text, style="bold yellow" if (trader.last_signal_error or state["last_error"]) else "bold green"),
     ]
-    return Group(
+    sections = [
         build_countdown_panel(trader),
+        Text(""),
         *header,
+        Text(""),
         Panel(build_summary_table(trader, market_state), title="Account", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Text(""),
         Panel(build_price_table(market_state), title="BTC 1m Tape", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Text(""),
         Panel(build_position_table(trader, market_state), title="Open Position", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Text(""),
         Panel(build_trades_table(trader), title="Recent Trades", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Text(""),
         Panel(build_signal_rationale_panel(trader), title="Signal Rationale", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Text(""),
         Panel(build_logs_panel(trader), title="Action Log", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
-    )
+    ]
+    return Group(*sections)
 
 
 def main():
