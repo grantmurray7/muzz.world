@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 import csv
 import json
-import re
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 
-RESPONSES_URL = "https://api.openai.com/v1/responses"
-BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
-OPENAI_MODEL_DEFAULT = "gpt-4.1"
 SETTINGS_PATH = Path(__file__).with_name("settings.txt")
-OUTPUT_CSV_PATH = Path(__file__).with_name("openai_key_test_results.csv")
+OUTPUT_CSV_PATH = Path(__file__).with_name("ai_key_test_results.csv")
+OPENAI_BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -32,16 +30,17 @@ Do not default to NO_TRADE simply because confidence is below 100%. If one direc
 Return valid JSON only with this exact shape:
 {"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences","sources":["up to 3 short source strings, freshest first"]}"""
 
-# Token-only estimate. This does not include any extra tool/search charges.
-MODEL_PRICING_PER_1M = {
-    "gpt-4.1": {"input": 2.00, "cached_input": 0.50, "output": 8.00},
-    "gpt-4.1-mini": {"input": 0.40, "cached_input": 0.10, "output": 1.60},
-    "gpt-4.1-nano": {"input": 0.10, "cached_input": 0.025, "output": 0.40},
-    "gpt-4o": {"input": 2.50, "cached_input": 1.25, "output": 10.00},
-    "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.60},
-    "gpt-5.4": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
-    "gpt-5.4-mini": {"input": 0.75, "cached_input": 0.075, "output": 4.50},
-    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
+PRICING = {
+    "openai": {
+        "gpt-4.1": (2.00, 8.00),
+        "gpt-4.1-mini": (0.40, 1.60),
+        "gpt-4.1-nano": (0.10, 0.40),
+    },
+    "grok": {
+        "grok-4-fast": (0.20, 0.50),
+        "grok-4.3": (1.25, 2.50),
+    },
+    "gemini": {},
 }
 
 
@@ -80,20 +79,10 @@ def read_json_response(url, payload=None, headers=None, timeout=90):
         raise RuntimeError(f"Network error: {exc}") from exc
 
 
-def discover_openai_keys(settings):
-    found = []
-    for key_name in sorted(settings):
-        if re.fullmatch(r"OPENAI_API_KEY(?:_\d+|\d+)?", key_name):
-            value = settings.get(key_name, "").strip()
-            if value:
-                found.append((key_name, value))
-    return found
-
-
-def fetch_balance(api_key):
+def fetch_openai_balance(api_key):
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        data, _ = read_json_response(BALANCE_URL, headers=headers, timeout=30)
+        data, _ = read_json_response(OPENAI_BALANCE_URL, headers=headers, timeout=30)
     except Exception as exc:
         return "", str(exc)
     balance = data.get("total_available")
@@ -120,20 +109,13 @@ def extract_output_text(response_data):
     return "\n".join(parts).strip()
 
 
-def estimate_token_cost(model, usage):
-    pricing = MODEL_PRICING_PER_1M.get((model or "").strip())
-    if not pricing:
+def estimate_token_cost(provider, model, input_tokens, output_tokens):
+    model_pricing = PRICING.get(provider, {}).get((model or "").strip())
+    if not model_pricing:
         return ""
-    usage = usage or {}
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
-    details = usage.get("input_tokens_details") or {}
-    cached_tokens = int(details.get("cached_tokens") or 0)
-    uncached_tokens = max(0, input_tokens - cached_tokens)
-    total_cost = (
-        (uncached_tokens / 1_000_000.0) * pricing["input"]
-        + (cached_tokens / 1_000_000.0) * pricing["cached_input"]
-        + (output_tokens / 1_000_000.0) * pricing["output"]
+    input_price, output_price = model_pricing
+    total_cost = ((input_tokens / 1_000_000.0) * input_price) + (
+        (output_tokens / 1_000_000.0) * output_price
     )
     return f"{total_cost:.8f}"
 
@@ -145,10 +127,9 @@ def append_csv_row(row):
             handle,
             fieldnames=[
                 "timestamp_utc",
-                "key_name",
+                "provider",
                 "model",
-                "balance_usd",
-                "balance_error",
+                "balance",
                 "response_time_s",
                 "input_tokens",
                 "output_tokens",
@@ -163,20 +144,39 @@ def append_csv_row(row):
         writer.writerow(row)
 
 
-def run_one_key(key_name, api_key, model):
-    balance_usd, balance_error = fetch_balance(api_key)
+def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, total_tokens, answer, error_text):
+    return {
+        "timestamp_utc": iso_now(),
+        "provider": provider,
+        "model": model,
+        "balance": balance,
+        "response_time_s": f"{elapsed:.3f}",
+        "input_tokens": input_tokens or "",
+        "output_tokens": output_tokens or "",
+        "total_tokens": total_tokens or "",
+        "estimated_token_cost_usd": estimate_token_cost(provider, model, int(input_tokens or 0), int(output_tokens or 0)),
+        "answer_preview": (answer[:217] + "...") if len(answer) > 220 else answer,
+        "error": error_text,
+    }
+
+
+def test_openai(settings):
+    api_key = settings.get("OPENAI_API_KEY", "").strip()
+    model = settings.get("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1"
+    if not api_key:
+        return None
+    balance, _ = fetch_openai_balance(api_key)
     payload = {
         "model": model,
         "input": PROMPT,
-        "tools": [{"type": "web_search_preview"}],
-        "max_output_tokens": 10000,
+        "max_output_tokens": 500,
     }
     started = time.perf_counter()
-    response_data = None
     error_text = ""
+    response_data = None
     try:
         response_data, _ = read_json_response(
-            RESPONSES_URL,
+            "https://api.openai.com/v1/responses",
             payload=payload,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=120,
@@ -185,49 +185,124 @@ def run_one_key(key_name, api_key, model):
         error_text = str(exc)
     elapsed = time.perf_counter() - started
     usage = (response_data or {}).get("usage") or {}
-    answer_preview = extract_output_text(response_data or {})
-    if len(answer_preview) > 220:
-        answer_preview = answer_preview[:217] + "..."
-    row = {
-        "timestamp_utc": iso_now(),
-        "key_name": key_name,
+    return build_row(
+        "openai",
+        model,
+        balance or "n/a",
+        elapsed,
+        usage.get("input_tokens", ""),
+        usage.get("output_tokens", ""),
+        usage.get("total_tokens", ""),
+        extract_output_text(response_data or {}),
+        error_text,
+    )
+
+
+def test_gemini(settings):
+    api_key = settings.get("GEMINI_API_KEY", "").strip()
+    model = settings.get("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
+    if not api_key:
+        return None
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        + urllib_parse.quote(model, safe="")
+        + ":generateContent?key="
+        + urllib_parse.quote(api_key, safe="")
+    )
+    payload = {"contents": [{"parts": [{"text": PROMPT}]}]}
+    started = time.perf_counter()
+    error_text = ""
+    data = None
+    try:
+        data, _ = read_json_response(url, payload=payload, timeout=120)
+    except Exception as exc:
+        error_text = str(exc)
+    elapsed = time.perf_counter() - started
+    usage = (data or {}).get("usageMetadata") or {}
+    parts = []
+    for candidate in (data or {}).get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            text = part.get("text", "")
+            if text:
+                parts.append(str(text))
+    return build_row(
+        "gemini",
+        model,
+        "n/a",
+        elapsed,
+        usage.get("promptTokenCount", ""),
+        usage.get("candidatesTokenCount", ""),
+        usage.get("totalTokenCount", ""),
+        "\n".join(parts).strip(),
+        error_text,
+    )
+
+
+def test_grok(settings):
+    api_key = settings.get("GROK_API_KEY", "").strip()
+    model = settings.get("GROK_MODEL", "grok-4-fast").strip() or "grok-4-fast"
+    if not api_key:
+        return None
+    payload = {
         "model": model,
-        "balance_usd": balance_usd,
-        "balance_error": balance_error,
-        "response_time_s": f"{elapsed:.3f}",
-        "input_tokens": usage.get("input_tokens", ""),
-        "output_tokens": usage.get("output_tokens", ""),
-        "total_tokens": usage.get("total_tokens", ""),
-        "estimated_token_cost_usd": estimate_token_cost(model, usage),
-        "answer_preview": answer_preview,
-        "error": error_text,
+        "input": PROMPT,
+        "max_output_tokens": 500,
     }
-    append_csv_row(row)
-    return row
+    started = time.perf_counter()
+    error_text = ""
+    response_data = None
+    try:
+        response_data, _ = read_json_response(
+            "https://api.x.ai/v1/responses",
+            payload=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=120,
+        )
+    except Exception as exc:
+        error_text = str(exc)
+    elapsed = time.perf_counter() - started
+    usage = (response_data or {}).get("usage") or {}
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", ""))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", ""))
+    total_tokens = usage.get("total_tokens", "")
+    return build_row(
+        "grok",
+        model,
+        "n/a",
+        elapsed,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        extract_output_text(response_data or {}),
+        error_text,
+    )
 
 
 def main():
     settings = load_settings(SETTINGS_PATH)
-    key_entries = discover_openai_keys(settings)
-    if not key_entries:
-        print(
-            "No OpenAI keys found. Add settings like OPENAI_API_KEY, OPENAI_API_KEY_2, OPENAI_API_KEY_3 to settings.txt.",
-            file=sys.stderr,
-        )
+    if not settings:
+        print("settings.txt not found beside this script", file=sys.stderr)
         return 1
-    model = settings.get("OPENAI_MODEL", OPENAI_MODEL_DEFAULT).strip() or OPENAI_MODEL_DEFAULT
-    print(f"Testing {len(key_entries)} OpenAI key(s) with model {model}")
-    print("Prompt source: built into this script")
+    print("Testing Gemini, OpenAI, and Grok from settings.txt")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
-    for key_name, api_key in key_entries:
-        print(f"\n[{key_name}] running...")
-        row = run_one_key(key_name, api_key, model)
-        status = row["error"] or "ok"
+    rows = []
+    for tester in (test_gemini, test_openai, test_grok):
+        row = tester(settings)
+        if not row:
+            continue
+        rows.append(row)
+        append_csv_row(row)
         print(
-            f"[{key_name}] {status} | balance={row['balance_usd'] or 'n/a'} "
-            f"| rt={row['response_time_s']}s | in={row['input_tokens'] or 'n/a'} "
-            f"| out={row['output_tokens'] or 'n/a'} | cost={row['estimated_token_cost_usd'] or 'n/a'}"
+            f"{row['provider']:7} | {row['error'] or 'ok'} | "
+            f"rt={row['response_time_s']}s | "
+            f"in={row['input_tokens'] or 'n/a'} | "
+            f"out={row['output_tokens'] or 'n/a'} | "
+            f"cost={row['estimated_token_cost_usd'] or 'n/a'}"
         )
+    if not rows:
+        print("No supported API keys found in settings.txt", file=sys.stderr)
+        return 1
     print("\nDone.")
     return 0
 
