@@ -6,6 +6,7 @@ BTC-only sandbox runner driven by periodic OpenAI directional calls.
 import csv
 import json
 import os
+import re
 import signal
 import threading
 import time
@@ -175,6 +176,30 @@ def post_json(url, payload, timeout, headers=None):
     except urllib_error.URLError as exc:
         raise RuntimeError(f"Network error: {exc}") from exc
     return json.loads(raw)
+
+
+def extract_signal_from_payload(payload):
+    candidates = []
+
+    def visit(value):
+        if isinstance(value, str):
+            candidates.append(value)
+            return
+        if isinstance(value, dict):
+            for nested in value.values():
+                visit(nested)
+            return
+        if isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(payload)
+    for text in candidates:
+        upper = text.upper().replace("`", " ")
+        match = re.search(r"\b(NO_TRADE|LONG|SHORT)\b", upper)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def load_settings(path):
@@ -437,18 +462,10 @@ class SandboxTrader:
                 "Authorization": f"Bearer {api_key}",
             },
         )
-        text = (data.get("output_text") or "").strip().upper()
-        if not text:
-            output_items = data.get("output") or []
-            parts = []
-            for item in output_items:
-                for content in item.get("content") or []:
-                    if content.get("type") == "output_text" and content.get("text"):
-                        parts.append(content["text"])
-            text = "\n".join(parts).strip().upper()
-        text = text.replace("`", "").strip()
+        text = extract_signal_from_payload(data).strip().upper()
         if text not in VALID_SIGNALS:
-            raise RuntimeError(f"Unexpected OpenAI response: {text or 'EMPTY'}")
+            raw_preview = json.dumps(data, ensure_ascii=True)[:240]
+            raise RuntimeError(f"Unexpected OpenAI response: {text or 'EMPTY'} | raw={raw_preview}")
         return text
 
     def maybe_run_signal(self):
