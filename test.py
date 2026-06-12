@@ -318,6 +318,27 @@ def append_csv_row(row):
         writer.writerow(row)
 
 
+def reset_csv():
+    with OUTPUT_CSV_PATH.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "timestamp_utc",
+                "provider",
+                "model",
+                "balance",
+                "response_time_s",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "estimated_token_cost_usd",
+                "answer_preview",
+                "error",
+            ],
+        )
+        writer.writeheader()
+
+
 def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, total_tokens, answer, error_text):
     return {
         "timestamp_utc": iso_now(),
@@ -458,6 +479,7 @@ def main():
     if not settings:
         print("settings.txt not found beside this script", file=sys.stderr)
         return 1
+    reset_csv()
     try:
         snapshot = fetch_hyperliquid_snapshot()
     except Exception as exc:
