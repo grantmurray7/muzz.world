@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import csv
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -314,6 +315,7 @@ def append_csv_row(row):
                 "timestamp_utc",
                 "provider",
                 "model",
+                "signal",
                 "balance",
                 "response_time_s",
                 "input_tokens",
@@ -339,6 +341,7 @@ def reset_csv():
                 "timestamp_utc",
                 "provider",
                 "model",
+                "signal",
                 "balance",
                 "response_time_s",
                 "input_tokens",
@@ -359,6 +362,7 @@ def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, to
         "timestamp_utc": iso_now(),
         "provider": provider,
         "model": model,
+        "signal": extract_signal(answer),
         "balance": balance,
         "response_time_s": f"{elapsed:.3f}",
         "input_tokens": input_tokens or "",
@@ -369,6 +373,64 @@ def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, to
         "fear_greed_classification": fear_greed.get("classification", ""),
         "answer_preview": answer,
         "error": error_text,
+    }
+
+
+def extract_signal(answer):
+    text = str(answer or "").strip()
+    if not text:
+        return ""
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+    if "{" in text and "}" in text:
+        candidate = text[text.find("{") : text.rfind("}") + 1]
+        try:
+            parsed = json.loads(candidate)
+            signal = str(parsed.get("signal", "")).strip().upper()
+            if signal in {"LONG", "SHORT", "NO_TRADE"}:
+                return signal
+        except Exception:
+            pass
+    match = re.search(r'"signal"\s*:\s*"?(LONG|SHORT|NO_TRADE)"?', text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    return ""
+
+
+def fear_greed_to_signal(value_text):
+    try:
+        value = int(str(value_text).strip())
+    except Exception:
+        return ""
+    if value <= 25:
+        return "LONG"
+    if value >= 75:
+        return "SHORT"
+    return "NO_TRADE"
+
+
+def build_fear_greed_row(fear_greed):
+    signal = fear_greed_to_signal(fear_greed.get("value", ""))
+    value = fear_greed.get("value", "")
+    classification = fear_greed.get("classification", "")
+    summary = f'{{"signal":"{signal}","why":"Fear & Greed daily sentiment score {value} ({classification}). Contrarian mapping: <=25 => LONG, >=75 => SHORT, otherwise NO_TRADE.","sources":[]}}'
+    return {
+        "timestamp_utc": iso_now(),
+        "provider": "fear_greed",
+        "model": "alternative_me",
+        "signal": signal,
+        "balance": "n/a",
+        "response_time_s": "",
+        "input_tokens": "",
+        "output_tokens": "",
+        "total_tokens": "",
+        "estimated_token_cost_usd": "",
+        "fear_greed_value": value,
+        "fear_greed_classification": classification,
+        "answer_preview": summary,
+        "error": "",
     }
 
 
@@ -528,14 +590,21 @@ def main():
     snapshot["sentiment"] = {
         "fear_greed_value": fear_greed.get("value", ""),
         "fear_greed_classification": fear_greed.get("classification", ""),
+        "fear_greed_signal": fear_greed_to_signal(fear_greed.get("value", "")),
     }
     prompt_text = build_prompt(snapshot)
     print("Testing Gemini, OpenAI, and Grok from settings.txt")
     print(f"Hyperliquid mid: {snapshot['px']['mid']} | 5m={snapshot['ret_pct']['5m']}% | 15m={snapshot['ret_pct']['15m']}% | 1h={snapshot['ret_pct']['1h']}%")
-    print(f"Fear & Greed: {fear_greed.get('value', 'n/a')} {fear_greed.get('classification', '')}".strip())
+    print(
+        f"Fear & Greed: {fear_greed.get('value', 'n/a')} {fear_greed.get('classification', '')} | "
+        f"signal={fear_greed_to_signal(fear_greed.get('value', '')) or 'n/a'}"
+    )
     print(f"Max output tokens: {max_output_tokens}")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     rows = []
+    fear_greed_row = build_fear_greed_row(fear_greed)
+    rows.append(fear_greed_row)
+    append_csv_row(fear_greed_row)
     for tester in (test_gemini, test_openai, test_grok):
         row = tester(settings, prompt_text, max_output_tokens, fear_greed)
         if not row:
@@ -543,7 +612,7 @@ def main():
         rows.append(row)
         append_csv_row(row)
         print(
-            f"{row['provider']:7} | {row['error'] or 'ok'} | "
+            f"{row['provider']:10} | {row['signal'] or 'n/a':9} | {row['error'] or 'ok'} | "
             f"rt={row['response_time_s']}s | "
             f"in={row['input_tokens'] or 'n/a'} | "
             f"out={row['output_tokens'] or 'n/a'} | "
