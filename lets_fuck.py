@@ -1057,7 +1057,8 @@ def build_countdown_panel(trader):
     seconds = int(remaining % 60)
     countdown_text = f"{minutes:02d}:{seconds:02d}"
     label = f" Next 15m Check {countdown_text} "
-    bar_width = max(60, len(label) + 12)
+    console_width = max(70, int(getattr(console, "width", 120) or 120))
+    bar_width = max(60, console_width - 8)
     filled = int(round(progress * bar_width))
     filled = max(0, min(bar_width, filled))
     table = Table.grid(expand=True)
@@ -1074,6 +1075,15 @@ def build_countdown_panel(trader):
         bar = ("#" * filled) + ("-" * (bar_width - filled))
         table.add_row(Text(f"[{bar}] {countdown_text}"))
     return table
+
+
+def build_section(title, content):
+    return Group(
+        Text(""),
+        Rule(title, style=PANEL_BORDER_STYLE),
+        Text(""),
+        content,
+    )
 
 
 def build_summary_table(trader, market_state):
@@ -1210,19 +1220,12 @@ def build_dashboard(trader, market):
         build_countdown_panel(trader),
         Text(""),
         *header,
-        Text(""),
-        Rule("Account", style=PANEL_BORDER_STYLE),
-        build_summary_table(trader, market_state),
-        Rule("BTC 1m Tape", style=PANEL_BORDER_STYLE),
-        build_price_table(market_state),
-        Rule("Open Position", style=PANEL_BORDER_STYLE),
-        build_position_table(trader, market_state),
-        Rule("Recent Trades", style=PANEL_BORDER_STYLE),
-        build_trades_table(trader),
-        Rule("Signal Rationale", style=PANEL_BORDER_STYLE),
-        build_signal_rationale_panel(trader),
-        Rule("Action Log", style=PANEL_BORDER_STYLE),
-        build_logs_panel(trader),
+        build_section("Account", build_summary_table(trader, market_state)),
+        build_section("BTC 1m Tape", build_price_table(market_state)),
+        build_section("Open Position", build_position_table(trader, market_state)),
+        build_section("Recent Trades", build_trades_table(trader)),
+        build_section("Signal Rationale", build_signal_rationale_panel(trader)),
+        build_section("Action Log", build_logs_panel(trader)),
     ]
     return Panel(Group(*sections), border_style=PANEL_BORDER_STYLE, box=box.ROUNDED)
 
