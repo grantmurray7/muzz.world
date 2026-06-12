@@ -114,6 +114,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.txt")
 LOG_CSV_PATH = os.path.join(BASE_DIR, "log.csv")
 OPENAI_DEBUG_CSV_PATH = os.path.join(BASE_DIR, "openai_debug.csv")
+STATE_PATH = os.path.join(BASE_DIR, "state.txt")
 BTC_PERP = "BTC"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -140,6 +141,7 @@ LIVE_REFRESH_HZ = 2
 OPENAI_TIMEOUT_SECONDS = 90
 OPENAI_MAX_ATTEMPTS = 3
 OPENAI_RETRY_DELAY_SECONDS = 3
+STATE_SAVE_INTERVAL_SECONDS = 3
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -553,6 +555,8 @@ class SandboxTrader:
         self.last_signal_at = 0.0
         self.next_signal_at = self.start_time
         self.last_signal_error = ""
+        self.state_path = STATE_PATH
+        self.last_state_save_at = 0.0
         self.lock = threading.Lock()
         self.log_csv_path = LOG_CSV_PATH
         self.openai_debug_csv_path = OPENAI_DEBUG_CSV_PATH
@@ -561,10 +565,14 @@ class SandboxTrader:
         set_terminal_title(
             f"muzz.world | Git {self.github_commit['sha_short']} | {self.github_commit['committed_at']}"
         )
+        restored = self._restore_state()
         self.log("BTC sandbox runner started.")
         self.log(
             f"GitHub build -> {self.github_commit['sha_short']} | {self.github_commit['committed_at']}"
         )
+        if restored:
+            self.log("Recovered state from state.txt.")
+        self.persist_state(force=True)
 
     def _reset_log_csv(self):
         with open(self.log_csv_path, "w", newline="", encoding="utf-8") as handle:
@@ -627,6 +635,59 @@ class SandboxTrader:
         ts = now_ts()
         self.logs.appendleft(f"{format_ts(ts)} {message}")
         self._append_csv(ts, message)
+
+    def _state_payload(self):
+        return {
+            "saved_at": now_ts(),
+            "available": self.available,
+            "position": self.position,
+            "trades": list(self.trades),
+            "logs": list(self.logs),
+            "last_signal": self.last_signal,
+            "last_signal_why": self.last_signal_why,
+            "last_signal_sources": list(self.last_signal_sources),
+            "last_signal_at": self.last_signal_at,
+            "next_signal_at": self.next_signal_at,
+        }
+
+    def persist_state(self, force=False):
+        ts = now_ts()
+        if not force and (ts - self.last_state_save_at) < STATE_SAVE_INTERVAL_SECONDS:
+            return
+        payload = self._state_payload()
+        temp_path = f"{self.state_path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True, indent=2)
+        os.replace(temp_path, self.state_path)
+        self.last_state_save_at = ts
+
+    def _restore_state(self):
+        if not os.path.exists(self.state_path):
+            return False
+        try:
+            raw = Path(self.state_path).read_text(encoding="utf-8")
+            payload = json.loads(raw)
+        except Exception:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        try:
+            self.available = float(payload.get("available", self.available))
+            position = payload.get("position")
+            self.position = position if isinstance(position, dict) else None
+            trades = payload.get("trades", [])
+            self.trades = deque(trades if isinstance(trades, list) else [], maxlen=12)
+            logs = payload.get("logs", [])
+            self.logs = deque(logs if isinstance(logs, list) else [], maxlen=12)
+            self.last_signal = str(payload.get("last_signal", self.last_signal))
+            self.last_signal_why = str(payload.get("last_signal_why", self.last_signal_why))
+            sources = payload.get("last_signal_sources", [])
+            self.last_signal_sources = [str(item) for item in sources] if isinstance(sources, list) else []
+            self.last_signal_at = float(payload.get("last_signal_at", self.last_signal_at) or 0.0)
+            self.next_signal_at = float(payload.get("next_signal_at", self.next_signal_at) or self.start_time)
+        except Exception:
+            return False
+        return True
 
     def live_pnl(self):
         if not self.position:
@@ -813,6 +874,7 @@ class SandboxTrader:
             f"{side} entry BTC at {entry_price:,.2f}. Margin {target_margin:,.2f} USDC | "
             f"Notional {notional:,.2f} | Fee {entry_fee:.4f}"
         )
+        self.persist_state(force=True)
 
     def close_position(self, reason):
         if not self.position:
@@ -847,6 +909,7 @@ class SandboxTrader:
             f"{side} exit {reason} at {close_price:,.2f}. Gross {gross_pnl:.4f} | "
             f"Net {net_pnl:.4f} USDC | Fees {(entry_fee + exit_fee):.4f}"
         )
+        self.persist_state(force=True)
 
 
 def style_pct(value):
@@ -1022,6 +1085,7 @@ def main():
             try:
                 trader.maybe_stop_loss()
                 trader.maybe_run_signal()
+                trader.persist_state()
             except Exception as exc:
                 trader.log(f"Main loop error: {exc}")
             time.sleep(1)
@@ -1036,6 +1100,10 @@ def main():
                 time.sleep(1.0 / LIVE_REFRESH_HZ)
     finally:
         stop_event.set()
+        try:
+            trader.persist_state(force=True)
+        except Exception:
+            pass
         market.stop()
         console.print("\nStopped BTC sandbox runner.")
 
