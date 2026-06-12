@@ -1068,6 +1068,24 @@ def render_price_cell(price, previous_price):
     return Text(f"{price:,.2f}", style=style)
 
 
+def build_countdown_panel(trader):
+    cycle_seconds = max(1, SIGNAL_INTERVAL_SECONDS)
+    remaining = max(0.0, trader.next_signal_at - now_ts())
+    elapsed = max(0.0, min(cycle_seconds, cycle_seconds - remaining))
+    progress = elapsed / float(cycle_seconds)
+    filled = int(round(progress * 40))
+    filled = max(0, min(40, filled))
+    bar = ("#" * filled) + ("-" * (40 - filled))
+    minutes = int(remaining // 60)
+    seconds = int(remaining % 60)
+    countdown_text = f"{minutes:02d}:{seconds:02d}"
+    table = Table.grid(expand=True)
+    table.add_column(justify="center")
+    table.add_row(Text("Next 15m Check", style="bold white"))
+    table.add_row(Text(f"[{bar}] {countdown_text}", style="bold cyan"))
+    return Panel(table, border_style="white", box=box.ROUNDED)
+
+
 def build_summary_table(trader, market_state):
     table = Table.grid(expand=True)
     for _ in range(8):
@@ -1193,6 +1211,7 @@ def build_dashboard(trader, market):
         Text(status_text, style="bold yellow" if (trader.last_signal_error or state["last_error"]) else "bold green"),
     ]
     return Group(
+        build_countdown_panel(trader),
         *header,
         Panel(build_summary_table(trader, market_state), title="Account", border_style="white", box=box.ROUNDED),
         Panel(build_price_table(market_state), title="BTC 1m Tape", border_style="white", box=box.ROUNDED),
