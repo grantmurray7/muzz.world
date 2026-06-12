@@ -128,6 +128,8 @@ TRADES_CSV_PATH = os.path.join(BASE_DIR, "trades.csv")
 STATE_PATH = os.path.join(BASE_DIR, "state.txt")
 SNAPSHOT_DIR = r"G:\My Drive\+tradebot"
 PANEL_BORDER_STYLE = "rgb(237,125,175)"
+HEADING_STYLE = "bold cyan"
+BODY_STYLE = "white"
 BTC_PERP = "BTC"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -1044,7 +1046,7 @@ def render_price_cell(price, previous_price):
     return Text(f"{price:,.2f}", style=style)
 
 
-def label_value(label, value, value_style="white", label_style="bold cyan"):
+def label_value(label, value, value_style=BODY_STYLE, label_style=HEADING_STYLE):
     return Text.assemble((f"{label}\n", label_style), (str(value), value_style))
 
 
@@ -1110,29 +1112,29 @@ def build_summary_table(trader, market_state):
 
 def build_price_table(market_state):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
-    table.add_column("Perp", style="bold cyan", no_wrap=True)
+    table.add_column("Perp", header_style=HEADING_STYLE, style=BODY_STYLE, no_wrap=True)
     labels = [f"-{minute}m" for minute in range(DISPLAY_COLUMNS, 0, -1)]
     for label in labels:
-        table.add_column(label, justify="right", no_wrap=True, style="bold cyan")
+        table.add_column(label, justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
     prices = market_state["minute_prices"]
     cells = []
     previous = None
     for price in prices:
         cells.append(render_price_cell(price, previous))
         previous = price if price is not None else previous
-    table.add_row(Text(BTC_PERP, style="bold white"), *cells)
+    table.add_row(Text(BTC_PERP, style=BODY_STYLE), *cells)
     return table
 
 
 def build_position_table(trader, market_state):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
-    table.add_column("Perp", no_wrap=True, style="bold cyan")
-    table.add_column("Side", no_wrap=True, style="bold cyan")
-    table.add_column("Entry", justify="right", no_wrap=True, style="bold cyan")
-    table.add_column("Current", justify="right", no_wrap=True, style="bold cyan")
-    table.add_column("PnL", justify="right", no_wrap=True, style="bold cyan")
-    table.add_column("Gain %", justify="right", no_wrap=True, style="bold cyan")
-    table.add_column("Opened", no_wrap=True, style="bold cyan")
+    table.add_column("Perp", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Side", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Entry", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Current", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("PnL", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Gain %", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Opened", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
     if not trader.position:
         table.add_row("-", "No active position", "-", "-", "-", "-", "-")
         return table
@@ -1156,12 +1158,12 @@ def build_position_table(trader, market_state):
 
 def build_trades_table(trader):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
-    table.add_column("Time", no_wrap=True, style="bold cyan")
-    table.add_column("Side", no_wrap=True, style="bold cyan")
-    table.add_column("Exit", no_wrap=True, style="bold cyan")
-    table.add_column("Entry USDC", justify="right", no_wrap=True, style="bold cyan")
-    table.add_column("Exit USDC", justify="right", no_wrap=True, style="bold cyan")
-    table.add_column("Net PnL", justify="right", no_wrap=True, style="bold cyan")
+    table.add_column("Time", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Side", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Exit", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Entry USDC", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Exit USDC", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Net PnL", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
     if not trader.trades:
         table.add_row("-", "No trades yet", "-", "-", "-", "-")
         return table
@@ -1181,21 +1183,34 @@ def build_trades_table(trader):
 def build_logs_panel(trader):
     lines = list(trader.logs)[:10]
     if not lines:
-        lines = ["No logs yet."]
-    return "\n".join(lines)
+        return Text("No logs yet.", style=BODY_STYLE)
+    rendered = []
+    for line in lines:
+        match = re.match(r"^(\d{2}:\d{2}:\d{2})(\s+)(.*)$", str(line))
+        if match:
+            rendered.append(
+                Text.assemble(
+                    (match.group(1), HEADING_STYLE),
+                    (match.group(2), BODY_STYLE),
+                    (match.group(3), BODY_STYLE),
+                )
+            )
+        else:
+            rendered.append(Text(str(line), style=BODY_STYLE))
+    return Group(*rendered)
 
 
 def build_signal_rationale_panel(trader):
-    lines = [f"Signal: {trader.last_signal}"]
+    lines = [Text.assemble(("Signal: ", HEADING_STYLE), (trader.last_signal, BODY_STYLE))]
     if trader.last_signal_why:
-        lines.append(f"Why: {trader.last_signal_why}")
+        lines.append(Text.assemble(("Why: ", HEADING_STYLE), (trader.last_signal_why, BODY_STYLE)))
     if trader.last_signal_sources:
-        lines.append("Sources:")
+        lines.append(Text("Sources:", style=HEADING_STYLE))
         for index, source in enumerate(trader.last_signal_sources, start=1):
-            lines.append(f"{index}. {source}")
+            lines.append(Text.assemble((f"{index}. ", HEADING_STYLE), (source, BODY_STYLE)))
     if len(lines) == 1 and trader.last_signal == "PENDING":
-        lines.append("No model rationale yet.")
-    return "\n".join(lines)
+        lines.append(Text("No model rationale yet.", style=BODY_STYLE))
+    return Group(*lines)
 
 
 def build_dashboard(trader, market):
