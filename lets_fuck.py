@@ -112,7 +112,7 @@ STARTING_BALANCE_USDC = 10000.0
 STACK_FRACTION = 0.95
 LEVERAGE = 5.0
 TAKER_FEE_PCT = 0.015
-TAKE_PROFIT_USDC = 114.25
+STOP_LOSS_USDC = 114.25
 SIGNAL_INTERVAL_SECONDS = 15 * 60
 DISPLAY_COLUMNS = 15
 DISPLAY_MINUTE_SECONDS = 60
@@ -549,14 +549,14 @@ class SandboxTrader:
         reserved_margin = float(self.position["initial_margin"]) if self.position else 0.0
         return self.available + reserved_margin + self.live_pnl()
 
-    def maybe_take_profit(self):
+    def maybe_stop_loss(self):
         if not self.position:
             return
         live_pnl = self.live_pnl()
-        if live_pnl < TAKE_PROFIT_USDC:
+        if live_pnl > -STOP_LOSS_USDC:
             return
-        self.log(f"Take profit triggered at {live_pnl:.2f} USDC.")
-        self.close_position(f"TAKE_PROFIT_{TAKE_PROFIT_USDC:.2f}")
+        self.log(f"Stop loss triggered at {live_pnl:.2f} USDC.")
+        self.close_position(f"STOP_LOSS_{STOP_LOSS_USDC:.2f}")
 
     def query_signal(self):
         api_key = self.settings.get("OPENAI_API_KEY", "").strip()
@@ -915,7 +915,7 @@ def main():
     def trader_loop():
         while not stop_event.is_set():
             try:
-                trader.maybe_take_profit()
+                trader.maybe_stop_loss()
                 trader.maybe_run_signal()
             except Exception as exc:
                 trader.log(f"Main loop error: {exc}")
