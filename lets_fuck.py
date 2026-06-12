@@ -1082,7 +1082,7 @@ def build_countdown_panel(trader):
 def build_section(title, content):
     return Group(
         Text(""),
-        Rule(title, style=PANEL_BORDER_STYLE),
+        Rule(str(title).title(), style=PANEL_BORDER_STYLE),
         Text(""),
         content,
     )
@@ -1223,11 +1223,11 @@ def build_dashboard(trader, market):
     header = [
         Text(
             f"muzz.world | Build {trader.build_info['label']} | {trader.build_info['modified_at']}",
-            style="bold white",
+            style=BODY_STYLE,
         ),
         Text(
             f"BTC only | Runtime {int(now_ts() - trader.start_time)}s | WS open {format_ts(state['last_open_at']) or 'n/a'}",
-            style="cyan",
+            style=HEADING_STYLE,
         ),
         Text(status_text, style="bold yellow" if (trader.last_signal_error or state["last_error"]) else "bold green"),
     ]
