@@ -22,12 +22,26 @@ Treat the provided Hyperliquid BTC perpetual snapshot as the source of truth for
 
 Prioritize immediate BTC price action and market structure, especially the last 1h, 15m, and 5m behavior.
 
+Field definitions:
+- `ret_pct`: percentage return over that lookback window.
+- `rng_pct`: percentage high-low range over that lookback window.
+- `pos`: normalized position in range from 0 to 1, where 0 is near the window low and 1 is near the window high.
+- `book.bid5` and `book.ask5`: summed top-5 book depth on bids and asks.
+- `book.imb`: bid share of top-5 depth. `imb > 0.5` means bid-heavy / buy-side stronger. `imb < 0.5` means ask-heavy / sell-side stronger.
+
 Use NO_TRADE only when:
 - Neither LONG nor SHORT appears likely to achieve +0.03% net profit.
 - The directional edge is too small to overcome costs.
 - Abnormal volatility or mixed structure makes short-term direction genuinely unclear.
 
 Do not default to NO_TRADE simply because confidence is below 100%. If one direction has a measurable advantage, choose it.
+
+Output rules:
+- Return raw JSON only. No markdown. No code fences. No prose before or after the JSON.
+- Return exactly one JSON object on a single line.
+- `signal` must be exactly one of `LONG`, `SHORT`, `NO_TRADE`.
+- `why` must be 1-3 short sentences and must reference the snapshot fields, not invented market facts.
+- `sources` must be an empty array `[]` unless you actually used a fresh external source.
 
 Return valid JSON only with this exact shape:
 {"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences","sources":["up to 3 short source strings, freshest first"]}"""
