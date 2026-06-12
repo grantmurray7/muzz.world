@@ -123,6 +123,7 @@ PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker ord
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
 
+Prioritize BTC price action and immediate market structure e.g. last 1h BTC price action, last 15m and 5m momentum.
 Prioritize current BTC price action, momentum, and market structure over commentary. Only use recent, high-quality news sources. Ignore stale articles, evergreen explainers, and low-quality blog spam. Prefer sources from the last 6 hours unless an older event is still clearly driving BTC today.
 
 Use NO_TRADE only when:
