@@ -28,6 +28,7 @@ try:
     from rich import box
     from rich.console import Console, Group
     from rich.live import Live
+    from rich.panel import Panel
     from rich.rule import Rule
     from rich.table import Table
     from rich.text import Text
@@ -81,6 +82,15 @@ except Exception:  # pragma: no cover
 
         def __str__(self):
             return "\n".join(str(item) for item in self.items)
+
+    class Panel:
+        def __init__(self, renderable, title="", border_style=None, box=None, expand=True):
+            self.renderable = renderable
+            self.title = title
+
+        def __str__(self):
+            title = f"[{self.title}]\n" if self.title else ""
+            return f"{title}{self.renderable}"
 
     class Console:
         def print(self, *args, **kwargs):
@@ -985,18 +995,12 @@ def build_dashboard(trader, market):
     ]
     return Group(
         *header,
-        Rule("Account", style="white"),
-        build_summary_table(trader, market_state),
-        Rule("BTC 1m Tape", style="white"),
-        build_price_table(market_state),
-        Rule("Open Position", style="white"),
-        build_position_table(trader, market_state),
-        Rule("Recent Trades", style="white"),
-        build_trades_table(trader),
-        Rule("Signal Rationale", style="white"),
-        build_signal_rationale_panel(trader),
-        Rule("Action Log", style="white"),
-        build_logs_panel(trader),
+        Panel(build_summary_table(trader, market_state), title="Account", border_style="white", box=box.ROUNDED),
+        Panel(build_price_table(market_state), title="BTC 1m Tape", border_style="white", box=box.ROUNDED),
+        Panel(build_position_table(trader, market_state), title="Open Position", border_style="white", box=box.ROUNDED),
+        Panel(build_trades_table(trader), title="Recent Trades", border_style="white", box=box.ROUNDED),
+        Panel(build_signal_rationale_panel(trader), title="Signal Rationale", border_style="white", box=box.ROUNDED),
+        Panel(build_logs_panel(trader), title="Action Log", border_style="white", box=box.ROUNDED),
     )
 
 
