@@ -153,6 +153,7 @@ SIGNAL_RETRY_DELAY_SECONDS = 30
 STARTUP_SIGNAL_RETRY_SECONDS = 5
 STATE_SAVE_INTERVAL_SECONDS = 3
 SNAPSHOT_LEAD_SECONDS = 20
+LATEST_CHANGE_SUMMARY = "Resume waits for feed; failed signals retry safely"
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -259,6 +260,10 @@ def set_terminal_title(title):
             print(f"\33]0;{clean_title}\a", end="", flush=True)
     except Exception:
         pass
+
+
+def dashboard_title_text():
+    return f"muzz.world | Latest changes: {LATEST_CHANGE_SUMMARY}"
 
 
 def render_dashboard_text(trader, market, width=160):
@@ -596,9 +601,7 @@ class SandboxTrader:
         self._reset_log_csv()
         self._reset_openai_debug_csv()
         self._ensure_trades_csv()
-        set_terminal_title(
-            f"muzz.world | Fingerprint {self.build_info['label']} | {self.build_info['modified_at']}"
-        )
+        set_terminal_title(dashboard_title_text())
         restored = self._restore_state()
         self.log("BTC sandbox runner started.")
         self.log(
@@ -1268,7 +1271,7 @@ def build_dashboard(trader, market):
     status_text = trader.last_signal_error or (state["last_error"] if state["last_error"] else ("Managing position." if trader.position else "Waiting for next signal."))
     header = [
         Text(
-            f"muzz.world | Fingerprint {trader.build_info['label']} | {trader.build_info['modified_at']}",
+            dashboard_title_text(),
             style=BODY_STYLE,
         ),
         Text(
