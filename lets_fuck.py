@@ -595,7 +595,7 @@ class SandboxTrader:
         self._reset_openai_debug_csv()
         self._ensure_trades_csv()
         set_terminal_title(
-            f"muzz.world | Build {self.build_info['label']} | {self.build_info['modified_at']}"
+            f"muzz.world | Fingerprint {self.build_info['label']} | {self.build_info['modified_at']}"
         )
         restored = self._restore_state()
         self.log("BTC sandbox runner started.")
@@ -1241,7 +1241,7 @@ def build_dashboard(trader, market):
     status_text = trader.last_signal_error or (state["last_error"] if state["last_error"] else ("Managing position." if trader.position else "Waiting for next signal."))
     header = [
         Text(
-            f"muzz.world | Build {trader.build_info['label']} | {trader.build_info['modified_at']}",
+            f"muzz.world | Fingerprint {trader.build_info['label']} | {trader.build_info['modified_at']}",
             style=BODY_STYLE,
         ),
         Text(
