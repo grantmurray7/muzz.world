@@ -14,6 +14,7 @@ SETTINGS_PATH = Path(__file__).with_name("settings.txt")
 OUTPUT_CSV_PATH = Path(__file__).with_name("ai_key_test_results.csv")
 OPENAI_BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+DEFAULT_MAX_OUTPUT_TOKENS = 1500
 BASE_PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on the fresh market snapshot below, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -40,11 +41,11 @@ Output rules:
 - Return raw JSON only. No markdown. No code fences. No prose before or after the JSON.
 - Return exactly one JSON object on a single line.
 - `signal` must be exactly one of `LONG`, `SHORT`, `NO_TRADE`.
-- `why` must be 1-3 short sentences and must reference the snapshot fields, not invented market facts.
+- `why` should be a detailed rationale that uses the snapshot fields directly. Prefer roughly 3-8 sentences, and include the most important supporting and conflicting signals.
 - `sources` must be an empty array `[]` unless you actually used a fresh external source.
 
 Return valid JSON only with this exact shape:
-{"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences","sources":["up to 3 short source strings, freshest first"]}"""
+{"signal":"LONG|SHORT|NO_TRADE","why":"detailed rationale based on the snapshot fields","sources":["up to 3 short source strings, freshest first"]}"""
 
 PRICING = {
     "openai": {
@@ -76,6 +77,15 @@ def load_settings(path):
         key, value = line.split("=", 1)
         settings[key.strip()] = value.strip()
     return settings
+
+
+def get_max_output_tokens(settings):
+    raw = str(settings.get("AI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS)).strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = DEFAULT_MAX_OUTPUT_TOKENS
+    return max(200, value)
 
 
 def read_json_response(url, payload=None, headers=None, timeout=90):
@@ -355,7 +365,7 @@ def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, to
     }
 
 
-def test_openai(settings, prompt_text):
+def test_openai(settings, prompt_text, max_output_tokens):
     api_key = settings.get("OPENAI_API_KEY", "").strip()
     model = settings.get("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1"
     if not api_key:
@@ -364,7 +374,7 @@ def test_openai(settings, prompt_text):
     payload = {
         "model": model,
         "input": prompt_text,
-        "max_output_tokens": 500,
+        "max_output_tokens": max_output_tokens,
     }
     started = time.perf_counter()
     error_text = ""
@@ -393,7 +403,7 @@ def test_openai(settings, prompt_text):
     )
 
 
-def test_gemini(settings, prompt_text):
+def test_gemini(settings, prompt_text, max_output_tokens):
     api_key = settings.get("GEMINI_API_KEY", "").strip()
     model = settings.get("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
     if not api_key:
@@ -404,7 +414,10 @@ def test_gemini(settings, prompt_text):
         + ":generateContent?key="
         + urllib_parse.quote(api_key, safe="")
     )
-    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
+    payload = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {"maxOutputTokens": max_output_tokens},
+    }
     started = time.perf_counter()
     error_text = ""
     data = None
@@ -434,7 +447,7 @@ def test_gemini(settings, prompt_text):
     )
 
 
-def test_grok(settings, prompt_text):
+def test_grok(settings, prompt_text, max_output_tokens):
     api_key = settings.get("GROK_API_KEY", "").strip()
     model = settings.get("GROK_MODEL", "grok-4-fast").strip() or "grok-4-fast"
     if not api_key:
@@ -442,7 +455,7 @@ def test_grok(settings, prompt_text):
     payload = {
         "model": model,
         "input": prompt_text,
-        "max_output_tokens": 500,
+        "max_output_tokens": max_output_tokens,
     }
     started = time.perf_counter()
     error_text = ""
@@ -479,6 +492,7 @@ def main():
     if not settings:
         print("settings.txt not found beside this script", file=sys.stderr)
         return 1
+    max_output_tokens = get_max_output_tokens(settings)
     reset_csv()
     try:
         snapshot = fetch_hyperliquid_snapshot()
@@ -488,10 +502,11 @@ def main():
     prompt_text = build_prompt(snapshot)
     print("Testing Gemini, OpenAI, and Grok from settings.txt")
     print(f"Hyperliquid mid: {snapshot['px']['mid']} | 5m={snapshot['ret_pct']['5m']}% | 15m={snapshot['ret_pct']['15m']}% | 1h={snapshot['ret_pct']['1h']}%")
+    print(f"Max output tokens: {max_output_tokens}")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     rows = []
     for tester in (test_gemini, test_openai, test_grok):
-        row = tester(settings, prompt_text)
+        row = tester(settings, prompt_text, max_output_tokens)
         if not row:
             continue
         rows.append(row)
