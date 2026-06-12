@@ -16,10 +16,16 @@ OUTPUT_CSV_PATH = Path(__file__).with_name("ai_key_test_results.csv")
 OPENAI_BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1&format=json"
-X_RECENT_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
+LUNARCRUSH_COINS_URL = "https://lunarcrush.com/api4/public/coins/list/v2?sort=market_cap_rank&limit=100"
+LUNARCRUSH_BTC_TOPIC_URL = "https://lunarcrush.com/api4/public/topic/bitcoin/v1"
+LUNARCRUSH_USER_AGENT = "Mozilla/5.0"
 DEFAULT_MAX_OUTPUT_TOKENS = 1500
 FEAR_GREED_LONG_THRESHOLD = 30
 FEAR_GREED_SHORT_THRESHOLD = 70
+LUNAR_LONG_SENTIMENT_THRESHOLD = 65
+LUNAR_LONG_GALAXY_THRESHOLD = 70
+LUNAR_SHORT_SENTIMENT_THRESHOLD = 35
+LUNAR_SHORT_GALAXY_THRESHOLD = 40
 BASE_PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on the fresh market snapshot below, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -68,12 +74,6 @@ PRICING = {
 
 def iso_now():
     return datetime.now(timezone.utc).isoformat()
-
-
-def iso_z(ts=None):
-    if ts is None:
-        ts = time.time()
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def load_settings(path):
@@ -131,6 +131,16 @@ def round_or_none(value, digits=4):
     if value is None:
         return None
     return round(float(value), digits)
+
+
+def clean_metric_text(value, digits=1):
+    try:
+        numeric = float(value)
+    except Exception:
+        return str(value or "").strip()
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.{digits}f}"
 
 
 def pct_change(from_price, to_price):
@@ -333,7 +343,8 @@ def append_csv_row(row):
                 "estimated_token_cost_usd",
                 "fear_greed_value",
                 "fear_greed_classification",
-                "x_btc_count_15m",
+                "lunar_sentiment",
+                "lunar_galaxy_score",
                 "answer_preview",
                 "error",
             ],
@@ -360,7 +371,8 @@ def reset_csv():
                 "estimated_token_cost_usd",
                 "fear_greed_value",
                 "fear_greed_classification",
-                "x_btc_count_15m",
+                "lunar_sentiment",
+                "lunar_galaxy_score",
                 "answer_preview",
                 "error",
             ],
@@ -368,7 +380,7 @@ def reset_csv():
         writer.writeheader()
 
 
-def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, total_tokens, answer, error_text, fear_greed, x_metrics):
+def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, total_tokens, answer, error_text, fear_greed, lunar):
     return {
         "timestamp_utc": iso_now(),
         "provider": provider,
@@ -382,7 +394,8 @@ def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, to
         "estimated_token_cost_usd": estimate_token_cost(provider, model, int(input_tokens or 0), int(output_tokens or 0)),
         "fear_greed_value": fear_greed.get("value", ""),
         "fear_greed_classification": fear_greed.get("classification", ""),
-        "x_btc_count_15m": x_metrics.get("btc_count_15m", ""),
+        "lunar_sentiment": lunar.get("sentiment", ""),
+        "lunar_galaxy_score": lunar.get("galaxy_score", ""),
         "answer_preview": answer,
         "error": error_text,
     }
@@ -445,13 +458,57 @@ def build_fear_greed_row(fear_greed):
         "estimated_token_cost_usd": "",
         "fear_greed_value": value,
         "fear_greed_classification": classification,
-        "x_btc_count_15m": "",
+        "lunar_sentiment": "",
+        "lunar_galaxy_score": "",
         "answer_preview": summary,
         "error": "",
     }
 
 
-def test_openai(settings, prompt_text, max_output_tokens, fear_greed, x_metrics):
+def lunarcrush_to_signal(sentiment_text, galaxy_text):
+    try:
+        sentiment = float(str(sentiment_text).strip())
+        galaxy_score = float(str(galaxy_text).strip())
+    except Exception:
+        return ""
+    if sentiment > LUNAR_LONG_SENTIMENT_THRESHOLD and galaxy_score > LUNAR_LONG_GALAXY_THRESHOLD:
+        return "LONG"
+    if sentiment < LUNAR_SHORT_SENTIMENT_THRESHOLD and galaxy_score < LUNAR_SHORT_GALAXY_THRESHOLD:
+        return "SHORT"
+    return "NO_TRADE"
+
+
+def build_lunarcrush_row(lunar):
+    signal = lunarcrush_to_signal(lunar.get("sentiment", ""), lunar.get("galaxy_score", ""))
+    sentiment = lunar.get("sentiment", "")
+    galaxy_score = lunar.get("galaxy_score", "")
+    summary = (
+        f'{{"signal":"{signal}","why":"LunarCrush BTC sentiment score {sentiment} and Galaxy Score {galaxy_score}. '
+        f'Mapping: sentiment > {LUNAR_LONG_SENTIMENT_THRESHOLD} and galaxy_score > {LUNAR_LONG_GALAXY_THRESHOLD} => LONG; '
+        f'sentiment < {LUNAR_SHORT_SENTIMENT_THRESHOLD} and galaxy_score < {LUNAR_SHORT_GALAXY_THRESHOLD} => SHORT; '
+        f'otherwise NO_TRADE.","sources":[]}}'
+    )
+    return {
+        "timestamp_utc": iso_now(),
+        "provider": "lunarcrush",
+        "model": "btc_social_scores",
+        "signal": signal,
+        "balance": "n/a",
+        "response_time_s": "",
+        "input_tokens": "",
+        "output_tokens": "",
+        "total_tokens": "",
+        "estimated_token_cost_usd": "",
+        "fear_greed_value": "",
+        "fear_greed_classification": "",
+        "lunar_sentiment": sentiment,
+        "lunar_galaxy_score": galaxy_score,
+        "answer_preview": summary,
+        "error": "",
+    }
+
+
+def test_openai(settings, prompt_text, max_output_tokens, fear_greed, lunar):
     api_key = settings.get("OPENAI_API_KEY", "").strip()
     model = settings.get("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1"
     if not api_key:
@@ -487,11 +544,11 @@ def test_openai(settings, prompt_text, max_output_tokens, fear_greed, x_metrics)
         extract_output_text(response_data or {}),
         error_text,
         fear_greed,
-        x_metrics,
+        lunar,
     )
 
 
-def test_gemini(settings, prompt_text, max_output_tokens, fear_greed, x_metrics):
+def test_gemini(settings, prompt_text, max_output_tokens, fear_greed, lunar):
     api_key = settings.get("GEMINI_API_KEY", "").strip()
     model = settings.get("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
     if not api_key:
@@ -533,11 +590,11 @@ def test_gemini(settings, prompt_text, max_output_tokens, fear_greed, x_metrics)
         "\n".join(parts).strip(),
         error_text,
         fear_greed,
-        x_metrics,
+        lunar,
     )
 
 
-def test_grok(settings, prompt_text, max_output_tokens, fear_greed, x_metrics):
+def test_grok(settings, prompt_text, max_output_tokens, fear_greed, lunar):
     api_key = settings.get("GROK_API_KEY", "").strip()
     model = settings.get("GROK_MODEL", "grok-4-fast").strip() or "grok-4-fast"
     if not api_key:
@@ -575,7 +632,7 @@ def test_grok(settings, prompt_text, max_output_tokens, fear_greed, x_metrics):
         extract_output_text(response_data or {}),
         error_text,
         fear_greed,
-        x_metrics,
+        lunar,
     )
 
 
@@ -594,37 +651,65 @@ def fetch_fear_greed():
     }
 
 
-def fetch_x_btc_count(settings):
-    bearer_token = settings.get("X_BEARER_TOKEN", "").strip()
-    if not bearer_token:
-        return {"btc_count_15m": ""}
-    query = "$BTC lang:en -is:retweet"
-    headers = {"Authorization": f"Bearer {bearer_token}"}
-    start_time = iso_z(time.time() - (15 * 60))
-    total = 0
-    next_token = ""
-    pages = 0
-    while pages < 10:
-        params = {
-            "query": query,
-            "start_time": start_time,
-            "max_results": "100",
-            "tweet.fields": "created_at",
+def fetch_lunarcrush_btc(settings):
+    api_key = settings.get("LUNARCRUSH_API_KEY", "").strip()
+    if not api_key:
+        return {"sentiment": "", "galaxy_score": ""}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": LUNARCRUSH_USER_AGENT,
+    }
+    btc = None
+    try:
+        data, _ = read_json_response(LUNARCRUSH_COINS_URL, headers=headers, timeout=30)
+        rows = data.get("data") or []
+        for row in rows:
+            if str(row.get("symbol", "")).strip().upper() == "BTC":
+                btc = row
+                break
+    except Exception:
+        btc = None
+
+    sentiment = clean_metric_text((btc or {}).get("sentiment", ""))
+    galaxy_score = clean_metric_text((btc or {}).get("galaxy_score", ""))
+
+    if sentiment:
+        return {
+            "sentiment": sentiment,
+            "galaxy_score": galaxy_score,
         }
-        if next_token:
-            params["next_token"] = next_token
-        url = X_RECENT_SEARCH_URL + "?" + urllib_parse.urlencode(params)
-        try:
-            data, _ = read_json_response(url, headers=headers, timeout=30)
-        except Exception:
-            return {"btc_count_15m": ""}
-        meta = data.get("meta") or {}
-        total += int(meta.get("result_count") or 0)
-        next_token = str(meta.get("next_token") or "").strip()
-        pages += 1
-        if not next_token:
-            break
-    return {"btc_count_15m": str(total)}
+
+    try:
+        topic_data, _ = read_json_response(LUNARCRUSH_BTC_TOPIC_URL, headers=headers, timeout=30)
+    except Exception:
+        return {
+            "sentiment": sentiment,
+            "galaxy_score": galaxy_score,
+        }
+
+    topic = topic_data.get("data") or {}
+    topic_sentiment = clean_metric_text(topic.get("sentiment", ""))
+    if topic_sentiment:
+        sentiment = topic_sentiment
+    else:
+        types_sentiment = topic.get("types_sentiment") or {}
+        types_interactions = topic.get("types_interactions") or {}
+        weighted_total = 0.0
+        weight_sum = 0.0
+        for network, network_sentiment in types_sentiment.items():
+            weight = safe_float(types_interactions.get(network), 0.0)
+            score = safe_float(network_sentiment, -1.0)
+            if weight <= 0 or score < 0:
+                continue
+            weighted_total += score * weight
+            weight_sum += weight
+        if weight_sum > 0:
+            sentiment = clean_metric_text(weighted_total / weight_sum)
+
+    return {
+        "sentiment": sentiment,
+        "galaxy_score": galaxy_score,
+    }
 
 
 def main():
@@ -640,12 +725,14 @@ def main():
         print(f"Failed to fetch Hyperliquid snapshot: {exc}", file=sys.stderr)
         return 1
     fear_greed = fetch_fear_greed()
-    x_metrics = fetch_x_btc_count(settings)
+    lunar = fetch_lunarcrush_btc(settings)
     snapshot["sentiment"] = {
         "fear_greed_value": fear_greed.get("value", ""),
         "fear_greed_classification": fear_greed.get("classification", ""),
         "fear_greed_signal": fear_greed_to_signal(fear_greed.get("value", "")),
-        "x_btc_count_15m": x_metrics.get("btc_count_15m", ""),
+        "lunar_sentiment": lunar.get("sentiment", ""),
+        "lunar_galaxy_score": lunar.get("galaxy_score", ""),
+        "lunar_signal": lunarcrush_to_signal(lunar.get("sentiment", ""), lunar.get("galaxy_score", "")),
     }
     prompt_text = build_prompt(snapshot)
     print("Testing Gemini, OpenAI, and Grok from settings.txt")
@@ -655,15 +742,22 @@ def main():
         f"signal={fear_greed_to_signal(fear_greed.get('value', '')) or 'n/a'} "
         f"(<= {FEAR_GREED_LONG_THRESHOLD} LONG, >= {FEAR_GREED_SHORT_THRESHOLD} SHORT)"
     )
-    print(f"X $BTC count 15m: {x_metrics.get('btc_count_15m', 'n/a') or 'n/a'}")
+    print(
+        f"LunarCrush BTC: sentiment={lunar.get('sentiment', 'n/a') or 'n/a'} | "
+        f"galaxy_score={lunar.get('galaxy_score', 'n/a') or 'n/a'} | "
+        f"signal={lunarcrush_to_signal(lunar.get('sentiment', ''), lunar.get('galaxy_score', '')) or 'n/a'}"
+    )
     print(f"Max output tokens: {max_output_tokens}")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     rows = []
     fear_greed_row = build_fear_greed_row(fear_greed)
     rows.append(fear_greed_row)
     append_csv_row(fear_greed_row)
+    lunar_row = build_lunarcrush_row(lunar)
+    rows.append(lunar_row)
+    append_csv_row(lunar_row)
     for tester in (test_gemini, test_openai, test_grok):
-        row = tester(settings, prompt_text, max_output_tokens, fear_greed, x_metrics)
+        row = tester(settings, prompt_text, max_output_tokens, fear_greed, lunar)
         if not row:
             continue
         rows.append(row)
