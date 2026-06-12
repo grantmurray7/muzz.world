@@ -18,6 +18,15 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_IMPORT_ERROR = ""
+except Exception as exc:  # pragma: no cover
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    PIL_IMPORT_ERROR = str(exc)
+
+try:
     import websocket
     WEBSOCKET_IMPORT_ERROR = ""
 except Exception as exc:  # pragma: no cover
@@ -116,6 +125,7 @@ LOG_CSV_PATH = os.path.join(BASE_DIR, "log.csv")
 OPENAI_DEBUG_CSV_PATH = os.path.join(BASE_DIR, "openai_debug.csv")
 TRADES_CSV_PATH = os.path.join(BASE_DIR, "trades.csv")
 STATE_PATH = os.path.join(BASE_DIR, "state.txt")
+SNAPSHOT_DIR = r"G:\My Drive\tradebot"
 BTC_PERP = "BTC"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -143,6 +153,7 @@ OPENAI_TIMEOUT_SECONDS = 90
 OPENAI_MAX_ATTEMPTS = 3
 OPENAI_RETRY_DELAY_SECONDS = 3
 STATE_SAVE_INTERVAL_SECONDS = 3
+SNAPSHOT_LEAD_SECONDS = 20
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -269,6 +280,44 @@ def set_terminal_title(title):
             print(f"\33]0;{clean_title}\a", end="", flush=True)
     except Exception:
         pass
+
+
+def render_dashboard_text(trader, market, width=160):
+    renderable = build_dashboard(trader, market)
+    try:
+        capture_console = Console(record=True, width=width)
+        capture_console.print(renderable)
+        export_text = getattr(capture_console, "export_text", None)
+        if callable(export_text):
+            return export_text(styles=False)
+    except Exception:
+        pass
+    return str(renderable)
+
+
+def write_text_image(text, output_path):
+    if Image is None or ImageDraw is None or ImageFont is None:
+        raise RuntimeError(f"Pillow unavailable: {PIL_IMPORT_ERROR or 'not installed'}")
+    font = ImageFont.load_default()
+    lines = text.splitlines() or [""]
+    dummy_image = Image.new("RGB", (16, 16), color=(0, 0, 0))
+    drawer = ImageDraw.Draw(dummy_image)
+    line_height = 18
+    max_width = 0
+    for line in lines:
+        bbox = drawer.textbbox((0, 0), line, font=font)
+        max_width = max(max_width, bbox[2] - bbox[0])
+        line_height = max(line_height, (bbox[3] - bbox[1]) + 4)
+    padding = 16
+    width = max(800, max_width + (padding * 2))
+    height = max(200, (line_height * len(lines)) + (padding * 2))
+    image = Image.new("RGB", (width, height), color=(0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    y = padding
+    for line in lines:
+        draw.text((padding, y), line, font=font, fill=(235, 235, 235))
+        y += line_height
+    image.save(output_path, format="PNG")
 
 
 def _collect_string_candidates(value, candidates):
@@ -557,6 +606,8 @@ class SandboxTrader:
         self.next_signal_at = self.start_time
         self.last_signal_error = ""
         self.state_path = STATE_PATH
+        self.snapshot_dir = SNAPSHOT_DIR
+        self.last_snapshot_key = ""
         self.last_state_save_at = 0.0
         self.lock = threading.Lock()
         self.log_csv_path = LOG_CSV_PATH
@@ -701,6 +752,7 @@ class SandboxTrader:
             "last_signal_sources": list(self.last_signal_sources),
             "last_signal_at": self.last_signal_at,
             "next_signal_at": self.next_signal_at,
+            "last_snapshot_key": self.last_snapshot_key,
         }
 
     def persist_state(self, force=False):
@@ -738,9 +790,36 @@ class SandboxTrader:
             self.last_signal_sources = [str(item) for item in sources] if isinstance(sources, list) else []
             self.last_signal_at = float(payload.get("last_signal_at", self.last_signal_at) or 0.0)
             self.next_signal_at = float(payload.get("next_signal_at", self.next_signal_at) or self.start_time)
+            self.last_snapshot_key = str(payload.get("last_snapshot_key", self.last_snapshot_key))
         except Exception:
             return False
         return True
+
+    def maybe_save_dashboard_snapshot(self, market):
+        if self.next_signal_at <= 0:
+            return
+        remaining = self.next_signal_at - now_ts()
+        if remaining < 0 or remaining > SNAPSHOT_LEAD_SECONDS:
+            return
+        snapshot_key = str(int(self.next_signal_at))
+        if snapshot_key == self.last_snapshot_key:
+            return
+        os.makedirs(self.snapshot_dir, exist_ok=True)
+        stamp = datetime.fromtimestamp(self.next_signal_at, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+        png_path = os.path.join(self.snapshot_dir, f"tradebot_{stamp}.png")
+        text_path = os.path.join(self.snapshot_dir, f"tradebot_{stamp}.txt")
+        dashboard_text = render_dashboard_text(self, market)
+        try:
+            write_text_image(dashboard_text, png_path)
+            self.last_snapshot_key = snapshot_key
+            self.log(f"Saved dashboard snapshot -> {png_path}")
+            self.persist_state(force=True)
+            return
+        except Exception as exc:
+            Path(text_path).write_text(dashboard_text, encoding="utf-8")
+            self.last_snapshot_key = snapshot_key
+            self.log(f"Saved text snapshot -> {text_path} | png unavailable: {exc}")
+            self.persist_state(force=True)
 
     def live_pnl(self):
         if not self.position:
@@ -1142,6 +1221,7 @@ def main():
             try:
                 trader.maybe_stop_loss()
                 trader.maybe_run_signal()
+                trader.maybe_save_dashboard_snapshot(market)
                 trader.persist_state()
             except Exception as exc:
                 trader.log(f"Main loop error: {exc}")
