@@ -1068,6 +1068,10 @@ def render_price_cell(price, previous_price):
     return Text(f"{price:,.2f}", style=style)
 
 
+def label_value(label, value, value_style="white", label_style="bold cyan"):
+    return Text.assemble((f"{label}\n", label_style), (str(value), value_style))
+
+
 def build_countdown_panel(trader):
     cycle_seconds = max(1, SIGNAL_INTERVAL_SECONDS)
     remaining = max(0.0, trader.next_signal_at - now_ts())
@@ -1081,7 +1085,7 @@ def build_countdown_panel(trader):
     countdown_text = f"{minutes:02d}:{seconds:02d}"
     table = Table.grid(expand=True)
     table.add_column(justify="center")
-    table.add_row(Text("Next 15m Check", style="bold white"))
+    table.add_row(Text("Next 15m Check", style="bold cyan"))
     table.add_row(Text(f"[{bar}] {countdown_text}", style="bold cyan"))
     return Panel(table, border_style="white", box=box.ROUNDED)
 
@@ -1093,25 +1097,27 @@ def build_summary_table(trader, market_state):
     position_side = trader.position["side"] if trader.position else "FLAT"
     next_signal_in = max(0, int(round(trader.next_signal_at - now_ts())))
     feed_age = max(0.0, now_ts() - market_state["last_message_at"]) if market_state["last_message_at"] else 9999.0
+    live_pnl = trader.live_pnl()
+    live_pnl_style = style_pct(live_pnl)
     table.add_row(
-        f"[bold]Available[/bold]\n{trader.available:,.2f} USDC",
-        f"[bold]Equity[/bold]\n{trader.equity():,.2f} USDC",
-        f"[bold]Live PnL[/bold]\n{trader.live_pnl():,.2f} USDC",
-        f"[bold]BTC Mid[/bold]\n{market_state['mid']:,.2f}" if market_state["mid"] else "[bold]BTC Mid[/bold]\n-",
-        f"[bold]Signal[/bold]\n{trader.last_signal}",
-        f"[bold]Next Ask[/bold]\n{next_signal_in}s",
-        f"[bold]Position[/bold]\n{position_side}",
-        f"[bold]Feed Age[/bold]\n{feed_age:.1f}s",
+        label_value("Available", f"{trader.available:,.2f} USDC"),
+        label_value("Equity", f"{trader.equity():,.2f} USDC"),
+        label_value("Live PnL", f"{live_pnl:,.2f} USDC", value_style=live_pnl_style),
+        label_value("BTC Mid", f"{market_state['mid']:,.2f}" if market_state["mid"] else "-"),
+        label_value("Signal", trader.last_signal),
+        label_value("Next Ask", f"{next_signal_in}s"),
+        label_value("Position", position_side),
+        label_value("Feed Age", f"{feed_age:.1f}s"),
     )
     return table
 
 
 def build_price_table(market_state):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
-    table.add_column("Perp", style="bold", no_wrap=True)
+    table.add_column("Perp", style="bold cyan", no_wrap=True)
     labels = [f"-{minute}m" for minute in range(DISPLAY_COLUMNS, 0, -1)]
     for label in labels:
-        table.add_column(label, justify="right", no_wrap=True)
+        table.add_column(label, justify="right", no_wrap=True, style="bold cyan")
     prices = market_state["minute_prices"]
     cells = []
     previous = None
@@ -1124,24 +1130,28 @@ def build_price_table(market_state):
 
 def build_position_table(trader, market_state):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
-    table.add_column("Perp", no_wrap=True)
-    table.add_column("Side", no_wrap=True)
-    table.add_column("Entry", justify="right", no_wrap=True)
-    table.add_column("Current", justify="right", no_wrap=True)
-    table.add_column("Gain %", justify="right", no_wrap=True)
-    table.add_column("Opened", no_wrap=True)
+    table.add_column("Perp", no_wrap=True, style="bold cyan")
+    table.add_column("Side", no_wrap=True, style="bold cyan")
+    table.add_column("Entry", justify="right", no_wrap=True, style="bold cyan")
+    table.add_column("Current", justify="right", no_wrap=True, style="bold cyan")
+    table.add_column("PnL", justify="right", no_wrap=True, style="bold cyan")
+    table.add_column("Gain %", justify="right", no_wrap=True, style="bold cyan")
+    table.add_column("Opened", no_wrap=True, style="bold cyan")
     if not trader.position:
-        table.add_row("-", "No active position", "-", "-", "-", "-")
+        table.add_row("-", "No active position", "-", "-", "-", "-", "-")
         return table
     current_mid = float(market_state["mid"] or trader.position["entry_price"])
     direction = 1.0 if trader.position["side"] == "LONG" else -1.0
+    current_pnl = trader.live_pnl()
     pnl_pct = pct_change(float(trader.position["entry_price"]), current_mid) * direction
+    current_pnl_text = Text(f"{current_pnl:,.2f} USDC", style=style_pct(current_pnl))
     pnl_text = Text(f"{pnl_pct:,.4f}%", style=style_pct(pnl_pct))
     table.add_row(
         BTC_PERP,
         trader.position["side"],
         f"{float(trader.position['entry_price']):,.2f}",
         f"{current_mid:,.2f}",
+        current_pnl_text,
         pnl_text,
         format_ts(float(trader.position["entry_time"])),
     )
@@ -1150,12 +1160,12 @@ def build_position_table(trader, market_state):
 
 def build_trades_table(trader):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
-    table.add_column("Time", no_wrap=True)
-    table.add_column("Side", no_wrap=True)
-    table.add_column("Exit", no_wrap=True)
-    table.add_column("Entry USDC", justify="right", no_wrap=True)
-    table.add_column("Exit USDC", justify="right", no_wrap=True)
-    table.add_column("Net PnL", justify="right", no_wrap=True)
+    table.add_column("Time", no_wrap=True, style="bold cyan")
+    table.add_column("Side", no_wrap=True, style="bold cyan")
+    table.add_column("Exit", no_wrap=True, style="bold cyan")
+    table.add_column("Entry USDC", justify="right", no_wrap=True, style="bold cyan")
+    table.add_column("Exit USDC", justify="right", no_wrap=True, style="bold cyan")
+    table.add_column("Net PnL", justify="right", no_wrap=True, style="bold cyan")
     if not trader.trades:
         table.add_row("-", "No trades yet", "-", "-", "-", "-")
         return table
