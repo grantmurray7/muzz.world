@@ -1053,30 +1053,33 @@ def label_value(label, value, value_style=BODY_STYLE, label_style=HEADING_STYLE)
 def build_countdown_panel(trader):
     cycle_seconds = max(1, SIGNAL_INTERVAL_SECONDS)
     remaining = max(0.0, trader.next_signal_at - now_ts())
-    elapsed = max(0.0, min(cycle_seconds, cycle_seconds - remaining))
-    progress = elapsed / float(cycle_seconds)
+    remaining = max(0.0, min(cycle_seconds, remaining))
+    remaining_ratio = remaining / float(cycle_seconds)
     minutes = int(remaining // 60)
     seconds = int(remaining % 60)
     countdown_text = f"{minutes:02d}:{seconds:02d}"
-    label = f" Next 15m Check {countdown_text} "
+    label = f"Next 15m Check {countdown_text}"
     console_width = max(70, int(getattr(console, "width", 120) or 120))
-    bar_width = max(60, console_width - 8)
-    filled = int(round(progress * bar_width))
+    bar_width = max(len(label) + 8, console_width - 6)
+    filled = int(round(remaining_ratio * bar_width))
     filled = max(0, min(bar_width, filled))
-    table = Table.grid(expand=True)
-    table.add_column(justify="center")
     if hasattr(Text(""), "stylize"):
+        row_chars = [" "] * bar_width
         start = max(0, (bar_width - len(label)) // 2)
         end = min(bar_width, start + len(label))
-        row = Text((" " * start) + label + (" " * max(0, bar_width - end)), style="on rgb(110,100,35)")
+        for idx, char in enumerate(label):
+            pos = start + idx
+            if pos >= bar_width:
+                break
+            row_chars[pos] = char
+        row = Text("".join(row_chars), style="on rgb(95,88,28)")
         if filled > 0:
-            row.stylize("on rgb(185,170,65)", 0, filled)
+            row.stylize("on rgb(170,155,55)", 0, filled)
         row.stylize("bold black", start, end)
-        table.add_row(row)
+        return row
     else:
         bar = ("#" * filled) + ("-" * (bar_width - filled))
-        table.add_row(Text(f"[{bar}] {countdown_text}"))
-    return table
+        return Text(f"{bar} {countdown_text}")
 
 
 def build_section(title, content):
