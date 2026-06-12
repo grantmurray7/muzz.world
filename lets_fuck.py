@@ -1078,16 +1078,26 @@ def build_countdown_panel(trader):
     remaining = max(0.0, trader.next_signal_at - now_ts())
     elapsed = max(0.0, min(cycle_seconds, cycle_seconds - remaining))
     progress = elapsed / float(cycle_seconds)
-    filled = int(round(progress * 40))
-    filled = max(0, min(40, filled))
-    bar = ("#" * filled) + ("-" * (40 - filled))
     minutes = int(remaining // 60)
     seconds = int(remaining % 60)
     countdown_text = f"{minutes:02d}:{seconds:02d}"
+    label = f" Next 15m Check {countdown_text} "
+    bar_width = max(60, len(label) + 12)
+    filled = int(round(progress * bar_width))
+    filled = max(0, min(bar_width, filled))
     table = Table.grid(expand=True)
     table.add_column(justify="center")
-    table.add_row(Text("Next 15m Check", style="bold cyan"))
-    table.add_row(Text(f"[{bar}] {countdown_text}", style="bold cyan"))
+    if hasattr(Text(""), "stylize"):
+        start = max(0, (bar_width - len(label)) // 2)
+        end = min(bar_width, start + len(label))
+        row = Text((" " * start) + label + (" " * max(0, bar_width - end)), style="on rgb(110,100,35)")
+        if filled > 0:
+            row.stylize("on rgb(185,170,65)", 0, filled)
+        row.stylize("bold black", start, end)
+        table.add_row(row)
+    else:
+        bar = ("#" * filled) + ("-" * (bar_width - filled))
+        table.add_row(Text(f"[{bar}] {countdown_text}"))
     return table
 
 
