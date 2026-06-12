@@ -149,6 +149,8 @@ LIVE_REFRESH_HZ = 2
 OPENAI_TIMEOUT_SECONDS = 90
 OPENAI_MAX_ATTEMPTS = 3
 OPENAI_RETRY_DELAY_SECONDS = 3
+SIGNAL_RETRY_DELAY_SECONDS = 30
+STARTUP_SIGNAL_RETRY_SECONDS = 5
 STATE_SAVE_INTERVAL_SECONDS = 3
 SNAPSHOT_LEAD_SECONDS = 20
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
@@ -778,16 +780,38 @@ class SandboxTrader:
         now = now_ts()
         if self.next_signal_at <= now:
             missed_by = max(0.0, now - self.next_signal_at)
+            missed_checks = max(1, int(missed_by // SIGNAL_INTERVAL_SECONDS) + 1)
             self.next_signal_at = now
             self.last_snapshot_key = ""
             if saved_at > 0:
                 offline_for = max(0.0, now - saved_at)
                 self.resume_note = (
-                    f"Missed scheduled check while offline ({offline_for:.0f}s away, overdue by {missed_by:.0f}s). Querying immediately."
+                    f"Missed {missed_checks} scheduled check(s) while offline "
+                    f"({offline_for:.0f}s away, overdue by {missed_by:.0f}s). "
+                    "Catching up as soon as market data is ready."
                 )
             else:
-                self.resume_note = "Missed scheduled check while offline. Querying immediately."
+                self.resume_note = "Missed scheduled check while offline. Catching up as soon as market data is ready."
         return True
+
+    def _signal_ready_state(self):
+        state = self.market.get_state()
+        current_mid = float(state["mid"] or 0.0)
+        last_message_at = float(state["last_message_at"] or 0.0)
+        if current_mid <= 0 or last_message_at <= 0:
+            reason = state["last_error"] or "Market feed not ready yet."
+            return False, reason
+        feed_age = max(0.0, now_ts() - last_message_at)
+        if feed_age > FEED_STALE_AFTER_SECONDS:
+            return False, f"Market feed stale ({feed_age:.1f}s)."
+        return True, ""
+
+    def _defer_signal(self, reason, delay_seconds):
+        retry_delay = max(1, int(round(float(delay_seconds))))
+        self.next_signal_at = now_ts() + retry_delay
+        self.last_signal_error = reason
+        self.log(f"{reason} Retrying in {retry_delay}s.")
+        self.persist_state(force=True)
 
     def maybe_save_dashboard_snapshot(self, market):
         if self.next_signal_at <= 0:
@@ -924,6 +948,10 @@ class SandboxTrader:
     def maybe_run_signal(self):
         if now_ts() < self.next_signal_at:
             return
+        ready, readiness_reason = self._signal_ready_state()
+        if not ready:
+            self._defer_signal(readiness_reason, STARTUP_SIGNAL_RETRY_SECONDS)
+            return
         signal_time = now_ts()
         try:
             signal_result = self.query_signal()
@@ -937,20 +965,19 @@ class SandboxTrader:
             if self.last_signal_sources:
                 self.log(f"OpenAI sources -> {' | '.join(self.last_signal_sources)}")
         except Exception as exc:
-            signal_value = None
             self.last_signal_why = ""
             self.last_signal_sources = []
-            self.last_signal_error = str(exc)
-            self.log(f"OpenAI signal error -> {exc}")
+            self._defer_signal(f"OpenAI signal error -> {exc}", SIGNAL_RETRY_DELAY_SECONDS)
+            return
         self.last_signal_at = signal_time
         self.next_signal_at = signal_time + SIGNAL_INTERVAL_SECONDS
-        if signal_value is None:
-            self.last_signal = "NO_TRADE"
-            if self.position:
-                self.close_position("SIGNAL_ERROR_EXIT")
-            return
         self.last_signal = signal_value
-        self.process_signal(signal_value)
+        try:
+            self.process_signal(signal_value)
+        except Exception as exc:
+            self._defer_signal(f"Signal execution error: {exc}", SIGNAL_RETRY_DELAY_SECONDS)
+            return
+        self.persist_state(force=True)
 
     def process_signal(self, signal_value):
         current_side = self.position["side"] if self.position else None
