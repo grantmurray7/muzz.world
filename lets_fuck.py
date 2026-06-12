@@ -4,6 +4,7 @@ BTC-only sandbox runner driven by periodic OpenAI directional calls.
 """
 
 import csv
+import hashlib
 import json
 import os
 import re
@@ -132,13 +133,6 @@ HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_MODEL_DEFAULT = "gpt-4.1"
-GITHUB_OWNER = "grantmurray7"
-GITHUB_REPO = "muzz.world"
-GITHUB_FILE_PATH = "lets_fuck.py"
-GITHUB_COMMITS_URL = (
-    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/commits"
-    f"?path={GITHUB_FILE_PATH}&sha=main&per_page=1"
-)
 STARTING_BALANCE_USDC = 10000.0
 STACK_FRACTION = 0.95
 LEVERAGE = 5.0
@@ -221,24 +215,6 @@ def post_json(url, payload, timeout, headers=None, return_raw=False):
     return parsed
 
 
-def get_json(url, timeout, headers=None):
-    request_headers = {"Accept": "application/json", "User-Agent": "muzz-world-runner"}
-    if headers:
-        request_headers.update(headers)
-    req = urllib_request.Request(url, headers=request_headers, method="GET")
-    try:
-        with urllib_request.urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
-    except (socket.timeout, TimeoutError) as exc:
-        raise RuntimeError(f"Timeout after {timeout}s") from exc
-    except urllib_error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
-    except urllib_error.URLError as exc:
-        raise RuntimeError(f"Network error: {exc}") from exc
-    return json.loads(raw)
-
-
 def format_commit_ts(iso_text):
     if not iso_text:
         return "unknown"
@@ -246,29 +222,27 @@ def format_commit_ts(iso_text):
         dt = datetime.fromisoformat(str(iso_text).replace("Z", "+00:00"))
     except Exception:
         return str(iso_text)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def fetch_github_commit_info():
+def get_local_build_info():
+    file_path = os.path.abspath(__file__)
     try:
-        data = get_json(GITHUB_COMMITS_URL, timeout=8)
-        if not isinstance(data, list) or not data:
-            raise RuntimeError("No commits returned")
-        item = data[0]
-        sha = str(item.get("sha", "")).strip()
-        commit = item.get("commit") or {}
-        author = commit.get("author") or {}
-        committed_at = format_commit_ts(author.get("date"))
+        raw = Path(file_path).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()[:8]
+        modified_at = format_commit_ts(
+            datetime.fromtimestamp(os.path.getmtime(file_path), tz=timezone.utc).isoformat()
+        )
         return {
-            "sha": sha,
-            "sha_short": sha[:7] if sha else "unknown",
-            "committed_at": committed_at,
+            "label": digest,
+            "modified_at": modified_at,
+            "file_path": file_path,
         }
     except Exception as exc:
         return {
-            "sha": "",
-            "sha_short": "unknown",
-            "committed_at": f"unavailable ({exc})",
+            "label": "unknown",
+            "modified_at": f"unavailable ({exc})",
+            "file_path": file_path,
         }
 
 
@@ -595,7 +569,7 @@ class SandboxTrader:
         self.market = market
         self.settings = settings
         self.start_time = now_ts()
-        self.github_commit = fetch_github_commit_info()
+        self.build_info = get_local_build_info()
         self.available = STARTING_BALANCE_USDC
         self.position = None
         self.trades = deque(maxlen=12)
@@ -618,13 +592,14 @@ class SandboxTrader:
         self._reset_openai_debug_csv()
         self._ensure_trades_csv()
         set_terminal_title(
-            f"muzz.world | Git {self.github_commit['sha_short']} | {self.github_commit['committed_at']}"
+            f"muzz.world | Build {self.build_info['label']} | {self.build_info['modified_at']}"
         )
         restored = self._restore_state()
         self.log("BTC sandbox runner started.")
         self.log(
-            f"GitHub build -> {self.github_commit['sha_short']} | {self.github_commit['committed_at']}"
+            f"Local build -> {self.build_info['label']} | {self.build_info['modified_at']}"
         )
+        self.log(f"Running file -> {self.build_info['file_path']}")
         if restored:
             self.log("Recovered state from state.txt.")
         self.persist_state(force=True)
@@ -1222,7 +1197,7 @@ def build_dashboard(trader, market):
     status_text = trader.last_signal_error or (state["last_error"] if state["last_error"] else ("Managing position." if trader.position else "Waiting for next signal."))
     header = [
         Text(
-            f"muzz.world | Git {trader.github_commit['sha_short']} | {trader.github_commit['committed_at']}",
+            f"muzz.world | Build {trader.build_info['label']} | {trader.build_info['modified_at']}",
             style="bold white",
         ),
         Text(
