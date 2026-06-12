@@ -1088,7 +1088,7 @@ def build_countdown_panel(trader):
     table.add_column(justify="center")
     table.add_row(Text("Next 15m Check", style="bold cyan"))
     table.add_row(Text(f"[{bar}] {countdown_text}", style="bold cyan"))
-    return Panel(table, border_style=PANEL_BORDER_STYLE, box=box.ROUNDED)
+    return table
 
 
 def build_summary_table(trader, market_state):
@@ -1226,19 +1226,20 @@ def build_dashboard(trader, market):
         Text(""),
         *header,
         Text(""),
-        Panel(build_summary_table(trader, market_state), title="Account", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
-        Text(""),
-        Panel(build_price_table(market_state), title="BTC 1m Tape", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
-        Text(""),
-        Panel(build_position_table(trader, market_state), title="Open Position", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
-        Text(""),
-        Panel(build_trades_table(trader), title="Recent Trades", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
-        Text(""),
-        Panel(build_signal_rationale_panel(trader), title="Signal Rationale", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
-        Text(""),
-        Panel(build_logs_panel(trader), title="Action Log", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Rule("Account", style=PANEL_BORDER_STYLE),
+        build_summary_table(trader, market_state),
+        Rule("BTC 1m Tape", style=PANEL_BORDER_STYLE),
+        build_price_table(market_state),
+        Rule("Open Position", style=PANEL_BORDER_STYLE),
+        build_position_table(trader, market_state),
+        Rule("Recent Trades", style=PANEL_BORDER_STYLE),
+        build_trades_table(trader),
+        Rule("Signal Rationale", style=PANEL_BORDER_STYLE),
+        build_signal_rationale_panel(trader),
+        Rule("Action Log", style=PANEL_BORDER_STYLE),
+        build_logs_panel(trader),
     ]
-    return Group(*sections)
+    return Panel(Group(*sections), border_style=PANEL_BORDER_STYLE, box=box.ROUNDED)
 
 
 def main():
