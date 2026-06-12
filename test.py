@@ -350,7 +350,7 @@ def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, to
         "output_tokens": output_tokens or "",
         "total_tokens": total_tokens or "",
         "estimated_token_cost_usd": estimate_token_cost(provider, model, int(input_tokens or 0), int(output_tokens or 0)),
-        "answer_preview": (answer[:217] + "...") if len(answer) > 220 else answer,
+        "answer_preview": answer,
         "error": error_text,
     }
 
