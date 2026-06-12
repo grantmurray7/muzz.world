@@ -17,6 +17,8 @@ OPENAI_BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1&format=json"
 DEFAULT_MAX_OUTPUT_TOKENS = 1500
+FEAR_GREED_LONG_THRESHOLD = 30
+FEAR_GREED_SHORT_THRESHOLD = 70
 BASE_PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on the fresh market snapshot below, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -404,9 +406,9 @@ def fear_greed_to_signal(value_text):
         value = int(str(value_text).strip())
     except Exception:
         return ""
-    if value <= 25:
+    if value <= FEAR_GREED_LONG_THRESHOLD:
         return "LONG"
-    if value >= 75:
+    if value >= FEAR_GREED_SHORT_THRESHOLD:
         return "SHORT"
     return "NO_TRADE"
 
@@ -415,7 +417,11 @@ def build_fear_greed_row(fear_greed):
     signal = fear_greed_to_signal(fear_greed.get("value", ""))
     value = fear_greed.get("value", "")
     classification = fear_greed.get("classification", "")
-    summary = f'{{"signal":"{signal}","why":"Fear & Greed daily sentiment score {value} ({classification}). Contrarian mapping: <=25 => LONG, >=75 => SHORT, otherwise NO_TRADE.","sources":[]}}'
+    summary = (
+        f'{{"signal":"{signal}","why":"Fear & Greed daily sentiment score {value} ({classification}). '
+        f'Contrarian mapping: <={FEAR_GREED_LONG_THRESHOLD} => LONG, >={FEAR_GREED_SHORT_THRESHOLD} => SHORT, '
+        f'otherwise NO_TRADE.","sources":[]}}'
+    )
     return {
         "timestamp_utc": iso_now(),
         "provider": "fear_greed",
@@ -597,7 +603,8 @@ def main():
     print(f"Hyperliquid mid: {snapshot['px']['mid']} | 5m={snapshot['ret_pct']['5m']}% | 15m={snapshot['ret_pct']['15m']}% | 1h={snapshot['ret_pct']['1h']}%")
     print(
         f"Fear & Greed: {fear_greed.get('value', 'n/a')} {fear_greed.get('classification', '')} | "
-        f"signal={fear_greed_to_signal(fear_greed.get('value', '')) or 'n/a'}"
+        f"signal={fear_greed_to_signal(fear_greed.get('value', '')) or 'n/a'} "
+        f"(<= {FEAR_GREED_LONG_THRESHOLD} LONG, >= {FEAR_GREED_SHORT_THRESHOLD} SHORT)"
     )
     print(f"Max output tokens: {max_output_tokens}")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
