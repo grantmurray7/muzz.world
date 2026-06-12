@@ -9,12 +9,28 @@ from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from lets_fuck import OPENAI_MODEL_DEFAULT, PROMPT, SETTINGS_PATH, load_settings
-
 
 RESPONSES_URL = "https://api.openai.com/v1/responses"
 BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
+OPENAI_MODEL_DEFAULT = "gpt-4.1"
+SETTINGS_PATH = Path(__file__).with_name("settings.txt")
 OUTPUT_CSV_PATH = Path(__file__).with_name("openai_key_test_results.csv")
+PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
+
+Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
+
+Prioritize BTC price action and immediate market structure e.g. last 1h BTC price action, last 15m and 5m momentum.
+Prioritize current BTC price action, momentum, and market structure over commentary. Only use recent, high-quality news sources. Ignore stale articles, evergreen explainers, and low-quality blog spam. Prefer sources from the last 6 hours unless an older event is still clearly driving BTC today.
+
+Use NO_TRADE only when:
+- Neither LONG nor SHORT appears likely to achieve +0.03% net profit.
+- The directional edge is too small to overcome costs.
+- News risk, event risk, or abnormal volatility makes short-term direction genuinely unclear.
+
+Do not default to NO_TRADE simply because confidence is below 100%. If one direction has a measurable advantage, choose it.
+
+Return valid JSON only with this exact shape:
+{"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences","sources":["up to 3 short source strings, freshest first"]}"""
 
 # Token-only estimate. This does not include any extra tool/search charges.
 MODEL_PRICING_PER_1M = {
@@ -31,6 +47,20 @@ MODEL_PRICING_PER_1M = {
 
 def iso_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def load_settings(path):
+    settings = {}
+    path = Path(path)
+    if not path.exists():
+        return settings
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        settings[key.strip()] = value.strip()
+    return settings
 
 
 def read_json_response(url, payload=None, headers=None, timeout=90):
@@ -187,7 +217,7 @@ def main():
         return 1
     model = settings.get("OPENAI_MODEL", OPENAI_MODEL_DEFAULT).strip() or OPENAI_MODEL_DEFAULT
     print(f"Testing {len(key_entries)} OpenAI key(s) with model {model}")
-    print(f"Prompt source: lets_fuck.PROMPT")
+    print("Prompt source: built into this script")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     for key_name, api_key in key_entries:
         print(f"\n[{key_name}] running...")
