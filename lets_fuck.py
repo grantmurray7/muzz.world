@@ -108,6 +108,13 @@ HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_MODEL_DEFAULT = "gpt-4.1"
+GITHUB_OWNER = "grantmurray7"
+GITHUB_REPO = "muzz.world"
+GITHUB_FILE_PATH = "lets_fuck.py"
+GITHUB_COMMITS_URL = (
+    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/commits"
+    f"?path={GITHUB_FILE_PATH}&sha=main&per_page=1"
+)
 STARTING_BALANCE_USDC = 10000.0
 STACK_FRACTION = 0.95
 LEVERAGE = 5.0
@@ -181,6 +188,66 @@ def post_json(url, payload, timeout, headers=None, return_raw=False):
     if return_raw:
         return parsed, raw
     return parsed
+
+
+def get_json(url, timeout, headers=None):
+    request_headers = {"Accept": "application/json", "User-Agent": "muzz-world-runner"}
+    if headers:
+        request_headers.update(headers)
+    req = urllib_request.Request(url, headers=request_headers, method="GET")
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"Network error: {exc}") from exc
+    return json.loads(raw)
+
+
+def format_commit_ts(iso_text):
+    if not iso_text:
+        return "unknown"
+    try:
+        dt = datetime.fromisoformat(str(iso_text).replace("Z", "+00:00"))
+    except Exception:
+        return str(iso_text)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def fetch_github_commit_info():
+    try:
+        data = get_json(GITHUB_COMMITS_URL, timeout=8)
+        if not isinstance(data, list) or not data:
+            raise RuntimeError("No commits returned")
+        item = data[0]
+        sha = str(item.get("sha", "")).strip()
+        commit = item.get("commit") or {}
+        author = commit.get("author") or {}
+        committed_at = format_commit_ts(author.get("date"))
+        return {
+            "sha": sha,
+            "sha_short": sha[:7] if sha else "unknown",
+            "committed_at": committed_at,
+        }
+    except Exception as exc:
+        return {
+            "sha": "",
+            "sha_short": "unknown",
+            "committed_at": f"unavailable ({exc})",
+        }
+
+
+def set_terminal_title(title):
+    clean_title = str(title).replace("\n", " ").replace("\r", " ")
+    try:
+        if os.name == "nt":
+            os.system(f"title {clean_title}")
+        else:
+            print(f"\33]0;{clean_title}\a", end="", flush=True)
+    except Exception:
+        pass
 
 
 def _collect_string_candidates(value, candidates):
@@ -457,6 +524,7 @@ class SandboxTrader:
         self.market = market
         self.settings = settings
         self.start_time = now_ts()
+        self.github_commit = fetch_github_commit_info()
         self.available = STARTING_BALANCE_USDC
         self.position = None
         self.trades = deque(maxlen=12)
@@ -472,7 +540,13 @@ class SandboxTrader:
         self.openai_debug_csv_path = OPENAI_DEBUG_CSV_PATH
         self._reset_log_csv()
         self._reset_openai_debug_csv()
+        set_terminal_title(
+            f"muzz.world | Git {self.github_commit['sha_short']} | {self.github_commit['committed_at']}"
+        )
         self.log("BTC sandbox runner started.")
+        self.log(
+            f"GitHub build -> {self.github_commit['sha_short']} | {self.github_commit['committed_at']}"
+        )
 
     def _reset_log_csv(self):
         with open(self.log_csv_path, "w", newline="", encoding="utf-8") as handle:
@@ -876,7 +950,10 @@ def build_dashboard(trader, market):
     }
     status_text = trader.last_signal_error or (state["last_error"] if state["last_error"] else ("Managing position." if trader.position else "Waiting for next signal."))
     header = [
-        Text("muzz.world", style="bold white"),
+        Text(
+            f"muzz.world | Git {trader.github_commit['sha_short']} | {trader.github_commit['committed_at']}",
+            style="bold white",
+        ),
         Text(
             f"BTC only | Runtime {int(now_ts() - trader.start_time)}s | WS open {format_ts(state['last_open_at']) or 'n/a'}",
             style="cyan",
