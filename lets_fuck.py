@@ -153,7 +153,7 @@ SIGNAL_RETRY_DELAY_SECONDS = 30
 STARTUP_SIGNAL_RETRY_SECONDS = 5
 STATE_SAVE_INTERVAL_SECONDS = 3
 SNAPSHOT_LEAD_SECONDS = 20
-LATEST_CHANGE_SUMMARY = "Resume waits for feed; failed signals retry safely"
+LATEST_CHANGE_SUMMARY = "Tape uses time stamps; final column shows live"
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -182,6 +182,12 @@ def format_ts(ts):
     if not ts:
         return ""
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S")
+
+
+def format_minute_stamp(ts):
+    if not ts:
+        return "--:--"
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M")
 
 
 def iso_utc(ts):
@@ -1162,10 +1168,17 @@ def build_summary_table(trader, market_state):
 def build_price_table(market_state):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
     table.add_column("Perp", header_style=HEADING_STYLE, style=BODY_STYLE, no_wrap=True)
-    labels = [f"-{minute}m" for minute in range(DISPLAY_COLUMNS, 0, -1)]
+    reference_ts = float(market_state["last_message_at"] or now_ts())
+    labels = [
+        format_minute_stamp(reference_ts - (minute * DISPLAY_MINUTE_SECONDS))
+        for minute in range(DISPLAY_COLUMNS, 0, -1)
+    ]
+    labels.append("Live")
     for label in labels:
         table.add_column(label, justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
-    prices = market_state["minute_prices"]
+    prices = list(market_state["minute_prices"])
+    live_mid = float(market_state["mid"] or 0.0)
+    prices.append(live_mid if live_mid > 0 else None)
     cells = []
     previous = None
     for price in prices:
