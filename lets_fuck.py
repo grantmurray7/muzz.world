@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+import socket
 import threading
 import time
 from collections import deque
@@ -126,6 +127,9 @@ DISPLAY_MINUTE_SECONDS = 60
 PRICE_HISTORY_SECONDS = (DISPLAY_COLUMNS + 2) * DISPLAY_MINUTE_SECONDS
 FEED_STALE_AFTER_SECONDS = 20.0
 LIVE_REFRESH_HZ = 2
+OPENAI_TIMEOUT_SECONDS = 90
+OPENAI_MAX_ATTEMPTS = 3
+OPENAI_RETRY_DELAY_SECONDS = 3
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -179,6 +183,8 @@ def post_json(url, payload, timeout, headers=None, return_raw=False):
     try:
         with urllib_request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
+    except (socket.timeout, TimeoutError) as exc:
+        raise RuntimeError(f"Timeout after {timeout}s") from exc
     except urllib_error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
@@ -198,6 +204,8 @@ def get_json(url, timeout, headers=None):
     try:
         with urllib_request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
+    except (socket.timeout, TimeoutError) as exc:
+        raise RuntimeError(f"Timeout after {timeout}s") from exc
     except urllib_error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
@@ -653,30 +661,45 @@ class SandboxTrader:
             ensure_ascii=True,
         )
         debug_request_body = json.dumps(payload, ensure_ascii=True)
+        last_exc = None
+        data = None
         response_text = ""
-        try:
-            data, response_text = post_json(
-                OPENAI_RESPONSES_URL,
-                payload,
-                timeout=45,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                },
-                return_raw=True,
-            )
-        except Exception as exc:
-            self._append_openai_debug_csv(
-                debug_ts,
-                OPENAI_RESPONSES_URL,
-                debug_request_headers,
-                debug_request_body,
-                response_text,
-                "",
-                "",
-                [],
-                str(exc),
-            )
-            raise
+        for attempt in range(1, OPENAI_MAX_ATTEMPTS + 1):
+            response_text = ""
+            try:
+                data, response_text = post_json(
+                    OPENAI_RESPONSES_URL,
+                    payload,
+                    timeout=OPENAI_TIMEOUT_SECONDS,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                    },
+                    return_raw=True,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                self._append_openai_debug_csv(
+                    debug_ts,
+                    OPENAI_RESPONSES_URL,
+                    debug_request_headers,
+                    debug_request_body,
+                    response_text,
+                    "",
+                    "",
+                    [],
+                    f"attempt {attempt}/{OPENAI_MAX_ATTEMPTS}: {exc}",
+                )
+                retryable = "timeout" in str(exc).lower() or "network error" in str(exc).lower()
+                if retryable and attempt < OPENAI_MAX_ATTEMPTS:
+                    self.log(
+                        f"OpenAI request issue on attempt {attempt}/{OPENAI_MAX_ATTEMPTS}: {exc}. Retrying..."
+                    )
+                    time.sleep(OPENAI_RETRY_DELAY_SECONDS)
+                    continue
+                raise
+        if data is None:
+            raise last_exc or RuntimeError("OpenAI request failed")
         parsed_response = extract_signal_response(data)
         text = parsed_response["signal"].strip().upper()
         why = parsed_response["why"]
@@ -951,7 +974,7 @@ def build_dashboard(trader, market):
     status_text = trader.last_signal_error or (state["last_error"] if state["last_error"] else ("Managing position." if trader.position else "Waiting for next signal."))
     header = [
         Text(
-            f"muzz.world TEST | Git {trader.github_commit['sha_short']} | {trader.github_commit['committed_at']}",
+            f"muzz.world | Git {trader.github_commit['sha_short']} | {trader.github_commit['committed_at']}",
             style="bold white",
         ),
         Text(
