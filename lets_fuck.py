@@ -586,6 +586,7 @@ class SandboxTrader:
         self.snapshot_dir = SNAPSHOT_DIR
         self.last_snapshot_key = ""
         self.last_state_save_at = 0.0
+        self.resume_note = ""
         self.lock = threading.Lock()
         self.log_csv_path = LOG_CSV_PATH
         self.openai_debug_csv_path = OPENAI_DEBUG_CSV_PATH
@@ -604,6 +605,8 @@ class SandboxTrader:
         self.log(f"Running file -> {self.build_info['file_path']}")
         if restored:
             self.log("Recovered state from state.txt.")
+            if self.resume_note:
+                self.log(self.resume_note)
         self.persist_state(force=True)
 
     def _reset_log_csv(self):
@@ -755,6 +758,7 @@ class SandboxTrader:
         if not isinstance(payload, dict):
             return False
         try:
+            saved_at = float(payload.get("saved_at", 0.0) or 0.0)
             self.available = float(payload.get("available", self.available))
             position = payload.get("position")
             self.position = position if isinstance(position, dict) else None
@@ -771,6 +775,18 @@ class SandboxTrader:
             self.last_snapshot_key = str(payload.get("last_snapshot_key", self.last_snapshot_key))
         except Exception:
             return False
+        now = now_ts()
+        if self.next_signal_at <= now:
+            missed_by = max(0.0, now - self.next_signal_at)
+            self.next_signal_at = now
+            self.last_snapshot_key = ""
+            if saved_at > 0:
+                offline_for = max(0.0, now - saved_at)
+                self.resume_note = (
+                    f"Missed scheduled check while offline ({offline_for:.0f}s away, overdue by {missed_by:.0f}s). Querying immediately."
+                )
+            else:
+                self.resume_note = "Missed scheduled check while offline. Querying immediately."
         return True
 
     def maybe_save_dashboard_snapshot(self, market):
