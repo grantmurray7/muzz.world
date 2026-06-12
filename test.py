@@ -362,6 +362,16 @@ def append_csv_row(row):
         writer.writerow(row)
 
 
+def print_result_row(row):
+    print(
+        f"{row['provider']:10} | {row['signal'] or 'n/a':9} | {row['error'] or 'ok'} | "
+        f"rt={row['response_time_s'] or 'n/a'}s | "
+        f"in={row['input_tokens'] or 'n/a'} | "
+        f"out={row['output_tokens'] or 'n/a'} | "
+        f"cost={row['estimated_token_cost_usd'] or 'n/a'}"
+    )
+
+
 def reset_csv():
     with OUTPUT_CSV_PATH.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -771,30 +781,24 @@ def main():
         f"galaxy_score={lunar.get('galaxy_score', 'n/a') or 'n/a'} | "
         f"signal={lunarcrush_to_signal(lunar.get('sentiment', ''), lunar.get('galaxy_score', '')) or 'n/a'}"
     )
-    if lunar.get("error"):
-        print(f"LunarCrush status: {lunar['error']}")
     print(f"Max output tokens: {max_output_tokens}")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     rows = []
     fear_greed_row = build_fear_greed_row(fear_greed)
     rows.append(fear_greed_row)
     append_csv_row(fear_greed_row)
+    print_result_row(fear_greed_row)
     lunar_row = build_lunarcrush_row(lunar)
     rows.append(lunar_row)
     append_csv_row(lunar_row)
+    print_result_row(lunar_row)
     for tester in (test_gemini, test_openai, test_grok):
         row = tester(settings, prompt_text, max_output_tokens, fear_greed, lunar)
         if not row:
             continue
         rows.append(row)
         append_csv_row(row)
-        print(
-            f"{row['provider']:10} | {row['signal'] or 'n/a':9} | {row['error'] or 'ok'} | "
-            f"rt={row['response_time_s']}s | "
-            f"in={row['input_tokens'] or 'n/a'} | "
-            f"out={row['output_tokens'] or 'n/a'} | "
-            f"cost={row['estimated_token_cost_usd'] or 'n/a'}"
-        )
+        print_result_row(row)
     if not rows:
         print("No supported API keys found in settings.txt", file=sys.stderr)
         return 1
