@@ -890,7 +890,7 @@ def build_summary_table(trader, market_state):
 
 
 def build_price_table(market_state):
-    table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=box.SIMPLE_HEAD)
+    table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
     table.add_column("Perp", style="bold", no_wrap=True)
     labels = [f"-{minute}m" for minute in range(DISPLAY_COLUMNS, 0, -1)]
     for label in labels:
@@ -906,7 +906,7 @@ def build_price_table(market_state):
 
 
 def build_position_table(trader, market_state):
-    table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=box.SIMPLE_HEAD)
+    table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
     table.add_column("Perp", no_wrap=True)
     table.add_column("Side", no_wrap=True)
     table.add_column("Entry", justify="right", no_wrap=True)
@@ -932,7 +932,7 @@ def build_position_table(trader, market_state):
 
 
 def build_trades_table(trader):
-    table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=box.SIMPLE_HEAD)
+    table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
     table.add_column("Time", no_wrap=True)
     table.add_column("Side", no_wrap=True)
     table.add_column("Exit", no_wrap=True)
