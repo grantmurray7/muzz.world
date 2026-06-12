@@ -14,6 +14,7 @@ SETTINGS_PATH = Path(__file__).with_name("settings.txt")
 OUTPUT_CSV_PATH = Path(__file__).with_name("ai_key_test_results.csv")
 OPENAI_BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1&format=json"
 DEFAULT_MAX_OUTPUT_TOKENS = 1500
 BASE_PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
@@ -319,6 +320,8 @@ def append_csv_row(row):
                 "output_tokens",
                 "total_tokens",
                 "estimated_token_cost_usd",
+                "fear_greed_value",
+                "fear_greed_classification",
                 "answer_preview",
                 "error",
             ],
@@ -342,6 +345,8 @@ def reset_csv():
                 "output_tokens",
                 "total_tokens",
                 "estimated_token_cost_usd",
+                "fear_greed_value",
+                "fear_greed_classification",
                 "answer_preview",
                 "error",
             ],
@@ -349,7 +354,7 @@ def reset_csv():
         writer.writeheader()
 
 
-def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, total_tokens, answer, error_text):
+def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, total_tokens, answer, error_text, fear_greed):
     return {
         "timestamp_utc": iso_now(),
         "provider": provider,
@@ -360,12 +365,14 @@ def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, to
         "output_tokens": output_tokens or "",
         "total_tokens": total_tokens or "",
         "estimated_token_cost_usd": estimate_token_cost(provider, model, int(input_tokens or 0), int(output_tokens or 0)),
+        "fear_greed_value": fear_greed.get("value", ""),
+        "fear_greed_classification": fear_greed.get("classification", ""),
         "answer_preview": answer,
         "error": error_text,
     }
 
 
-def test_openai(settings, prompt_text, max_output_tokens):
+def test_openai(settings, prompt_text, max_output_tokens, fear_greed):
     api_key = settings.get("OPENAI_API_KEY", "").strip()
     model = settings.get("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1"
     if not api_key:
@@ -400,10 +407,11 @@ def test_openai(settings, prompt_text, max_output_tokens):
         usage.get("total_tokens", ""),
         extract_output_text(response_data or {}),
         error_text,
+        fear_greed,
     )
 
 
-def test_gemini(settings, prompt_text, max_output_tokens):
+def test_gemini(settings, prompt_text, max_output_tokens, fear_greed):
     api_key = settings.get("GEMINI_API_KEY", "").strip()
     model = settings.get("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
     if not api_key:
@@ -444,10 +452,11 @@ def test_gemini(settings, prompt_text, max_output_tokens):
         usage.get("totalTokenCount", ""),
         "\n".join(parts).strip(),
         error_text,
+        fear_greed,
     )
 
 
-def test_grok(settings, prompt_text, max_output_tokens):
+def test_grok(settings, prompt_text, max_output_tokens, fear_greed):
     api_key = settings.get("GROK_API_KEY", "").strip()
     model = settings.get("GROK_MODEL", "grok-4-fast").strip() or "grok-4-fast"
     if not api_key:
@@ -484,7 +493,23 @@ def test_grok(settings, prompt_text, max_output_tokens):
         total_tokens,
         extract_output_text(response_data or {}),
         error_text,
+        fear_greed,
     )
+
+
+def fetch_fear_greed():
+    try:
+        data, _ = read_json_response(FEAR_GREED_URL, timeout=15)
+    except Exception:
+        return {"value": "", "classification": ""}
+    rows = data.get("data") or []
+    if not rows:
+        return {"value": "", "classification": ""}
+    item = rows[0] or {}
+    return {
+        "value": str(item.get("value", "")).strip(),
+        "classification": str(item.get("value_classification", "")).strip(),
+    }
 
 
 def main():
@@ -499,14 +524,20 @@ def main():
     except Exception as exc:
         print(f"Failed to fetch Hyperliquid snapshot: {exc}", file=sys.stderr)
         return 1
+    fear_greed = fetch_fear_greed()
+    snapshot["sentiment"] = {
+        "fear_greed_value": fear_greed.get("value", ""),
+        "fear_greed_classification": fear_greed.get("classification", ""),
+    }
     prompt_text = build_prompt(snapshot)
     print("Testing Gemini, OpenAI, and Grok from settings.txt")
     print(f"Hyperliquid mid: {snapshot['px']['mid']} | 5m={snapshot['ret_pct']['5m']}% | 15m={snapshot['ret_pct']['15m']}% | 1h={snapshot['ret_pct']['1h']}%")
+    print(f"Fear & Greed: {fear_greed.get('value', 'n/a')} {fear_greed.get('classification', '')}".strip())
     print(f"Max output tokens: {max_output_tokens}")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     rows = []
     for tester in (test_gemini, test_openai, test_grok):
-        row = tester(settings, prompt_text, max_output_tokens)
+        row = tester(settings, prompt_text, max_output_tokens, fear_greed)
         if not row:
             continue
         rows.append(row)
