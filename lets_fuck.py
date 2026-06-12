@@ -102,6 +102,7 @@ except Exception:  # pragma: no cover
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.txt")
 LOG_CSV_PATH = os.path.join(BASE_DIR, "log.csv")
+OPENAI_DEBUG_CSV_PATH = os.path.join(BASE_DIR, "openai_debug.csv")
 BTC_PERP = "BTC"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -161,7 +162,7 @@ def apply_fee(notional, fee_pct):
     return float(notional) * (float(fee_pct) / 100.0)
 
 
-def post_json(url, payload, timeout, headers=None):
+def post_json(url, payload, timeout, headers=None, return_raw=False):
     body = json.dumps(payload).encode("utf-8")
     request_headers = {"Content-Type": "application/json"}
     if headers:
@@ -175,7 +176,10 @@ def post_json(url, payload, timeout, headers=None):
         raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
     except urllib_error.URLError as exc:
         raise RuntimeError(f"Network error: {exc}") from exc
-    return json.loads(raw)
+    parsed = json.loads(raw)
+    if return_raw:
+        return parsed, raw
+    return parsed
 
 
 def extract_signal_from_payload(payload):
@@ -412,7 +416,9 @@ class SandboxTrader:
         self.last_signal_error = ""
         self.lock = threading.Lock()
         self.log_csv_path = LOG_CSV_PATH
+        self.openai_debug_csv_path = OPENAI_DEBUG_CSV_PATH
         self._reset_log_csv()
+        self._reset_openai_debug_csv()
         self.log("BTC sandbox runner started.")
 
     def _reset_log_csv(self):
@@ -424,6 +430,38 @@ class SandboxTrader:
         with open(self.log_csv_path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow([iso_utc(ts), f"{ts:.6f}", message])
+
+    def _reset_openai_debug_csv(self):
+        with open(self.openai_debug_csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "timestamp_utc",
+                    "epoch_ts",
+                    "request_url",
+                    "request_headers",
+                    "request_body",
+                    "response_text",
+                    "parsed_signal",
+                    "error",
+                ]
+            )
+
+    def _append_openai_debug_csv(self, ts, request_url, request_headers, request_body, response_text, parsed_signal, error_text):
+        with open(self.openai_debug_csv_path, "a", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    iso_utc(ts),
+                    f"{ts:.6f}",
+                    request_url,
+                    request_headers,
+                    request_body,
+                    response_text,
+                    parsed_signal,
+                    error_text,
+                ]
+            )
 
     def log(self, message):
         ts = now_ts()
@@ -449,20 +487,53 @@ class SandboxTrader:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY missing from settings.txt")
         model = self.settings.get("OPENAI_MODEL", OPENAI_MODEL_DEFAULT).strip() or OPENAI_MODEL_DEFAULT
-        data = post_json(
-            OPENAI_RESPONSES_URL,
+        payload = {
+            "model": model,
+            "input": PROMPT,
+            "tools": [{"type": "web_search_preview"}],
+            "max_output_tokens": 16,
+        }
+        debug_ts = now_ts()
+        debug_request_headers = json.dumps(
             {
-                "model": model,
-                "input": PROMPT,
-                "tools": [{"type": "web_search_preview"}],
-                "max_output_tokens": 16,
+                "Content-Type": "application/json",
+                "Authorization": "Bearer ***redacted***",
             },
-            timeout=45,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-            },
+            ensure_ascii=True,
         )
+        debug_request_body = json.dumps(payload, ensure_ascii=True)
+        response_text = ""
+        try:
+            data, response_text = post_json(
+                OPENAI_RESPONSES_URL,
+                payload,
+                timeout=45,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                },
+                return_raw=True,
+            )
+        except Exception as exc:
+            self._append_openai_debug_csv(
+                debug_ts,
+                OPENAI_RESPONSES_URL,
+                debug_request_headers,
+                debug_request_body,
+                response_text,
+                "",
+                str(exc),
+            )
+            raise
         text = extract_signal_from_payload(data).strip().upper()
+        self._append_openai_debug_csv(
+            debug_ts,
+            OPENAI_RESPONSES_URL,
+            debug_request_headers,
+            debug_request_body,
+            response_text,
+            text,
+            "",
+        )
         if text not in VALID_SIGNALS:
             raw_preview = json.dumps(data, ensure_ascii=True)[:240]
             raise RuntimeError(f"Unexpected OpenAI response: {text or 'EMPTY'} | raw={raw_preview}")
