@@ -951,7 +951,7 @@ def build_dashboard(trader, market):
     status_text = trader.last_signal_error or (state["last_error"] if state["last_error"] else ("Managing position." if trader.position else "Waiting for next signal."))
     header = [
         Text(
-            f"muzz.world | Git {trader.github_commit['sha_short']} | {trader.github_commit['committed_at']}",
+            f"muzz.world TEST | Git {trader.github_commit['sha_short']} | {trader.github_commit['committed_at']}",
             style="bold white",
         ),
         Text(
