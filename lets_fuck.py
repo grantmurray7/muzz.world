@@ -114,6 +114,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.txt")
 LOG_CSV_PATH = os.path.join(BASE_DIR, "log.csv")
 OPENAI_DEBUG_CSV_PATH = os.path.join(BASE_DIR, "openai_debug.csv")
+TRADES_CSV_PATH = os.path.join(BASE_DIR, "trades.csv")
 STATE_PATH = os.path.join(BASE_DIR, "state.txt")
 BTC_PERP = "BTC"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
@@ -560,8 +561,10 @@ class SandboxTrader:
         self.lock = threading.Lock()
         self.log_csv_path = LOG_CSV_PATH
         self.openai_debug_csv_path = OPENAI_DEBUG_CSV_PATH
+        self.trades_csv_path = TRADES_CSV_PATH
         self._reset_log_csv()
         self._reset_openai_debug_csv()
+        self._ensure_trades_csv()
         set_terminal_title(
             f"muzz.world | Git {self.github_commit['sha_short']} | {self.github_commit['committed_at']}"
         )
@@ -602,6 +605,32 @@ class SandboxTrader:
                 ]
             )
 
+    def _ensure_trades_csv(self):
+        if os.path.exists(self.trades_csv_path):
+            return
+        with open(self.trades_csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "timestamp_utc",
+                    "epoch_ts",
+                    "coin",
+                    "side",
+                    "reason",
+                    "entry_price",
+                    "exit_price",
+                    "size",
+                    "entry_usdc",
+                    "exit_usdc",
+                    "gross_pnl",
+                    "net_pnl",
+                    "fees_paid",
+                    "seconds_open",
+                    "available_after",
+                    "equity_after",
+                ]
+            )
+
     def _append_openai_debug_csv(
         self,
         ts,
@@ -628,6 +657,30 @@ class SandboxTrader:
                     parsed_why,
                     json.dumps(parsed_sources, ensure_ascii=True),
                     error_text,
+                ]
+            )
+
+    def _append_trade_csv(self, trade):
+        with open(self.trades_csv_path, "a", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    iso_utc(float(trade["timestamp"])),
+                    f"{float(trade['timestamp']):.6f}",
+                    BTC_PERP,
+                    trade["side"],
+                    trade["reason"],
+                    f"{float(trade['entry_price']):.8f}",
+                    f"{float(trade['exit_price']):.8f}",
+                    f"{float(trade['size']):.10f}",
+                    f"{float(trade['entry_usdc']):.4f}",
+                    f"{float(trade['exit_usdc']):.4f}",
+                    f"{float(trade['gross_pnl']):.4f}",
+                    f"{float(trade['net_pnl']):.4f}",
+                    f"{float(trade['fees_paid']):.4f}",
+                    f"{float(trade['seconds_open']):.2f}",
+                    f"{float(trade['available_after']):.4f}",
+                    f"{float(trade['equity_after']):.4f}",
                 ]
             )
 
@@ -895,6 +948,7 @@ class SandboxTrader:
             "side": side,
             "entry_price": float(self.position["entry_price"]),
             "exit_price": close_price,
+            "size": size,
             "entry_usdc": float(self.position["initial_margin"]),
             "exit_usdc": float(self.position["initial_margin"]) + net_pnl,
             "gross_pnl": gross_pnl,
@@ -902,9 +956,12 @@ class SandboxTrader:
             "fees_paid": entry_fee + exit_fee,
             "reason": reason,
             "seconds_open": now_ts() - float(self.position["entry_time"]),
+            "available_after": self.available,
+            "equity_after": self.available,
         }
         self.trades.appendleft(trade)
         self.position = None
+        self._append_trade_csv(trade)
         self.log(
             f"{side} exit {reason} at {close_price:,.2f}. Gross {gross_pnl:.4f} | "
             f"Net {net_pnl:.4f} USDC | Fees {(entry_fee + exit_fee):.4f}"
