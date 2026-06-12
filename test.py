@@ -13,17 +13,19 @@ from urllib import request as urllib_request
 SETTINGS_PATH = Path(__file__).with_name("settings.txt")
 OUTPUT_CSV_PATH = Path(__file__).with_name("ai_key_test_results.csv")
 OPENAI_BALANCE_URL = "https://api.openai.com/dashboard/billing/credit_grants"
-PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
+HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+BASE_PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
-Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
+Based on the fresh market snapshot below, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
 
-Prioritize BTC price action and immediate market structure e.g. last 1h BTC price action, last 15m and 5m momentum.
-Prioritize current BTC price action, momentum, and market structure over commentary. Only use recent, high-quality news sources. Ignore stale articles, evergreen explainers, and low-quality blog spam. Prefer sources from the last 6 hours unless an older event is still clearly driving BTC today.
+Treat the provided Hyperliquid BTC perpetual snapshot as the source of truth for price, momentum, volatility, and order book state. Do not invent prices or levels not present in the snapshot.
+
+Prioritize immediate BTC price action and market structure, especially the last 1h, 15m, and 5m behavior.
 
 Use NO_TRADE only when:
 - Neither LONG nor SHORT appears likely to achieve +0.03% net profit.
 - The directional edge is too small to overcome costs.
-- News risk, event risk, or abnormal volatility makes short-term direction genuinely unclear.
+- Abnormal volatility or mixed structure makes short-term direction genuinely unclear.
 
 Do not default to NO_TRADE simply because confidence is below 100%. If one direction has a measurable advantage, choose it.
 
@@ -77,6 +79,164 @@ def read_json_response(url, payload=None, headers=None, timeout=90):
         raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
     except urllib_error.URLError as exc:
         raise RuntimeError(f"Network error: {exc}") from exc
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def round_or_none(value, digits=4):
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def pct_change(from_price, to_price):
+    if from_price <= 0:
+        return 0.0
+    return ((to_price - from_price) / from_price) * 100.0
+
+
+def compute_window_metrics(candles, count):
+    if not candles:
+        return {"ret_pct": 0.0, "range_pct": 0.0, "high": 0.0, "low": 0.0}
+    window = candles[-count:] if len(candles) >= count else candles[:]
+    if not window:
+        return {"ret_pct": 0.0, "range_pct": 0.0, "high": 0.0, "low": 0.0}
+    first_close = safe_float(window[0]["c"])
+    last_close = safe_float(window[-1]["c"])
+    high = max(safe_float(item["h"]) for item in window)
+    low = min(safe_float(item["l"]) for item in window)
+    range_pct = pct_change(low, high) if low > 0 else 0.0
+    return {
+        "ret_pct": pct_change(first_close, last_close),
+        "range_pct": range_pct,
+        "high": high,
+        "low": low,
+    }
+
+
+def price_position(current_price, low, high):
+    if high <= low:
+        return 0.5
+    return clamp((current_price - low) / (high - low), 0.0, 1.0)
+
+
+def fetch_hyperliquid_snapshot():
+    now_ms = int(time.time() * 1000)
+    mids, _ = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={"type": "allMids"},
+        timeout=15,
+    )
+    book, _ = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={"type": "l2Book", "coin": "BTC"},
+        timeout=15,
+    )
+    candles_1m, _ = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={
+            "type": "candleSnapshot",
+            "req": {
+                "coin": "BTC",
+                "interval": "1m",
+                "startTime": now_ms - (65 * 60 * 1000),
+                "endTime": now_ms,
+            },
+        },
+        timeout=20,
+    )
+    candles_1h, _ = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={
+            "type": "candleSnapshot",
+            "req": {
+                "coin": "BTC",
+                "interval": "1h",
+                "startTime": now_ms - (26 * 60 * 60 * 1000),
+                "endTime": now_ms,
+            },
+        },
+        timeout=20,
+    )
+
+    levels = book.get("levels") or [[], []]
+    bids = levels[0] if len(levels) > 0 else []
+    asks = levels[1] if len(levels) > 1 else []
+    best_bid = safe_float(bids[0]["px"]) if bids else 0.0
+    best_ask = safe_float(asks[0]["px"]) if asks else 0.0
+    mid = safe_float(mids.get("BTC")) if isinstance(mids, dict) else 0.0
+    if mid <= 0 and best_bid > 0 and best_ask > 0:
+        mid = (best_bid + best_ask) / 2.0
+    spread_bps = (((best_ask - best_bid) / mid) * 10000.0) if mid > 0 and best_ask >= best_bid else 0.0
+    bid5 = sum(safe_float(level.get("sz")) for level in bids[:5])
+    ask5 = sum(safe_float(level.get("sz")) for level in asks[:5])
+    imbalance = (bid5 / (bid5 + ask5)) if (bid5 + ask5) > 0 else 0.5
+
+    metrics_1m = compute_window_metrics(candles_1m, 1)
+    metrics_5m = compute_window_metrics(candles_1m, 5)
+    metrics_15m = compute_window_metrics(candles_1m, 15)
+    metrics_1h = compute_window_metrics(candles_1m, 60)
+    metrics_4h = compute_window_metrics(candles_1h, 4)
+    metrics_day = compute_window_metrics(candles_1h, 24)
+
+    snapshot = {
+        "ts_utc": iso_now(),
+        "source": "Hyperliquid BTC perp",
+        "px": {
+            "mid": round_or_none(mid, 2),
+            "bid": round_or_none(best_bid, 2),
+            "ask": round_or_none(best_ask, 2),
+            "spr_bps": round_or_none(spread_bps, 3),
+        },
+        "ret_pct": {
+            "1m": round_or_none(metrics_1m["ret_pct"]),
+            "5m": round_or_none(metrics_5m["ret_pct"]),
+            "15m": round_or_none(metrics_15m["ret_pct"]),
+            "1h": round_or_none(metrics_1h["ret_pct"]),
+            "4h": round_or_none(metrics_4h["ret_pct"]),
+        },
+        "rng_pct": {
+            "1m": round_or_none(metrics_1m["range_pct"]),
+            "5m": round_or_none(metrics_5m["range_pct"]),
+            "15m": round_or_none(metrics_15m["range_pct"]),
+            "1h": round_or_none(metrics_1h["range_pct"]),
+            "4h": round_or_none(metrics_4h["range_pct"]),
+        },
+        "pos": {
+            "1h": round_or_none(price_position(mid, metrics_1h["low"], metrics_1h["high"]), 3),
+            "4h": round_or_none(price_position(mid, metrics_4h["low"], metrics_4h["high"]), 3),
+            "1d": round_or_none(price_position(mid, metrics_day["low"], metrics_day["high"]), 3),
+        },
+        "book": {
+            "bid5": round_or_none(bid5, 4),
+            "ask5": round_or_none(ask5, 4),
+            "imb": round_or_none(imbalance, 3),
+        },
+        "levels": {
+            "h1_high": round_or_none(metrics_1h["high"], 2),
+            "h1_low": round_or_none(metrics_1h["low"], 2),
+            "d1_high": round_or_none(metrics_day["high"], 2),
+            "d1_low": round_or_none(metrics_day["low"], 2),
+        },
+    }
+    return snapshot
+
+
+def build_prompt(snapshot):
+    return (
+        BASE_PROMPT
+        + "\n\nFresh market snapshot:\n"
+        + json.dumps(snapshot, separators=(",", ":"), ensure_ascii=True)
+    )
 
 
 def fetch_openai_balance(api_key):
@@ -160,7 +320,7 @@ def build_row(provider, model, balance, elapsed, input_tokens, output_tokens, to
     }
 
 
-def test_openai(settings):
+def test_openai(settings, prompt_text):
     api_key = settings.get("OPENAI_API_KEY", "").strip()
     model = settings.get("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1"
     if not api_key:
@@ -168,7 +328,7 @@ def test_openai(settings):
     balance, _ = fetch_openai_balance(api_key)
     payload = {
         "model": model,
-        "input": PROMPT,
+        "input": prompt_text,
         "max_output_tokens": 500,
     }
     started = time.perf_counter()
@@ -198,7 +358,7 @@ def test_openai(settings):
     )
 
 
-def test_gemini(settings):
+def test_gemini(settings, prompt_text):
     api_key = settings.get("GEMINI_API_KEY", "").strip()
     model = settings.get("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
     if not api_key:
@@ -209,7 +369,7 @@ def test_gemini(settings):
         + ":generateContent?key="
         + urllib_parse.quote(api_key, safe="")
     )
-    payload = {"contents": [{"parts": [{"text": PROMPT}]}]}
+    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
     started = time.perf_counter()
     error_text = ""
     data = None
@@ -239,14 +399,14 @@ def test_gemini(settings):
     )
 
 
-def test_grok(settings):
+def test_grok(settings, prompt_text):
     api_key = settings.get("GROK_API_KEY", "").strip()
     model = settings.get("GROK_MODEL", "grok-4-fast").strip() or "grok-4-fast"
     if not api_key:
         return None
     payload = {
         "model": model,
-        "input": PROMPT,
+        "input": prompt_text,
         "max_output_tokens": 500,
     }
     started = time.perf_counter()
@@ -284,11 +444,18 @@ def main():
     if not settings:
         print("settings.txt not found beside this script", file=sys.stderr)
         return 1
+    try:
+        snapshot = fetch_hyperliquid_snapshot()
+    except Exception as exc:
+        print(f"Failed to fetch Hyperliquid snapshot: {exc}", file=sys.stderr)
+        return 1
+    prompt_text = build_prompt(snapshot)
     print("Testing Gemini, OpenAI, and Grok from settings.txt")
+    print(f"Hyperliquid mid: {snapshot['px']['mid']} | 5m={snapshot['ret_pct']['5m']}% | 15m={snapshot['ret_pct']['15m']}% | 1h={snapshot['ret_pct']['1h']}%")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     rows = []
     for tester in (test_gemini, test_openai, test_grok):
-        row = tester(settings)
+        row = tester(settings, prompt_text)
         if not row:
             continue
         rows.append(row)
