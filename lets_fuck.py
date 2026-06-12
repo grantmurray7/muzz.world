@@ -126,6 +126,7 @@ OPENAI_DEBUG_CSV_PATH = os.path.join(BASE_DIR, "openai_debug.csv")
 TRADES_CSV_PATH = os.path.join(BASE_DIR, "trades.csv")
 STATE_PATH = os.path.join(BASE_DIR, "state.txt")
 SNAPSHOT_DIR = r"G:\My Drive\+tradebot"
+PANEL_BORDER_STYLE = "rgb(237,125,175)"
 BTC_PERP = "BTC"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -1087,7 +1088,7 @@ def build_countdown_panel(trader):
     table.add_column(justify="center")
     table.add_row(Text("Next 15m Check", style="bold cyan"))
     table.add_row(Text(f"[{bar}] {countdown_text}", style="bold cyan"))
-    return Panel(table, border_style="white", box=box.ROUNDED)
+    return Panel(table, border_style=PANEL_BORDER_STYLE, box=box.ROUNDED)
 
 
 def build_summary_table(trader, market_state):
@@ -1223,12 +1224,12 @@ def build_dashboard(trader, market):
     return Group(
         build_countdown_panel(trader),
         *header,
-        Panel(build_summary_table(trader, market_state), title="Account", border_style="white", box=box.ROUNDED),
-        Panel(build_price_table(market_state), title="BTC 1m Tape", border_style="white", box=box.ROUNDED),
-        Panel(build_position_table(trader, market_state), title="Open Position", border_style="white", box=box.ROUNDED),
-        Panel(build_trades_table(trader), title="Recent Trades", border_style="white", box=box.ROUNDED),
-        Panel(build_signal_rationale_panel(trader), title="Signal Rationale", border_style="white", box=box.ROUNDED),
-        Panel(build_logs_panel(trader), title="Action Log", border_style="white", box=box.ROUNDED),
+        Panel(build_summary_table(trader, market_state), title="Account", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Panel(build_price_table(market_state), title="BTC 1m Tape", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Panel(build_position_table(trader, market_state), title="Open Position", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Panel(build_trades_table(trader), title="Recent Trades", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Panel(build_signal_rationale_panel(trader), title="Signal Rationale", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
+        Panel(build_logs_panel(trader), title="Action Log", border_style=PANEL_BORDER_STYLE, box=box.ROUNDED),
     )
 
 
