@@ -143,6 +143,14 @@ def clean_metric_text(value, digits=1):
     return f"{numeric:.{digits}f}"
 
 
+def first_data_item(value):
+    if isinstance(value, list):
+        return value[0] if value else {}
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
 def pct_change(from_price, to_price):
     if from_price <= 0:
         return 0.0
@@ -482,6 +490,7 @@ def build_lunarcrush_row(lunar):
     signal = lunarcrush_to_signal(lunar.get("sentiment", ""), lunar.get("galaxy_score", ""))
     sentiment = lunar.get("sentiment", "")
     galaxy_score = lunar.get("galaxy_score", "")
+    error_text = lunar.get("error", "")
     summary = (
         f'{{"signal":"{signal}","why":"LunarCrush BTC sentiment score {sentiment} and Galaxy Score {galaxy_score}. '
         f'Mapping: sentiment > {LUNAR_LONG_SENTIMENT_THRESHOLD} and galaxy_score > {LUNAR_LONG_GALAXY_THRESHOLD} => LONG; '
@@ -504,7 +513,7 @@ def build_lunarcrush_row(lunar):
         "lunar_sentiment": sentiment,
         "lunar_galaxy_score": galaxy_score,
         "answer_preview": summary,
-        "error": "",
+        "error": error_text,
     }
 
 
@@ -654,12 +663,17 @@ def fetch_fear_greed():
 def fetch_lunarcrush_btc(settings):
     api_key = settings.get("LUNARCRUSH_API_KEY", "").strip()
     if not api_key:
-        return {"sentiment": "", "galaxy_score": ""}
+        return {"sentiment": "", "galaxy_score": "", "error": "LUNARCRUSH_API_KEY missing"}
     headers = {
         "Authorization": f"Bearer {api_key}",
         "User-Agent": LUNARCRUSH_USER_AGENT,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://lunarcrush.com",
+        "Referer": "https://lunarcrush.com/",
     }
     btc = None
+    error_messages = []
     try:
         data, _ = read_json_response(LUNARCRUSH_COINS_URL, headers=headers, timeout=30)
         rows = data.get("data") or []
@@ -667,8 +681,9 @@ def fetch_lunarcrush_btc(settings):
             if str(row.get("symbol", "")).strip().upper() == "BTC":
                 btc = row
                 break
-    except Exception:
+    except Exception as exc:
         btc = None
+        error_messages.append(f"coins list failed: {exc}")
 
     sentiment = clean_metric_text((btc or {}).get("sentiment", ""))
     galaxy_score = clean_metric_text((btc or {}).get("galaxy_score", ""))
@@ -677,17 +692,20 @@ def fetch_lunarcrush_btc(settings):
         return {
             "sentiment": sentiment,
             "galaxy_score": galaxy_score,
+            "error": "",
         }
 
     try:
         topic_data, _ = read_json_response(LUNARCRUSH_BTC_TOPIC_URL, headers=headers, timeout=30)
-    except Exception:
+    except Exception as exc:
+        error_messages.append(f"topic failed: {exc}")
         return {
             "sentiment": sentiment,
             "galaxy_score": galaxy_score,
+            "error": " | ".join(error_messages),
         }
 
-    topic = topic_data.get("data") or {}
+    topic = first_data_item(topic_data.get("data"))
     topic_sentiment = clean_metric_text(topic.get("sentiment", ""))
     if topic_sentiment:
         sentiment = topic_sentiment
@@ -706,9 +724,15 @@ def fetch_lunarcrush_btc(settings):
         if weight_sum > 0:
             sentiment = clean_metric_text(weighted_total / weight_sum)
 
+    if not sentiment:
+        error_messages.append("sentiment missing in LunarCrush response")
+    if not galaxy_score:
+        error_messages.append("galaxy_score missing in LunarCrush response")
+
     return {
         "sentiment": sentiment,
         "galaxy_score": galaxy_score,
+        "error": " | ".join(error_messages),
     }
 
 
@@ -747,6 +771,8 @@ def main():
         f"galaxy_score={lunar.get('galaxy_score', 'n/a') or 'n/a'} | "
         f"signal={lunarcrush_to_signal(lunar.get('sentiment', ''), lunar.get('galaxy_score', '')) or 'n/a'}"
     )
+    if lunar.get("error"):
+        print(f"LunarCrush status: {lunar['error']}")
     print(f"Max output tokens: {max_output_tokens}")
     print(f"CSV log: {OUTPUT_CSV_PATH}")
     rows = []
