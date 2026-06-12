@@ -491,7 +491,7 @@ class SandboxTrader:
             "model": model,
             "input": PROMPT,
             "tools": [{"type": "web_search_preview"}],
-            "max_output_tokens": 1024,
+            "max_output_tokens": 10000,
         }
         debug_ts = now_ts()
         debug_request_headers = json.dumps(
