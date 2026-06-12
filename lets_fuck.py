@@ -122,6 +122,8 @@ PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker ord
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
 
+Prioritize current BTC price action, momentum, and market structure over commentary. Only use recent, high-quality news sources. Ignore stale articles, evergreen explainers, and low-quality blog spam. Prefer sources from the last 6 hours unless an older event is still clearly driving BTC today.
+
 Use NO_TRADE only when:
 • Neither LONG nor SHORT appears likely to achieve +0.03% net profit.
 • The directional edge is too small to overcome costs.
@@ -129,11 +131,8 @@ Use NO_TRADE only when:
 
 Do not default to NO_TRADE simply because confidence is below 100%. If one direction has a measurable advantage, choose it.
 
-Answer only:
-
-LONG
-SHORT
-NO_TRADE"""
+Return valid JSON only with this exact shape:
+{"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences","sources":["up to 3 short source strings, freshest first"]}"""
 VALID_SIGNALS = {"LONG", "SHORT", "NO_TRADE"}
 console = Console()
 
@@ -182,28 +181,78 @@ def post_json(url, payload, timeout, headers=None, return_raw=False):
     return parsed
 
 
-def extract_signal_from_payload(payload):
+def _collect_string_candidates(value, candidates):
+    if isinstance(value, str):
+        candidates.append(value)
+        return
+    if isinstance(value, dict):
+        for nested in value.values():
+            _collect_string_candidates(nested, candidates)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _collect_string_candidates(nested, candidates)
+
+
+def _extract_json_object(text):
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z0-9_]*\n?", "", stripped)
+        stripped = re.sub(r"\n?```$", "", stripped)
+        stripped = stripped.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return stripped
+    match = re.search(r"\{[\s\S]*\}", stripped)
+    if match:
+        return match.group(0)
+    return ""
+
+
+def extract_signal_response(payload):
     candidates = []
+    _collect_string_candidates(payload, candidates)
 
-    def visit(value):
-        if isinstance(value, str):
-            candidates.append(value)
-            return
-        if isinstance(value, dict):
-            for nested in value.values():
-                visit(nested)
-            return
-        if isinstance(value, list):
-            for nested in value:
-                visit(nested)
+    for text in candidates:
+        blob = _extract_json_object(text)
+        if not blob:
+            continue
+        try:
+            parsed = json.loads(blob)
+        except Exception:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        signal_value = str(parsed.get("signal", "")).strip().upper()
+        if signal_value not in VALID_SIGNALS:
+            continue
+        why = str(parsed.get("why", "")).strip()
+        raw_sources = parsed.get("sources", [])
+        if isinstance(raw_sources, list):
+            sources = [str(item).strip() for item in raw_sources if str(item).strip()]
+        elif isinstance(raw_sources, str) and raw_sources.strip():
+            sources = [raw_sources.strip()]
+        else:
+            sources = []
+        return {
+            "signal": signal_value,
+            "why": why,
+            "sources": sources[:3],
+        }
 
-    visit(payload)
     for text in candidates:
         upper = text.upper().replace("`", " ")
         match = re.search(r"\b(NO_TRADE|LONG|SHORT)\b", upper)
         if match:
-            return match.group(1)
-    return ""
+            return {
+                "signal": match.group(1),
+                "why": "",
+                "sources": [],
+            }
+    return {
+        "signal": "",
+        "why": "",
+        "sources": [],
+    }
 
 
 def load_settings(path):
@@ -411,6 +460,8 @@ class SandboxTrader:
         self.trades = deque(maxlen=12)
         self.logs = deque(maxlen=12)
         self.last_signal = "PENDING"
+        self.last_signal_why = ""
+        self.last_signal_sources = []
         self.last_signal_at = 0.0
         self.next_signal_at = self.start_time
         self.last_signal_error = ""
@@ -443,11 +494,24 @@ class SandboxTrader:
                     "request_body",
                     "response_text",
                     "parsed_signal",
+                    "parsed_why",
+                    "parsed_sources",
                     "error",
                 ]
             )
 
-    def _append_openai_debug_csv(self, ts, request_url, request_headers, request_body, response_text, parsed_signal, error_text):
+    def _append_openai_debug_csv(
+        self,
+        ts,
+        request_url,
+        request_headers,
+        request_body,
+        response_text,
+        parsed_signal,
+        parsed_why,
+        parsed_sources,
+        error_text,
+    ):
         with open(self.openai_debug_csv_path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(
@@ -459,6 +523,8 @@ class SandboxTrader:
                     request_body,
                     response_text,
                     parsed_signal,
+                    parsed_why,
+                    json.dumps(parsed_sources, ensure_ascii=True),
                     error_text,
                 ]
             )
@@ -521,10 +587,15 @@ class SandboxTrader:
                 debug_request_body,
                 response_text,
                 "",
+                "",
+                [],
                 str(exc),
             )
             raise
-        text = extract_signal_from_payload(data).strip().upper()
+        parsed_response = extract_signal_response(data)
+        text = parsed_response["signal"].strip().upper()
+        why = parsed_response["why"]
+        sources = parsed_response["sources"]
         self._append_openai_debug_csv(
             debug_ts,
             OPENAI_RESPONSES_URL,
@@ -532,23 +603,38 @@ class SandboxTrader:
             debug_request_body,
             response_text,
             text,
+            why,
+            sources,
             "",
         )
         if text not in VALID_SIGNALS:
             raw_preview = json.dumps(data, ensure_ascii=True)[:240]
             raise RuntimeError(f"Unexpected OpenAI response: {text or 'EMPTY'} | raw={raw_preview}")
-        return text
+        return {
+            "signal": text,
+            "why": why,
+            "sources": sources,
+        }
 
     def maybe_run_signal(self):
         if now_ts() < self.next_signal_at:
             return
         signal_time = now_ts()
         try:
-            signal_value = self.query_signal()
+            signal_result = self.query_signal()
+            signal_value = signal_result["signal"]
+            self.last_signal_why = signal_result["why"]
+            self.last_signal_sources = list(signal_result["sources"])
             self.last_signal_error = ""
             self.log(f"OpenAI signal -> {signal_value}")
+            if self.last_signal_why:
+                self.log(f"OpenAI why -> {self.last_signal_why}")
+            if self.last_signal_sources:
+                self.log(f"OpenAI sources -> {' | '.join(self.last_signal_sources)}")
         except Exception as exc:
             signal_value = None
+            self.last_signal_why = ""
+            self.last_signal_sources = []
             self.last_signal_error = str(exc)
             self.log(f"OpenAI signal error -> {exc}")
         self.last_signal_at = signal_time
@@ -758,6 +844,19 @@ def build_logs_panel(trader):
     return "\n".join(lines)
 
 
+def build_signal_rationale_panel(trader):
+    lines = [f"Signal: {trader.last_signal}"]
+    if trader.last_signal_why:
+        lines.append(f"Why: {trader.last_signal_why}")
+    if trader.last_signal_sources:
+        lines.append("Sources:")
+        for index, source in enumerate(trader.last_signal_sources, start=1):
+            lines.append(f"{index}. {source}")
+    if len(lines) == 1 and trader.last_signal == "PENDING":
+        lines.append("No model rationale yet.")
+    return "\n".join(lines)
+
+
 def build_dashboard(trader, market):
     state = market.get_state()
     market_state = {
@@ -783,6 +882,8 @@ def build_dashboard(trader, market):
         build_position_table(trader, market_state),
         Rule("Recent Trades", style="white"),
         build_trades_table(trader),
+        Rule("Signal Rationale", style="white"),
+        build_signal_rationale_panel(trader),
         Rule("Action Log", style="white"),
         build_logs_panel(trader),
     )
