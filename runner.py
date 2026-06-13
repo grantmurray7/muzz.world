@@ -122,12 +122,14 @@ except Exception:  # pragma: no cover
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_PATH = os.path.join(BASE_DIR, "settings.txt")
-LOG_CSV_PATH = os.path.join(BASE_DIR, "log.csv")
-OPENAI_DEBUG_CSV_PATH = os.path.join(BASE_DIR, "openai_debug.csv")
-TRADES_CSV_PATH = os.path.join(BASE_DIR, "trades.csv")
-AI_RESPONSES_CSV_PATH = os.path.join(BASE_DIR, "ai_responses.csv")
-STATE_PATH = os.path.join(BASE_DIR, "state.txt")
+SETUP_DIR = os.path.join(BASE_DIR, "setup")
+HISTORY_DIR = os.path.join(BASE_DIR, "history")
+LEGACY_SETTINGS_PATH = os.path.join(BASE_DIR, "settings.txt")
+LEGACY_STATE_PATH = os.path.join(BASE_DIR, "state.txt")
+SETTINGS_PATH = os.path.join(SETUP_DIR, "settings.txt")
+TRADES_CSV_PATH = os.path.join(HISTORY_DIR, "trades.csv")
+AI_RESPONSES_CSV_PATH = os.path.join(HISTORY_DIR, "ai_responses.csv")
+STATE_PATH = os.path.join(SETUP_DIR, "state.txt")
 SNAPSHOT_DIR = r"G:\My Drive\+tradebot"
 PANEL_BORDER_STYLE = "rgb(237,125,175)"
 HEADING_STYLE = "bold cyan"
@@ -238,6 +240,175 @@ def post_json(url, payload, timeout, headers=None, return_raw=False):
     if return_raw:
         return parsed, raw
     return parsed
+
+
+def read_json_response(url, payload=None, headers=None, timeout=90, return_raw=False):
+    request_headers = {"Content-Type": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib_request.Request(
+        url,
+        data=body,
+        headers=request_headers,
+        method="POST" if body is not None else "GET",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+    except (socket.timeout, TimeoutError) as exc:
+        raise RuntimeError(f"Timeout after {timeout}s") from exc
+    except urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"Network error: {exc}") from exc
+    parsed = json.loads(raw)
+    if return_raw:
+        return parsed, raw
+    return parsed
+
+
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def round_or_none(value, digits=4):
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def compute_window_metrics(candles, count):
+    if not candles:
+        return {"ret_pct": 0.0, "range_pct": 0.0, "high": 0.0, "low": 0.0}
+    window = candles[-count:] if len(candles) >= count else candles[:]
+    if not window:
+        return {"ret_pct": 0.0, "range_pct": 0.0, "high": 0.0, "low": 0.0}
+    first_close = safe_float(window[0]["c"])
+    last_close = safe_float(window[-1]["c"])
+    high = max(safe_float(item["h"]) for item in window)
+    low = min(safe_float(item["l"]) for item in window)
+    range_pct = pct_change(low, high) if low > 0 else 0.0
+    return {
+        "ret_pct": pct_change(first_close, last_close),
+        "range_pct": range_pct,
+        "high": high,
+        "low": low,
+    }
+
+
+def price_position(current_price, low, high):
+    if high <= low:
+        return 0.5
+    return clamp((current_price - low) / (high - low), 0.0, 1.0)
+
+
+def fetch_hyperliquid_snapshot():
+    now_ms = int(time.time() * 1000)
+    mids = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={"type": "allMids"},
+        timeout=15,
+    )
+    book = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={"type": "l2Book", "coin": "BTC"},
+        timeout=15,
+    )
+    candles_1m = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={
+            "type": "candleSnapshot",
+            "req": {
+                "coin": "BTC",
+                "interval": "1m",
+                "startTime": now_ms - (65 * 60 * 1000),
+                "endTime": now_ms,
+            },
+        },
+        timeout=20,
+    )
+    candles_1h = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={
+            "type": "candleSnapshot",
+            "req": {
+                "coin": "BTC",
+                "interval": "1h",
+                "startTime": now_ms - (26 * 60 * 60 * 1000),
+                "endTime": now_ms,
+            },
+        },
+        timeout=20,
+    )
+    levels = book.get("levels") or [[], []]
+    bids = levels[0] if len(levels) > 0 else []
+    asks = levels[1] if len(levels) > 1 else []
+    best_bid = safe_float(bids[0]["px"]) if bids else 0.0
+    best_ask = safe_float(asks[0]["px"]) if asks else 0.0
+    mid = safe_float(mids.get("BTC")) if isinstance(mids, dict) else 0.0
+    if mid <= 0 and best_bid > 0 and best_ask > 0:
+        mid = (best_bid + best_ask) / 2.0
+    spread_bps = (((best_ask - best_bid) / mid) * 10000.0) if mid > 0 and best_ask >= best_bid else 0.0
+    bid5 = sum(safe_float(level.get("sz")) for level in bids[:5])
+    ask5 = sum(safe_float(level.get("sz")) for level in asks[:5])
+    imbalance = (bid5 / (bid5 + ask5)) if (bid5 + ask5) > 0 else 0.5
+
+    metrics_1m = compute_window_metrics(candles_1m, 1)
+    metrics_5m = compute_window_metrics(candles_1m, 5)
+    metrics_15m = compute_window_metrics(candles_1m, 15)
+    metrics_1h = compute_window_metrics(candles_1m, 60)
+    metrics_4h = compute_window_metrics(candles_1h, 4)
+    metrics_day = compute_window_metrics(candles_1h, 24)
+
+    return {
+        "ts_utc": iso_utc(now_ts()),
+        "source": "Hyperliquid BTC perp",
+        "px": {
+            "mid": round_or_none(mid, 2),
+            "bid": round_or_none(best_bid, 2),
+            "ask": round_or_none(best_ask, 2),
+            "spr_bps": round_or_none(spread_bps, 3),
+        },
+        "ret_pct": {
+            "1m": round_or_none(metrics_1m["ret_pct"]),
+            "5m": round_or_none(metrics_5m["ret_pct"]),
+            "15m": round_or_none(metrics_15m["ret_pct"]),
+            "1h": round_or_none(metrics_1h["ret_pct"]),
+            "4h": round_or_none(metrics_4h["ret_pct"]),
+        },
+        "rng_pct": {
+            "1m": round_or_none(metrics_1m["range_pct"]),
+            "5m": round_or_none(metrics_5m["range_pct"]),
+            "15m": round_or_none(metrics_15m["range_pct"]),
+            "1h": round_or_none(metrics_1h["range_pct"]),
+            "4h": round_or_none(metrics_4h["range_pct"]),
+        },
+        "pos": {
+            "1h": round_or_none(price_position(mid, metrics_1h["low"], metrics_1h["high"]), 3),
+            "4h": round_or_none(price_position(mid, metrics_4h["low"], metrics_4h["high"]), 3),
+            "1d": round_or_none(price_position(mid, metrics_day["low"], metrics_day["high"]), 3),
+        },
+        "book": {
+            "bid5": round_or_none(bid5, 4),
+            "ask5": round_or_none(ask5, 4),
+            "imb": round_or_none(imbalance, 3),
+        },
+        "levels": {
+            "h1_high": round_or_none(metrics_1h["high"], 2),
+            "h1_low": round_or_none(metrics_1h["low"], 2),
+            "d1_high": round_or_none(metrics_day["high"], 2),
+            "d1_low": round_or_none(metrics_day["low"], 2),
+        },
+    }
 
 
 def format_commit_ts(iso_text):
@@ -411,6 +582,14 @@ def load_settings(path):
     return settings
 
 
+def resolve_settings_path():
+    if os.path.exists(SETTINGS_PATH):
+        return SETTINGS_PATH
+    if os.path.exists(LEGACY_SETTINGS_PATH):
+        return LEGACY_SETTINGS_PATH
+    return SETTINGS_PATH
+
+
 def fear_greed_to_signal(value_text):
     try:
         value = int(str(value_text).strip())
@@ -425,7 +604,7 @@ def fear_greed_to_signal(value_text):
 
 def fetch_fear_greed():
     try:
-        data = post_json(FEAR_GREED_URL, None, timeout=15)
+        data = read_json_response(FEAR_GREED_URL, None, timeout=15)
     except Exception:
         return {"value": "", "classification": "", "signal": ""}
     rows = data.get("data") or []
@@ -440,14 +619,20 @@ def fetch_fear_greed():
     }
 
 
-def build_ai_prompt(fear_greed):
-    context = {
+def build_ai_prompt(snapshot, fear_greed):
+    sentiment_context = {
         "fear_greed_value": fear_greed.get("value", ""),
         "fear_greed_classification": fear_greed.get("classification", ""),
         "fear_greed_background_signal": fear_greed.get("signal", ""),
         "note": "Treat Fear & Greed as background BTC sentiment context, not a standalone trading command.",
     }
-    return PROMPT + "\n\nBackground sentiment metric:\n" + json.dumps(context, ensure_ascii=True)
+    return (
+        PROMPT
+        + "\n\nFresh market snapshot:\n"
+        + json.dumps(snapshot, separators=(",", ":"), ensure_ascii=True)
+        + "\n\nBackground sentiment metric:\n"
+        + json.dumps(sentiment_context, separators=(",", ":"), ensure_ascii=True)
+    )
 
 
 def sanitize_request_url(url):
@@ -721,12 +906,11 @@ class SandboxTrader:
         self.last_state_save_at = 0.0
         self.resume_note = ""
         self.lock = threading.Lock()
-        self.log_csv_path = LOG_CSV_PATH
-        self.openai_debug_csv_path = OPENAI_DEBUG_CSV_PATH
+        os.makedirs(SETUP_DIR, exist_ok=True)
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        self.legacy_state_path = LEGACY_STATE_PATH
         self.trades_csv_path = TRADES_CSV_PATH
         self.ai_responses_csv_path = AI_RESPONSES_CSV_PATH
-        self._reset_log_csv()
-        self._reset_openai_debug_csv()
         self._ensure_trades_csv()
         self._reset_ai_responses_csv()
         set_terminal_title(dashboard_title_text())
@@ -741,36 +925,6 @@ class SandboxTrader:
             if self.resume_note:
                 self.log(self.resume_note)
         self.persist_state(force=True)
-
-    def _reset_log_csv(self):
-        with open(self.log_csv_path, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["timestamp_utc", "epoch_ts", "message"])
-
-    def _append_csv(self, ts, message):
-        with open(self.log_csv_path, "a", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow([iso_utc(ts), f"{ts:.6f}", message])
-
-    def _reset_openai_debug_csv(self):
-        with open(self.openai_debug_csv_path, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "timestamp_utc",
-                    "epoch_ts",
-                    "provider",
-                    "model",
-                    "request_url",
-                    "request_headers",
-                    "request_body",
-                    "response_text",
-                    "parsed_signal",
-                    "parsed_why",
-                    "parsed_sources",
-                    "error",
-                ]
-            )
 
     def _reset_ai_responses_csv(self):
         with open(self.ai_responses_csv_path, "w", newline="", encoding="utf-8") as handle:
@@ -813,39 +967,6 @@ class SandboxTrader:
                     "seconds_open",
                     "available_after",
                     "equity_after",
-                ]
-            )
-
-    def _append_openai_debug_csv(
-        self,
-        ts,
-        provider,
-        model,
-        request_url,
-        request_headers,
-        request_body,
-        response_text,
-        parsed_signal,
-        parsed_why,
-        parsed_sources,
-        error_text,
-    ):
-        with open(self.openai_debug_csv_path, "a", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    iso_utc(ts),
-                    f"{ts:.6f}",
-                    provider,
-                    model,
-                    request_url,
-                    request_headers,
-                    request_body,
-                    response_text,
-                    parsed_signal,
-                    parsed_why,
-                    json.dumps(parsed_sources, ensure_ascii=True),
-                    error_text,
                 ]
             )
 
@@ -896,7 +1017,6 @@ class SandboxTrader:
     def log(self, message):
         ts = now_ts()
         self.logs.appendleft(f"{format_ts(ts)} {message}")
-        self._append_csv(ts, message)
 
     def _state_payload(self):
         return {
@@ -925,10 +1045,11 @@ class SandboxTrader:
         self.last_state_save_at = ts
 
     def _restore_state(self):
-        if not os.path.exists(self.state_path):
+        state_path = self.state_path if os.path.exists(self.state_path) else self.legacy_state_path
+        if not os.path.exists(state_path):
             return False
         try:
-            raw = Path(self.state_path).read_text(encoding="utf-8")
+            raw = Path(state_path).read_text(encoding="utf-8")
             payload = json.loads(raw)
         except Exception:
             return False
@@ -1038,17 +1159,11 @@ class SandboxTrader:
         self.close_position(f"STOP_LOSS_{STOP_LOSS_USDC:.2f}")
 
     def _call_with_retries(self, provider, model, request_url, payload, headers, parse_text):
-        debug_ts = now_ts()
-        debug_request_url = sanitize_request_url(request_url)
-        debug_request_headers = json.dumps(sanitize_request_headers(headers), ensure_ascii=True)
-        debug_request_body = json.dumps(payload, ensure_ascii=True)
         last_exc = None
         data = None
-        response_text = ""
         for attempt in range(1, OPENAI_MAX_ATTEMPTS + 1):
-            response_text = ""
             try:
-                data, response_text = post_json(
+                data, _response_text = post_json(
                     request_url,
                     payload,
                     timeout=OPENAI_TIMEOUT_SECONDS,
@@ -1058,19 +1173,6 @@ class SandboxTrader:
                 break
             except Exception as exc:
                 last_exc = exc
-                self._append_openai_debug_csv(
-                    debug_ts,
-                    provider,
-                    model,
-                    debug_request_url,
-                    debug_request_headers,
-                    debug_request_body,
-                    response_text,
-                    "",
-                    "",
-                    [],
-                    f"attempt {attempt}/{OPENAI_MAX_ATTEMPTS}: {exc}",
-                )
                 retryable = "timeout" in str(exc).lower() or "network error" in str(exc).lower()
                 if retryable and attempt < OPENAI_MAX_ATTEMPTS:
                     self.log(
@@ -1086,19 +1188,6 @@ class SandboxTrader:
         text = parsed_response["signal"].strip().upper()
         why = parsed_response["why"]
         sources = parsed_response["sources"]
-        self._append_openai_debug_csv(
-            debug_ts,
-            provider,
-            model,
-            debug_request_url,
-            debug_request_headers,
-            debug_request_body,
-            response_text,
-            text,
-            why,
-            sources,
-            "",
-        )
         if text not in VALID_SIGNALS:
             raw_preview = json.dumps(data, ensure_ascii=True)[:240]
             raise RuntimeError(f"Unexpected {provider} response: {text or 'EMPTY'} | raw={raw_preview}")
@@ -1272,8 +1361,9 @@ class SandboxTrader:
         }
 
     def query_signal(self):
+        snapshot = fetch_hyperliquid_snapshot()
         fear_greed = fetch_fear_greed()
-        prompt_text = build_ai_prompt(fear_greed)
+        prompt_text = build_ai_prompt(snapshot, fear_greed)
         provider_results = []
         provider_errors = {}
         provider_methods = {
@@ -1298,6 +1388,7 @@ class SandboxTrader:
         consensus["provider_results"] = provider_results
         consensus["provider_errors"] = provider_errors
         consensus["fear_greed"] = fear_greed
+        consensus["snapshot"] = snapshot
         consensus["prompt_text"] = prompt_text
         return consensus
 
@@ -1678,7 +1769,7 @@ def build_dashboard(trader, market):
 def main():
     stop_event = threading.Event()
     market = BtcMarket(stop_event)
-    settings = load_settings(SETTINGS_PATH)
+    settings = load_settings(resolve_settings_path())
     trader = SandboxTrader(market, settings)
     market.start()
 
