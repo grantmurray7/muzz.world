@@ -52,14 +52,14 @@ function ProviderCard({ provider }: { provider: ProviderState }) {
   const tone =
     provider.signal === "LONG" ? "text-emerald-300" : provider.signal === "SHORT" ? "text-rose-300" : "text-zinc-200";
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3">
+    <div className="min-w-[210px] rounded-[24px] border border-white/10 bg-white/[0.03] px-3.5 py-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">{provider.provider}</div>
         <div className="font-mono text-xs text-zinc-500">{provider.elapsed_seconds.toFixed(2)}s</div>
       </div>
-      <div className={`mt-2 font-mono text-xl font-semibold ${tone}`}>{provider.signal}</div>
+      <div className={`mt-1.5 font-mono text-lg font-semibold ${tone}`}>{provider.signal}</div>
       <div className="mt-1 text-xs text-zinc-500">{provider.model || "model unavailable"}</div>
-      <p className="mt-3 line-clamp-4 min-h-16 text-sm leading-5 text-zinc-300">{provider.error || provider.why || "Waiting for next cycle."}</p>
+      <p className="mt-2.5 line-clamp-4 min-h-[4.25rem] text-[13px] leading-5 text-zinc-300">{provider.error || provider.why || "Waiting for next cycle."}</p>
     </div>
   );
 }
@@ -163,20 +163,18 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.12),_transparent_32%),linear-gradient(180deg,#0b0c0f_0%,#11131a_48%,#090a0d_100%)] px-4 py-4 text-zinc-100 md:px-6 xl:px-8">
-      <div className="mx-auto max-w-[1700px] space-y-4">
-        <header className="rounded-[32px] border border-white/10 bg-zinc-950/80 px-5 py-4">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div>
-              <h1 className="font-['Sora'] text-3xl font-semibold tracking-[0.08em] text-zinc-50">muzz.world - sandbox</h1>
-            </div>
-            <div className="grid gap-3 md:grid-cols-4">
+      <div className="mx-auto max-w-[1700px] space-y-3">
+        <header className="rounded-[32px] border border-white/10 bg-zinc-950/80 px-5 py-3.5">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <h1 className="font-['Sora'] text-[28px] font-semibold tracking-[0.08em] text-zinc-50">muzz.world - sandbox</h1>
+            <div className="grid gap-2 md:grid-cols-4">
               <Metric label="Bid" value={formatMoney(data.quotes.bid)} />
               <Metric label="Ask" value={formatMoney(data.quotes.ask)} />
               <Metric label="Mid" value={formatMoney(data.quotes.mid)} />
               <Metric label="Spread" value={formatPercent(data.quotes.spread_bps, 2).replace("%", " bps")} />
             </div>
           </div>
-          <div className="mt-4 flex flex-wrap gap-3 text-xs uppercase tracking-[0.22em] text-zinc-500">
+          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1.5 text-xs uppercase tracking-[0.22em] text-zinc-500">
             <span>{data.quotes.feed_label}</span>
             <span className="font-semibold text-zinc-100">{data.quotes.feed_detail}</span>
             <span>Build {data.app.build_label}</span>
@@ -186,71 +184,67 @@ export default function Home() {
           </div>
         </header>
 
-        <div className="grid gap-4 xl:grid-cols-[1.12fr_0.88fr]">
-          <div className="space-y-4">
-            <Panel title="Account Rail" kicker="risk + timing">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <Metric label="Available" value={`${formatMoney(data.account.available)} USDC`} />
-                <Metric label="Equity" value={`${formatMoney(data.account.equity)} USDC`} />
-                <Metric label="Live PnL" value={`${formatSigned(data.account.live_pnl)} USDC`} tone={toneClass(data.account.live_pnl)} />
-                <Metric label="Next Cycle" value={formatCountdown(data.account.next_signal_in)} />
-              </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
-                <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3"><div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">Position</div><div className="mt-1.5 font-mono text-xl">{data.account.position_side}</div></div>
-                <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3"><div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">Leverage / stack</div><div className="mt-1.5 font-mono text-xl">{data.account.leverage.toFixed(1)}x / {(data.account.stack_fraction * 100).toFixed(1)}%</div></div>
-                <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3"><div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">Stop loss</div><div className="mt-1.5 font-mono text-xl">{formatMoney(data.account.stop_loss_usdc)} USDC</div></div>
-              </div>
-            </Panel>
-
-            <Panel title="Recent Trades" kicker="fills + fees">
-              <TradesTable trades={data.trades} />
-            </Panel>
-
-            <Panel title="15-Minute Strategy Returns" kicker="after fees">
-              <StrategyTable rows={strategyReturns.data.rows} />
-            </Panel>
+        <Panel title="Account Rail" kicker="risk + timing">
+          <div className="grid gap-2 md:grid-cols-4 xl:grid-cols-7">
+            <Metric label="Available" value={`${formatMoney(data.account.available)} USDC`} />
+            <Metric label="Equity" value={`${formatMoney(data.account.equity)} USDC`} />
+            <Metric label="Live PnL" value={`${formatSigned(data.account.live_pnl)} USDC`} tone={toneClass(data.account.live_pnl)} />
+            <Metric label="Next Cycle" value={formatCountdown(data.account.next_signal_in)} />
+            <Metric label="Position" value={data.account.position_side} />
+            <Metric label="Lev / Stack" value={`${data.account.leverage.toFixed(1)}x / ${(data.account.stack_fraction * 100).toFixed(1)}%`} />
+            <Metric label="Stop Loss" value={`${formatMoney(data.account.stop_loss_usdc)} USDC`} />
           </div>
+        </Panel>
 
-          <div className="space-y-4">
-            <Panel title="Consensus Pulse" kicker="score driven">
-              <div className="rounded-[28px] border border-cyan-400/10 bg-cyan-400/[0.04] px-4 py-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-[10px] uppercase tracking-[0.32em] text-cyan-200/70">Consensus</div>
-                  <div className="font-mono text-sm text-zinc-500">Last at {formatClock(data.signal.last_signal_at)}</div>
-                </div>
-                <div className={`mt-2 font-mono text-4xl font-semibold ${consensusTone}`}>{data.signal.last_signal}</div>
-                <div className="mt-1.5 font-mono text-sm text-zinc-400">Score {data.signal.last_signal_score >= 0 ? "+" : ""}{data.signal.last_signal_score} | threshold +/-2</div>
-                <p className="mt-3 text-sm leading-6 text-zinc-300">{data.signal.last_signal_why || "Waiting for the first complete model cycle."}</p>
-                {data.signal.last_error ? <p className="mt-3 text-sm text-rose-300">{data.signal.last_error}</p> : null}
+        <Panel title="Consensus Pulse" kicker="score driven">
+          <div className="grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)]">
+            <div className="rounded-[26px] border border-cyan-400/10 bg-cyan-400/[0.04] px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] uppercase tracking-[0.32em] text-cyan-200/70">Consensus</div>
+                <div className="font-mono text-xs text-zinc-500">Last at {formatClock(data.signal.last_signal_at)}</div>
               </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <div className={`mt-2 font-mono text-4xl font-semibold ${consensusTone}`}>{data.signal.last_signal}</div>
+              <div className="mt-1 font-mono text-sm text-zinc-400">Score {data.signal.last_signal_score >= 0 ? "+" : ""}{data.signal.last_signal_score} | threshold +/-2</div>
+              <p className="mt-2.5 text-sm leading-5 text-zinc-300">{data.signal.last_signal_why || "Waiting for the first complete model cycle."}</p>
+              {data.signal.last_error ? <p className="mt-2.5 text-sm leading-5 text-rose-300">{data.signal.last_error}</p> : null}
+            </div>
+            <div className="overflow-x-auto pb-1">
+              <div className="flex gap-2.5">
                 {data.signal.providers.map((provider) => <ProviderCard key={provider.provider} provider={provider} />)}
               </div>
-            </Panel>
-
-            <Panel title="Open Position + Logs" kicker="live context">
-              <div className="grid gap-3">
-                <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">Open position</div>
-                    {data.position ? (
-                      <div className="mt-2.5 space-y-1.5 text-sm text-zinc-300">
-                        <div className="font-mono text-xl text-zinc-100">{data.position.side} {data.position.coin}</div>
-                        <div>Entry {formatMoney(data.position.entry_price)} | Size {formatMoney(data.position.size, 6)}</div>
-                        <div>Notional {formatMoney(data.position.notional)} | Margin {formatMoney(data.position.initial_margin)}</div>
-                        <div>Opened {formatClock(data.position.entry_time)}</div>
-                      </div>
-                    ) : <div className="mt-2.5 text-sm text-zinc-500">No active position.</div>}
-                </div>
-                <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <div className="mb-2 text-[10px] uppercase tracking-[0.28em] text-zinc-500">Action log</div>
-                  <div className="max-h-[420px] space-y-2 overflow-y-auto pr-2 font-mono text-sm text-zinc-300">
-                    {data.logs.length === 0 ? <div className="text-zinc-500">No logs yet.</div> : data.logs.map((line) => <div key={line} className="rounded-2xl border border-white/5 bg-black/20 px-3 py-1.5">{line}</div>)}
-                  </div>
-                </div>
-              </div>
-            </Panel>
+            </div>
           </div>
-        </div>
+        </Panel>
+
+        <Panel title="Open Position + Logs" kicker="live context">
+          <div className="grid gap-3 xl:grid-cols-[300px_minmax(0,1fr)]">
+            <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">Open position</div>
+              {data.position ? (
+                <div className="mt-2 space-y-1.5 text-sm text-zinc-300">
+                  <div className="font-mono text-xl text-zinc-100">{data.position.side} {data.position.coin}</div>
+                  <div>Entry {formatMoney(data.position.entry_price)} | Size {formatMoney(data.position.size, 6)}</div>
+                  <div>Notional {formatMoney(data.position.notional)} | Margin {formatMoney(data.position.initial_margin)}</div>
+                  <div>Opened {formatClock(data.position.entry_time)}</div>
+                </div>
+              ) : <div className="mt-2 text-sm text-zinc-500">No active position.</div>}
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <div className="mb-2 text-[10px] uppercase tracking-[0.28em] text-zinc-500">Action log</div>
+              <div className="max-h-[220px] space-y-1.5 overflow-y-auto pr-2 font-mono text-sm text-zinc-300">
+                {data.logs.length === 0 ? <div className="text-zinc-500">No logs yet.</div> : data.logs.map((line) => <div key={line} className="rounded-2xl border border-white/5 bg-black/20 px-3 py-1.5">{line}</div>)}
+              </div>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel title="Recent Trades" kicker="fills + fees">
+          <TradesTable trades={data.trades} />
+        </Panel>
+
+        <Panel title="15-Minute Strategy Returns" kicker="after fees">
+          <StrategyTable rows={strategyReturns.data.rows} />
+        </Panel>
       </div>
     </main>
   );
