@@ -1598,10 +1598,10 @@ class SandboxTrader:
 
 def style_pct(value):
     if value > 0:
-        return "green"
+        return "bold bright_green"
     if value < 0:
-        return "red"
-    return "white"
+        return "bold bright_red"
+    return "bold white"
 
 
 def render_price_cell(price, previous_price):
