@@ -54,7 +54,7 @@ function ProviderCard({ provider }: { provider: ProviderState }) {
   return (
     <div className="min-w-[210px] rounded-[24px] border border-white/10 bg-white/[0.03] px-3.5 py-3">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">{provider.provider}</div>
+        <div className="text-sm font-bold uppercase tracking-[0.22em] text-zinc-100">{provider.provider}</div>
         <div className="font-mono text-xs text-zinc-500">{provider.elapsed_seconds.toFixed(2)}s</div>
       </div>
       <div className={`mt-1.5 font-mono text-lg font-semibold ${tone}`}>{provider.signal}</div>
