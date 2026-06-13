@@ -197,21 +197,24 @@ export default function Home() {
         </Panel>
 
         <Panel title="Consensus Pulse" kicker="score driven">
-          <div className="grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)]">
+          <div className="space-y-3">
             <div className="rounded-[26px] border border-cyan-400/10 bg-cyan-400/[0.04] px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
                 <div className="text-[10px] uppercase tracking-[0.32em] text-cyan-200/70">Consensus</div>
+                <div className={`font-mono text-3xl font-semibold ${consensusTone}`}>{data.signal.last_signal}</div>
+                <div className="font-mono text-sm text-zinc-400">
+                  Score {data.signal.last_signal_score >= 0 ? "+" : ""}{data.signal.last_signal_score} | threshold +/-2
+                </div>
                 <div className="font-mono text-xs text-zinc-500">Last at {formatClock(data.signal.last_signal_at)}</div>
               </div>
-              <div className={`mt-2 font-mono text-4xl font-semibold ${consensusTone}`}>{data.signal.last_signal}</div>
-              <div className="mt-1 font-mono text-sm text-zinc-400">Score {data.signal.last_signal_score >= 0 ? "+" : ""}{data.signal.last_signal_score} | threshold +/-2</div>
-              <p className="mt-2.5 text-sm leading-5 text-zinc-300">{data.signal.last_signal_why || "Waiting for the first complete model cycle."}</p>
-              {data.signal.last_error ? <p className="mt-2.5 text-sm leading-5 text-rose-300">{data.signal.last_error}</p> : null}
+              <p className="mt-2 text-sm leading-5 text-zinc-300">
+                {data.signal.last_signal_why || "Waiting for the first complete model cycle."}
+              </p>
+              {data.signal.last_error ? <p className="mt-2 text-sm leading-5 text-rose-300">{data.signal.last_error}</p> : null}
             </div>
-            <div className="overflow-x-auto pb-1">
-              <div className="flex gap-2.5">
-                {data.signal.providers.map((provider) => <ProviderCard key={provider.provider} provider={provider} />)}
-              </div>
+            <div className="text-[10px] uppercase tracking-[0.32em] text-cyan-200/70">Consensus</div>
+            <div className="grid gap-2.5 xl:grid-cols-5">
+              {data.signal.providers.map((provider) => <ProviderCard key={provider.provider} provider={provider} />)}
             </div>
           </div>
         </Panel>
