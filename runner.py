@@ -158,7 +158,7 @@ DISPLAY_COLUMNS = 15
 DISPLAY_MINUTE_SECONDS = 60
 PRICE_HISTORY_SECONDS = (DISPLAY_COLUMNS + 2) * DISPLAY_MINUTE_SECONDS
 FEED_STALE_AFTER_SECONDS = 20.0
-LIVE_REFRESH_HZ = 1
+LIVE_REFRESH_HZ = 0.5
 LIVE_SCREEN = False
 OPENAI_TIMEOUT_SECONDS = 90
 OPENAI_MAX_ATTEMPTS = 3
@@ -1070,7 +1070,6 @@ class SandboxTrader:
             "logs": list(self.logs),
             "last_signal": self.last_signal,
             "last_signal_why": self.last_signal_why,
-            "last_signal_sources": list(self.last_signal_sources),
             "last_signal_at": self.last_signal_at,
             "next_signal_at": self.next_signal_at,
             "last_snapshot_key": self.last_snapshot_key,
@@ -1109,8 +1108,7 @@ class SandboxTrader:
             self.logs = deque(logs if isinstance(logs, list) else [], maxlen=12)
             self.last_signal = str(payload.get("last_signal", self.last_signal))
             self.last_signal_why = str(payload.get("last_signal_why", self.last_signal_why))
-            sources = payload.get("last_signal_sources", [])
-            self.last_signal_sources = [str(item) for item in sources] if isinstance(sources, list) else []
+            self.last_signal_sources = []
             self.last_signal_at = float(payload.get("last_signal_at", self.last_signal_at) or 0.0)
             self.next_signal_at = float(payload.get("next_signal_at", self.next_signal_at) or self.start_time)
             self.last_snapshot_key = str(payload.get("last_snapshot_key", self.last_snapshot_key))
@@ -1617,35 +1615,13 @@ def label_value(label, value, value_style=BODY_STYLE, label_style=HEADING_STYLE)
 
 
 def build_countdown_panel(trader):
-    cycle_seconds = max(1, SIGNAL_INTERVAL_SECONDS)
+    cycle_seconds = max(1, int(SIGNAL_INTERVAL_SECONDS))
     remaining = max(0.0, trader.next_signal_at - now_ts())
     remaining = max(0.0, min(cycle_seconds, remaining))
-    remaining_ratio = remaining / float(cycle_seconds)
     minutes = int(remaining // 60)
     seconds = int(remaining % 60)
     countdown_text = f"{minutes:02d}:{seconds:02d}"
-    label = f"Next 15m Check {countdown_text}"
-    console_width = max(70, int(getattr(console, "width", 120) or 120))
-    bar_width = max(len(label) + 8, console_width - 6)
-    filled = int(round(remaining_ratio * bar_width))
-    filled = max(0, min(bar_width, filled))
-    if hasattr(Text(""), "stylize"):
-        row_chars = [" "] * bar_width
-        start = max(0, (bar_width - len(label)) // 2)
-        end = min(bar_width, start + len(label))
-        for idx, char in enumerate(label):
-            pos = start + idx
-            if pos >= bar_width:
-                break
-            row_chars[pos] = char
-        row = Text("".join(row_chars), style="on rgb(95,88,28)")
-        if filled > 0:
-            row.stylize("on rgb(170,155,55)", 0, filled)
-        row.stylize("bold black", start, end)
-        return row
-    else:
-        bar = ("#" * filled) + ("-" * (bar_width - filled))
-        return Text(f"{bar} {countdown_text}")
+    return Text(f"Next 15m Check {countdown_text}", style=HEADING_STYLE)
 
 
 def build_section(title, content):
@@ -1780,10 +1756,6 @@ def build_signal_rationale_panel(trader):
     summary_lines = [Text.assemble(("Signal: ", HEADING_STYLE), (trader.last_signal, BODY_STYLE))]
     if trader.last_signal_why:
         summary_lines.append(Text.assemble(("Why: ", HEADING_STYLE), (trader.last_signal_why, BODY_STYLE)))
-    if trader.last_signal_sources:
-        summary_lines.append(Text("Sources:", style=HEADING_STYLE))
-        for index, source in enumerate(trader.last_signal_sources, start=1):
-            summary_lines.append(Text.assemble((f"{index}. ", HEADING_STYLE), (source, BODY_STYLE)))
 
     provider_table = Table(expand=True, padding=(0, 1), pad_edge=False, collapse_padding=False, box=box.SIMPLE_HEAD)
     for provider in AI_PROVIDER_ORDER:
@@ -1797,9 +1769,6 @@ def build_signal_rationale_panel(trader):
         if result:
             has_provider_output = True
             detail_parts = [wrap_panel_text(result.get("why", ""), width=24) or "No rationale returned."]
-            sources = [str(item).strip() for item in result.get("sources", []) if str(item).strip()]
-            if sources:
-                detail_parts.append(wrap_panel_text("Sources: " + " | ".join(sources), width=24))
             cell_text = f"{result.get('signal', 'NO_RESPONSE')}\n\n" + "\n\n".join(
                 part for part in detail_parts if part
             )
