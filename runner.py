@@ -1718,22 +1718,34 @@ def build_trades_table(trader):
     table = Table(expand=True, padding=(0, 0), pad_edge=False, collapse_padding=True, box=None)
     table.add_column("Time", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
     table.add_column("Side", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
-    table.add_column("Exit", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
-    table.add_column("Entry USDC", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
-    table.add_column("Exit USDC", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
-    table.add_column("Net PnL", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Reason", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Entry Px", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Exit Px", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Entry USD", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Exit USD", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Raw PnL", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Fees", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
+    table.add_column("Final PnL", justify="right", no_wrap=True, header_style=HEADING_STYLE, style=BODY_STYLE)
     if not trader.trades:
-        table.add_row("-", "No trades yet", "-", "-", "-", "-")
+        table.add_row("-", "No trades yet", "-", "-", "-", "-", "-", "-", "-", "-")
         return table
     for trade in list(trader.trades)[:8]:
-        pnl_style = style_pct(float(trade["net_pnl"]))
+        gross_pnl = float(trade["gross_pnl"])
+        net_pnl = float(trade["net_pnl"])
+        fees_paid = float(trade["fees_paid"])
+        gross_style = style_pct(gross_pnl)
+        net_style = style_pct(net_pnl)
         table.add_row(
             format_ts(float(trade["timestamp"])),
             trade["side"],
             trade["reason"],
+            f"{float(trade['entry_price']):,.2f}",
+            f"{float(trade['exit_price']):,.2f}",
             f"{float(trade['entry_usdc']):,.2f}",
             f"{float(trade['exit_usdc']):,.2f}",
-            Text(f"{float(trade['net_pnl']):,.4f}", style=pnl_style),
+            Text(f"{gross_pnl:,.4f}", style=gross_style),
+            Text(f"{fees_paid:,.4f}", style="bold yellow"),
+            Text(f"{net_pnl:,.4f}", style=net_style),
         )
     return table
 
