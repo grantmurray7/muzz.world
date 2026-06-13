@@ -779,6 +779,7 @@ class SandboxTrader:
                 [
                     "timestamp_utc",
                     "epoch_ts",
+                    "prompt_sent",
                     "fear_greed",
                     "gemini",
                     "openai",
@@ -872,7 +873,7 @@ class SandboxTrader:
                 ]
             )
 
-    def _append_ai_responses_csv(self, ts, fear_greed, provider_results, provider_errors, consensus):
+    def _append_ai_responses_csv(self, ts, prompt_text, fear_greed, provider_results, provider_errors, consensus):
         provider_result_map = {item["provider"]: item for item in provider_results}
         provider_error_map = dict(provider_errors or {})
         fear_greed_cell = (
@@ -880,7 +881,7 @@ class SandboxTrader:
             or fear_greed.get("signal", "")
             or ""
         )
-        row = [iso_utc(ts), f"{ts:.6f}", fear_greed_cell]
+        row = [iso_utc(ts), f"{ts:.6f}", prompt_text, fear_greed_cell]
         for provider in AI_PROVIDER_ORDER:
             result = provider_result_map.get(provider)
             if result:
@@ -1158,22 +1159,41 @@ class SandboxTrader:
         if not api_key:
             raise RuntimeError("CLAUDE_API_KEY missing from settings.txt")
         model = self.settings.get("CLAUDE_MODEL", CLAUDE_MODEL_DEFAULT).strip() or CLAUDE_MODEL_DEFAULT
-        payload = {
-            "model": model,
-            "max_tokens": 1000,
-            "messages": [{"role": "user", "content": prompt_text}],
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
         }
-        return self._call_with_retries(
-            "claude",
-            model,
-            CLAUDE_MESSAGES_URL,
-            payload,
-            {
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            extract_claude_output_text,
-        )
+
+        def run_for_model(model_name):
+            payload = {
+                "model": model_name,
+                "max_tokens": 1000,
+                "messages": [{"role": "user", "content": prompt_text}],
+            }
+            return self._call_with_retries(
+                "claude",
+                model_name,
+                CLAUDE_MESSAGES_URL,
+                payload,
+                headers,
+                extract_claude_output_text,
+            )
+
+        try:
+            return run_for_model(model)
+        except Exception as exc:
+            fallback_model = ""
+            if model.endswith("-latest"):
+                fallback_model = model[: -len("-latest")]
+            if not fallback_model or fallback_model == model:
+                raise
+            self.log(f"claude retrying with fallback model -> {fallback_model}")
+            try:
+                return run_for_model(fallback_model)
+            except Exception as fallback_exc:
+                raise RuntimeError(
+                    f"{exc} | fallback {fallback_model} failed: {fallback_exc}"
+                ) from fallback_exc
 
     def _query_perplexity_signal(self, prompt_text):
         api_key = self.settings.get("PERPLEXITY_API_KEY", "").strip()
@@ -1278,6 +1298,7 @@ class SandboxTrader:
         consensus["provider_results"] = provider_results
         consensus["provider_errors"] = provider_errors
         consensus["fear_greed"] = fear_greed
+        consensus["prompt_text"] = prompt_text
         return consensus
 
     def maybe_run_signal(self):
@@ -1297,6 +1318,7 @@ class SandboxTrader:
             fear_greed = signal_result.get("fear_greed", {})
             self._append_ai_responses_csv(
                 signal_time,
+                signal_result.get("prompt_text", ""),
                 fear_greed,
                 signal_result.get("provider_results", []),
                 signal_result.get("provider_errors", {}),
