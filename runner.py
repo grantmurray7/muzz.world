@@ -159,8 +159,8 @@ DISPLAY_COLUMNS = 15
 DISPLAY_MINUTE_SECONDS = 60
 PRICE_HISTORY_SECONDS = (DISPLAY_COLUMNS + 2) * DISPLAY_MINUTE_SECONDS
 FEED_STALE_AFTER_SECONDS = 20.0
-LIVE_REFRESH_HZ = 0.5
-LIVE_SCREEN = False
+LIVE_REFRESH_HZ = 10.0
+LIVE_SCREEN = True
 OPENAI_TIMEOUT_SECONDS = 90
 OPENAI_MAX_ATTEMPTS = 3
 OPENAI_RETRY_DELAY_SECONDS = 3
@@ -777,10 +777,11 @@ def extract_chat_completion_text(response_data):
 
 
 class BtcMarket:
-    def __init__(self, stop_event):
+    def __init__(self, stop_event, on_update=None):
         if websocket is None:
             raise RuntimeError(f"websocket-client unavailable: {WEBSOCKET_IMPORT_ERROR}")
         self.stop_event = stop_event
+        self.on_update = on_update
         self.lock = threading.Lock()
         self.history = deque()
         self.current_mid = 0.0
@@ -823,14 +824,20 @@ class BtcMarket:
             mid = float(raw_mid)
         except Exception:
             return
+        changed = False
         with self.lock:
             if not self.first_message_at:
                 self.first_message_at = ts
+            if self.current_mid != mid:
+                changed = True
             self.current_mid = mid
             self.history.append({"ts": ts, "mid": mid})
             self._prune_locked(ts)
             self.last_message_at = ts
             self.last_error = ""
+            
+        if changed and self.on_update:
+            self.on_update()
 
     def _refresh_top_book(self, force=False):
         ts = now_ts()
@@ -2055,13 +2062,19 @@ def build_dashboard(trader, market):
 
 def main():
     stop_event = threading.Event()
-    market = BtcMarket(stop_event)
+    ui_update_event = threading.Event()
+
+    def trigger_ui_update():
+        ui_update_event.set()
+
+    market = BtcMarket(stop_event, on_update=trigger_ui_update)
     settings = load_settings(resolve_settings_path())
     trader = SandboxTrader(market, settings)
     market.start()
 
     def handle_stop(_signum, _frame):
         stop_event.set()
+        ui_update_event.set()
 
     signal.signal(signal.SIGINT, handle_stop)
     signal.signal(signal.SIGTERM, handle_stop)
@@ -2077,6 +2090,7 @@ def main():
             except Exception as exc:
                 trader.log(f"Main loop error: {exc}")
             time.sleep(1)
+            trigger_ui_update()
 
     worker = threading.Thread(target=trader_loop, daemon=True, name="btc-signal-loop")
     worker.start()
@@ -2091,8 +2105,10 @@ def main():
             vertical_overflow="crop",
         ) as live:
             while not stop_event.is_set():
-                live.update(build_dashboard(trader, market), refresh=True)
-                time.sleep(1.0 / LIVE_REFRESH_HZ)
+                ui_update_event.wait(timeout=1.0)
+                ui_update_event.clear()
+                if not stop_event.is_set():
+                    live.update(build_dashboard(trader, market), refresh=True)
     finally:
         stop_event.set()
         try:
