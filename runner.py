@@ -784,8 +784,11 @@ class BtcMarket:
         self.lock = threading.Lock()
         self.history = deque()
         self.current_mid = 0.0
+        self.current_bid = 0.0
+        self.current_ask = 0.0
         self.first_message_at = 0.0
         self.last_message_at = 0.0
+        self.last_book_at = 0.0
         self.last_error = ""
         self.last_open_at = 0.0
         self.ws_app = None
@@ -828,6 +831,17 @@ class BtcMarket:
             self._prune_locked(ts)
             self.last_message_at = ts
             self.last_error = ""
+
+    def _refresh_top_book(self, force=False):
+        ts = now_ts()
+        with self.lock:
+            if not force and self.last_book_at and (ts - self.last_book_at) < 2.0:
+                return
+        snapshot = self.fetch_book_snapshot()
+        with self.lock:
+            self.current_bid = float(snapshot["best_bid"] or 0.0)
+            self.current_ask = float(snapshot["best_ask"] or 0.0)
+            self.last_book_at = ts
 
     def _on_open(self, ws_app):
         with self.lock:
@@ -882,6 +896,10 @@ class BtcMarket:
                 self._connect()
                 while not self.stop_event.is_set():
                     time.sleep(1)
+                    try:
+                        self._refresh_top_book()
+                    except Exception:
+                        pass
                     with self.lock:
                         last_message_at = self.last_message_at
                         ws_thread_alive = self.ws_thread.is_alive() if self.ws_thread else False
@@ -901,8 +919,11 @@ class BtcMarket:
             history = list(self.history)
             return {
                 "history": history,
+                "bid": float(self.current_bid or 0.0),
+                "ask": float(self.current_ask or 0.0),
                 "mid": float(self.current_mid or 0.0),
                 "first_message_at": self.first_message_at,
+                "last_book_at": self.last_book_at,
                 "last_message_at": self.last_message_at,
                 "last_error": self.last_error,
                 "last_open_at": self.last_open_at,
@@ -1824,7 +1845,7 @@ def build_section(title, content):
 
 def build_summary_table(trader, market_state):
     table = Table.grid(expand=True)
-    for _ in range(8):
+    for _ in range(10):
         table.add_column(justify="left")
     position_side = trader.position["side"] if trader.position else "FLAT"
     next_signal_in = max(0, int(round(trader.next_signal_at - now_ts())))
@@ -1835,6 +1856,8 @@ def build_summary_table(trader, market_state):
         label_value("Available", f"{trader.available:,.2f} USDC"),
         label_value("Equity", f"{trader.equity():,.2f} USDC"),
         label_value("Live PnL", f"{live_pnl:,.2f} USDC", value_style=live_pnl_style),
+        label_value("BTC Bid", f"{market_state['bid']:,.2f}" if market_state["bid"] else "-"),
+        label_value("BTC Ask", f"{market_state['ask']:,.2f}" if market_state["ask"] else "-"),
         label_value("BTC Mid", f"{market_state['mid']:,.2f}" if market_state["mid"] else "-"),
         label_value("Signal", trader.last_signal),
         label_value("Next Ask", f"{next_signal_in}s"),
