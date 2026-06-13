@@ -130,6 +130,7 @@ LEGACY_STATE_PATH = os.path.join(BASE_DIR, "state.txt")
 SETTINGS_PATH = os.path.join(SETUP_DIR, "settings.txt")
 TRADES_CSV_PATH = os.path.join(HISTORY_DIR, "trades.csv")
 AI_RESPONSES_CSV_PATH = os.path.join(HISTORY_DIR, "ai_responses.csv")
+STRATEGY_RETURNS_CSV_PATH = os.path.join(HISTORY_DIR, "strategy_returns.csv")
 STATE_PATH = os.path.join(SETUP_DIR, "state.txt")
 SNAPSHOT_DIR = r"G:\My Drive\+tradebot"
 PANEL_BORDER_STYLE = "rgb(237,125,175)"
@@ -414,6 +415,39 @@ def fetch_hyperliquid_snapshot():
     }
 
 
+def fetch_btc_price_near_ts(target_ts, window_seconds=120):
+    target_ts = float(target_ts or 0.0)
+    if target_ts <= 0:
+        return 0.0
+    target_ms = int(target_ts * 1000)
+    window_ms = max(60_000, int(window_seconds * 1000))
+    candles = read_json_response(
+        HYPERLIQUID_INFO_URL,
+        payload={
+            "type": "candleSnapshot",
+            "req": {
+                "coin": BTC_PERP,
+                "interval": "1m",
+                "startTime": target_ms - window_ms,
+                "endTime": target_ms + window_ms,
+            },
+        },
+        timeout=15,
+    )
+    best_price = 0.0
+    best_delta = None
+    for candle in candles or []:
+        candle_ts = safe_float(candle.get("t"), 0.0) / 1000.0
+        close_price = safe_float(candle.get("c"), 0.0)
+        if candle_ts <= 0 or close_price <= 0:
+            continue
+        delta = abs(candle_ts - target_ts)
+        if best_delta is None or delta < best_delta:
+            best_delta = delta
+            best_price = close_price
+    return best_price
+
+
 def format_commit_ts(iso_text):
     if not iso_text:
         return "unknown"
@@ -421,7 +455,7 @@ def format_commit_ts(iso_text):
         dt = datetime.fromisoformat(str(iso_text).replace("Z", "+00:00"))
     except Exception:
         return str(iso_text)
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def get_local_build_info():
@@ -890,6 +924,25 @@ class BtcMarket:
             return None
         return float(candidate["mid"])
 
+    def nearest_price_to_ts(self, target_ts, max_gap_seconds=None):
+        state = self.get_state()
+        history = state["history"]
+        if not history:
+            return None
+        target_ts = float(target_ts or 0.0)
+        best_item = None
+        best_gap = None
+        for item in history:
+            gap = abs(float(item["ts"]) - target_ts)
+            if best_gap is None or gap < best_gap:
+                best_item = item
+                best_gap = gap
+        if best_item is None:
+            return None
+        if max_gap_seconds is not None and best_gap is not None and best_gap > float(max_gap_seconds):
+            return None
+        return float(best_item["mid"])
+
     def get_minute_prices(self):
         prices = []
         for minute in range(DISPLAY_COLUMNS, 0, -1):
@@ -954,7 +1007,10 @@ class SandboxTrader:
         self.legacy_state_path = LEGACY_STATE_PATH
         self.trades_csv_path = TRADES_CSV_PATH
         self.ai_responses_csv_path = AI_RESPONSES_CSV_PATH
+        self.strategy_returns_csv_path = STRATEGY_RETURNS_CSV_PATH
+        self.pending_strategy_evaluations = []
         self._ensure_trades_csv()
+        self._ensure_strategy_returns_csv()
         self._reset_ai_responses_csv()
         set_terminal_title(dashboard_title_text())
         restored = self._restore_state()
@@ -1057,6 +1113,124 @@ class SandboxTrader:
             writer = csv.writer(handle)
             writer.writerow(row)
 
+    def _ensure_strategy_returns_csv(self):
+        if os.path.exists(self.strategy_returns_csv_path):
+            return
+        headers = [
+            "period_start_utc",
+            "period_start_ts",
+            "period_end_utc",
+            "period_end_ts",
+            "entry_price",
+            "exit_price",
+            "btc_move_pct",
+            "round_trip_fee_pct",
+        ]
+        for provider in AI_PROVIDER_ORDER:
+            headers.extend([f"{provider}_signal", f"{provider}_return_pct"])
+        headers.extend(["consensus_signal", "consensus_return_pct"])
+        with open(self.strategy_returns_csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(headers)
+
+    def _signal_return_pct(self, signal_value, entry_price, exit_price):
+        signal_text = str(signal_value or "").strip().upper()
+        if signal_text == "NO_TRADE":
+            return 0.0
+        if signal_text not in VALID_SIGNALS or entry_price <= 0 or exit_price <= 0:
+            return None
+        move_pct = pct_change(entry_price, exit_price)
+        directional_move_pct = move_pct if signal_text == "LONG" else -move_pct
+        return directional_move_pct - (TAKER_FEE_PCT * 2.0)
+
+    def _queue_strategy_evaluation(self, ts, entry_price, provider_results, consensus):
+        entry_price = safe_float(entry_price, 0.0)
+        if entry_price <= 0:
+            self.log("Strategy return log skipped: entry price unavailable.")
+            return
+        signal_map = {
+            provider: ""
+            for provider in AI_PROVIDER_ORDER
+        }
+        for item in provider_results:
+            provider = str(item.get("provider", "")).strip()
+            if provider in signal_map:
+                signal_map[provider] = str(item.get("signal", "")).strip().upper()
+        signal_map["consensus"] = str(consensus.get("signal", "")).strip().upper()
+        self.pending_strategy_evaluations.append(
+            {
+                "start_ts": float(ts),
+                "end_ts": float(ts) + SIGNAL_INTERVAL_SECONDS,
+                "entry_price": entry_price,
+                "signals": signal_map,
+            }
+        )
+
+    def _append_strategy_returns_csv(self, evaluation, exit_price):
+        start_ts = float(evaluation["start_ts"])
+        end_ts = float(evaluation["end_ts"])
+        entry_price = float(evaluation["entry_price"])
+        exit_price = float(exit_price)
+        btc_move_pct = pct_change(entry_price, exit_price)
+        row = [
+            iso_utc(start_ts),
+            f"{start_ts:.6f}",
+            iso_utc(end_ts),
+            f"{end_ts:.6f}",
+            f"{entry_price:.8f}",
+            f"{exit_price:.8f}",
+            f"{btc_move_pct:.6f}",
+            f"{(TAKER_FEE_PCT * 2.0):.6f}",
+        ]
+        signals = evaluation.get("signals", {})
+        for provider in AI_PROVIDER_ORDER:
+            signal_value = str(signals.get(provider, "")).strip().upper()
+            result_pct = self._signal_return_pct(signal_value, entry_price, exit_price)
+            row.extend(
+                [
+                    signal_value,
+                    "" if result_pct is None else f"{result_pct:.6f}",
+                ]
+            )
+        consensus_signal = str(signals.get("consensus", "")).strip().upper()
+        consensus_return_pct = self._signal_return_pct(consensus_signal, entry_price, exit_price)
+        row.extend(
+            [
+                consensus_signal,
+                "" if consensus_return_pct is None else f"{consensus_return_pct:.6f}",
+            ]
+        )
+        with open(self.strategy_returns_csv_path, "a", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(row)
+
+    def _resolve_strategy_exit_price(self, target_ts):
+        price = self.market.nearest_price_to_ts(target_ts, max_gap_seconds=45)
+        if price:
+            return price
+        return fetch_btc_price_near_ts(target_ts)
+
+    def maybe_finalize_strategy_returns(self):
+        if not self.pending_strategy_evaluations:
+            return
+        now = now_ts()
+        remaining = []
+        completed = 0
+        for evaluation in self.pending_strategy_evaluations:
+            end_ts = float(evaluation.get("end_ts", 0.0) or 0.0)
+            if end_ts <= 0 or now < end_ts:
+                remaining.append(evaluation)
+                continue
+            exit_price = safe_float(self._resolve_strategy_exit_price(end_ts), 0.0)
+            if exit_price <= 0:
+                remaining.append(evaluation)
+                continue
+            self._append_strategy_returns_csv(evaluation, exit_price)
+            completed += 1
+        self.pending_strategy_evaluations = remaining
+        if completed:
+            self.log(f"Logged {completed} strategy return window(s).")
+
     def log(self, message):
         ts = now_ts()
         self.logs.appendleft(f"{format_ts(ts)} {message}")
@@ -1075,6 +1249,7 @@ class SandboxTrader:
             "last_signal_at": self.last_signal_at,
             "next_signal_at": self.next_signal_at,
             "last_snapshot_key": self.last_snapshot_key,
+            "pending_strategy_evaluations": self.pending_strategy_evaluations,
         }
 
     def persist_state(self, force=False):
@@ -1118,6 +1293,8 @@ class SandboxTrader:
             self.last_signal_at = float(payload.get("last_signal_at", self.last_signal_at) or 0.0)
             self.next_signal_at = float(payload.get("next_signal_at", self.next_signal_at) or self.start_time)
             self.last_snapshot_key = str(payload.get("last_snapshot_key", self.last_snapshot_key))
+            pending = payload.get("pending_strategy_evaluations", [])
+            self.pending_strategy_evaluations = pending if isinstance(pending, list) else []
         except Exception:
             return False
         now = now_ts()
@@ -1471,6 +1648,12 @@ class SandboxTrader:
                 fear_greed,
                 signal_result.get("provider_results", []),
                 signal_result.get("provider_errors", {}),
+                signal_result,
+            )
+            self._queue_strategy_evaluation(
+                signal_time,
+                signal_result.get("snapshot", {}).get("px", {}).get("mid"),
+                signal_result.get("provider_results", []),
                 signal_result,
             )
             if fear_greed.get("value") or fear_greed.get("classification"):
@@ -1863,6 +2046,7 @@ def main():
     def trader_loop():
         while not stop_event.is_set():
             try:
+                trader.maybe_finalize_strategy_returns()
                 trader.maybe_stop_loss()
                 trader.maybe_run_signal()
                 trader.maybe_save_dashboard_snapshot(market)
