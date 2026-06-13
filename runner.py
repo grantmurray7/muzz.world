@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BTC-only sandbox runner driven by periodic OpenAI directional calls.
+BTC-only sandbox runner driven by periodic multi-model directional calls.
 """
 
 import csv
@@ -16,6 +16,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 try:
@@ -133,8 +134,16 @@ BODY_STYLE = "white"
 BTC_PERP = "BTC"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1&format=json"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+CLAUDE_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+PERPLEXITY_SONAR_URL = "https://api.perplexity.ai/v1/sonar"
+GROK_RESPONSES_URL = "https://api.x.ai/v1/responses"
 OPENAI_MODEL_DEFAULT = "gpt-4.1"
+GEMINI_MODEL_DEFAULT = "gemini-2.5-flash-lite"
+CLAUDE_MODEL_DEFAULT = "claude-3-5-haiku-latest"
+PERPLEXITY_MODEL_DEFAULT = "sonar"
+GROK_MODEL_DEFAULT = "grok-4-fast"
 STARTING_BALANCE_USDC = 10000.0
 STACK_FRACTION = 0.95
 LEVERAGE = 5.0
@@ -154,6 +163,8 @@ STARTUP_SIGNAL_RETRY_SECONDS = 5
 STATE_SAVE_INTERVAL_SECONDS = 3
 SNAPSHOT_LEAD_SECONDS = 20
 LATEST_CHANGE_SUMMARY = "Tape uses time stamps; final column shows live"
+FEAR_GREED_LONG_THRESHOLD = 30
+FEAR_GREED_SHORT_THRESHOLD = 70
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
 
 Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
@@ -171,6 +182,7 @@ Do not default to NO_TRADE simply because confidence is below 100%. If one direc
 Return valid JSON only with this exact shape:
 {"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences","sources":["up to 3 short source strings, freshest first"]}"""
 VALID_SIGNALS = {"LONG", "SHORT", "NO_TRADE"}
+AI_PROVIDER_ORDER = ("gemini", "openai", "claude", "perplexity", "grok")
 console = Console()
 
 
@@ -395,6 +407,104 @@ def load_settings(path):
         key, value = line.split("=", 1)
         settings[key.strip()] = value.strip()
     return settings
+
+
+def fear_greed_to_signal(value_text):
+    try:
+        value = int(str(value_text).strip())
+    except Exception:
+        return ""
+    if value <= FEAR_GREED_LONG_THRESHOLD:
+        return "LONG"
+    if value >= FEAR_GREED_SHORT_THRESHOLD:
+        return "SHORT"
+    return "NO_TRADE"
+
+
+def fetch_fear_greed():
+    try:
+        data = post_json(FEAR_GREED_URL, None, timeout=15)
+    except Exception:
+        return {"value": "", "classification": "", "signal": ""}
+    rows = data.get("data") or []
+    if not rows:
+        return {"value": "", "classification": "", "signal": ""}
+    item = rows[0] or {}
+    value = str(item.get("value", "")).strip()
+    return {
+        "value": value,
+        "classification": str(item.get("value_classification", "")).strip(),
+        "signal": fear_greed_to_signal(value),
+    }
+
+
+def build_ai_prompt(fear_greed):
+    context = {
+        "fear_greed_value": fear_greed.get("value", ""),
+        "fear_greed_classification": fear_greed.get("classification", ""),
+        "fear_greed_background_signal": fear_greed.get("signal", ""),
+        "note": "Treat Fear & Greed as background BTC sentiment context, not a standalone trading command.",
+    }
+    return PROMPT + "\n\nBackground sentiment metric:\n" + json.dumps(context, ensure_ascii=True)
+
+
+def sanitize_request_url(url):
+    if "key=" in url:
+        prefix, _, _ = url.partition("key=")
+        return prefix + "key=***redacted***"
+    return url
+
+
+def sanitize_request_headers(headers):
+    sanitized = dict(headers or {})
+    for key in list(sanitized):
+        if key.lower() in {"authorization", "x-api-key"}:
+            sanitized[key] = "***redacted***"
+    return sanitized
+
+
+def extract_openai_output_text(response_data):
+    top_level = response_data.get("output_text")
+    if isinstance(top_level, str) and top_level.strip():
+        return top_level.strip()
+    parts = []
+    for item in response_data.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            content_type = content.get("type")
+            if content_type in {"output_text", "text"}:
+                text = content.get("text", "")
+                if text:
+                    parts.append(str(text))
+    return "\n".join(parts).strip()
+
+
+def extract_gemini_output_text(response_data):
+    parts = []
+    for candidate in response_data.get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            text = part.get("text", "")
+            if text:
+                parts.append(str(text))
+    return "\n".join(parts).strip()
+
+
+def extract_claude_output_text(response_data):
+    parts = []
+    for item in response_data.get("content", []) or []:
+        if item.get("type") == "text":
+            text = item.get("text", "")
+            if text:
+                parts.append(str(text))
+    return "\n".join(parts).strip()
+
+
+def extract_chat_completion_text(response_data):
+    choices = response_data.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {}
+    return str(message.get("content", "") or "").strip()
 
 
 class BtcMarket:
@@ -637,6 +747,8 @@ class SandboxTrader:
                 [
                     "timestamp_utc",
                     "epoch_ts",
+                    "provider",
+                    "model",
                     "request_url",
                     "request_headers",
                     "request_body",
@@ -677,6 +789,8 @@ class SandboxTrader:
     def _append_openai_debug_csv(
         self,
         ts,
+        provider,
+        model,
         request_url,
         request_headers,
         request_body,
@@ -692,6 +806,8 @@ class SandboxTrader:
                 [
                     iso_utc(ts),
                     f"{ts:.6f}",
+                    provider,
+                    model,
                     request_url,
                     request_headers,
                     request_body,
@@ -871,25 +987,10 @@ class SandboxTrader:
         self.log(f"Stop loss triggered at {live_pnl:.2f} USDC.")
         self.close_position(f"STOP_LOSS_{STOP_LOSS_USDC:.2f}")
 
-    def query_signal(self):
-        api_key = self.settings.get("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY missing from settings.txt")
-        model = self.settings.get("OPENAI_MODEL", OPENAI_MODEL_DEFAULT).strip() or OPENAI_MODEL_DEFAULT
-        payload = {
-            "model": model,
-            "input": PROMPT,
-            "tools": [{"type": "web_search_preview"}],
-            "max_output_tokens": 10000,
-        }
+    def _call_with_retries(self, provider, model, request_url, payload, headers, parse_text):
         debug_ts = now_ts()
-        debug_request_headers = json.dumps(
-            {
-                "Content-Type": "application/json",
-                "Authorization": "Bearer ***redacted***",
-            },
-            ensure_ascii=True,
-        )
+        debug_request_url = sanitize_request_url(request_url)
+        debug_request_headers = json.dumps(sanitize_request_headers(headers), ensure_ascii=True)
         debug_request_body = json.dumps(payload, ensure_ascii=True)
         last_exc = None
         data = None
@@ -898,12 +999,10 @@ class SandboxTrader:
             response_text = ""
             try:
                 data, response_text = post_json(
-                    OPENAI_RESPONSES_URL,
+                    request_url,
                     payload,
                     timeout=OPENAI_TIMEOUT_SECONDS,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                    },
+                    headers=headers,
                     return_raw=True,
                 )
                 break
@@ -911,7 +1010,9 @@ class SandboxTrader:
                 last_exc = exc
                 self._append_openai_debug_csv(
                     debug_ts,
-                    OPENAI_RESPONSES_URL,
+                    provider,
+                    model,
+                    debug_request_url,
                     debug_request_headers,
                     debug_request_body,
                     response_text,
@@ -923,20 +1024,23 @@ class SandboxTrader:
                 retryable = "timeout" in str(exc).lower() or "network error" in str(exc).lower()
                 if retryable and attempt < OPENAI_MAX_ATTEMPTS:
                     self.log(
-                        f"OpenAI request issue on attempt {attempt}/{OPENAI_MAX_ATTEMPTS}: {exc}. Retrying..."
+                        f"{provider} request issue on attempt {attempt}/{OPENAI_MAX_ATTEMPTS}: {exc}. Retrying..."
                     )
                     time.sleep(OPENAI_RETRY_DELAY_SECONDS)
                     continue
                 raise
         if data is None:
-            raise last_exc or RuntimeError("OpenAI request failed")
-        parsed_response = extract_signal_response(data)
+            raise last_exc or RuntimeError(f"{provider} request failed")
+
+        parsed_response = extract_signal_response({"text": parse_text(data), "raw": data})
         text = parsed_response["signal"].strip().upper()
         why = parsed_response["why"]
         sources = parsed_response["sources"]
         self._append_openai_debug_csv(
             debug_ts,
-            OPENAI_RESPONSES_URL,
+            provider,
+            model,
+            debug_request_url,
             debug_request_headers,
             debug_request_body,
             response_text,
@@ -947,12 +1051,182 @@ class SandboxTrader:
         )
         if text not in VALID_SIGNALS:
             raw_preview = json.dumps(data, ensure_ascii=True)[:240]
-            raise RuntimeError(f"Unexpected OpenAI response: {text or 'EMPTY'} | raw={raw_preview}")
+            raise RuntimeError(f"Unexpected {provider} response: {text or 'EMPTY'} | raw={raw_preview}")
         return {
+            "provider": provider,
+            "model": model,
             "signal": text,
             "why": why,
             "sources": sources,
         }
+
+    def _query_openai_signal(self, prompt_text):
+        api_key = self.settings.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY missing from settings.txt")
+        model = self.settings.get("OPENAI_MODEL", OPENAI_MODEL_DEFAULT).strip() or OPENAI_MODEL_DEFAULT
+        payload = {
+            "model": model,
+            "input": prompt_text,
+            "tools": [{"type": "web_search_preview"}],
+            "max_output_tokens": 10000,
+        }
+        return self._call_with_retries(
+            "openai",
+            model,
+            OPENAI_RESPONSES_URL,
+            payload,
+            {"Authorization": f"Bearer {api_key}"},
+            extract_openai_output_text,
+        )
+
+    def _query_gemini_signal(self, prompt_text):
+        api_key = self.settings.get("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY missing from settings.txt")
+        model = self.settings.get("GEMINI_MODEL", GEMINI_MODEL_DEFAULT).strip() or GEMINI_MODEL_DEFAULT
+        request_url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            + urllib_parse.quote(model, safe="")
+            + ":generateContent?key="
+            + urllib_parse.quote(api_key, safe="")
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt_text}]}],
+            "generationConfig": {"maxOutputTokens": 10000},
+        }
+        return self._call_with_retries(
+            "gemini",
+            model,
+            request_url,
+            payload,
+            {"Content-Type": "application/json"},
+            extract_gemini_output_text,
+        )
+
+    def _query_claude_signal(self, prompt_text):
+        api_key = self.settings.get("CLAUDE_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("CLAUDE_API_KEY missing from settings.txt")
+        model = self.settings.get("CLAUDE_MODEL", CLAUDE_MODEL_DEFAULT).strip() or CLAUDE_MODEL_DEFAULT
+        payload = {
+            "model": model,
+            "max_tokens": 1000,
+            "messages": [{"role": "user", "content": prompt_text}],
+        }
+        return self._call_with_retries(
+            "claude",
+            model,
+            CLAUDE_MESSAGES_URL,
+            payload,
+            {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            extract_claude_output_text,
+        )
+
+    def _query_perplexity_signal(self, prompt_text):
+        api_key = self.settings.get("PERPLEXITY_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("PERPLEXITY_API_KEY missing from settings.txt")
+        model = self.settings.get("PERPLEXITY_MODEL", PERPLEXITY_MODEL_DEFAULT).strip() or PERPLEXITY_MODEL_DEFAULT
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt_text}],
+            "max_tokens": 1000,
+            "web_search_options": {"search_context_size": "low"},
+        }
+        return self._call_with_retries(
+            "perplexity",
+            model,
+            PERPLEXITY_SONAR_URL,
+            payload,
+            {
+                "Authorization": f"Bearer {api_key}",
+            },
+            extract_chat_completion_text,
+        )
+
+    def _query_grok_signal(self, prompt_text):
+        api_key = self.settings.get("GROK_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GROK_API_KEY missing from settings.txt")
+        model = self.settings.get("GROK_MODEL", GROK_MODEL_DEFAULT).strip() or GROK_MODEL_DEFAULT
+        payload = {
+            "model": model,
+            "input": prompt_text,
+            "max_output_tokens": 10000,
+        }
+        return self._call_with_retries(
+            "grok",
+            model,
+            GROK_RESPONSES_URL,
+            payload,
+            {
+                "Authorization": f"Bearer {api_key}",
+            },
+            extract_openai_output_text,
+        )
+
+    def _summarize_consensus(self, provider_results, fear_greed):
+        counts = {signal: 0 for signal in VALID_SIGNALS}
+        for result in provider_results:
+            counts[result["signal"]] += 1
+        top_votes = max(counts.values()) if counts else 0
+        winners = [signal for signal, count in counts.items() if count == top_votes and count > 0]
+        final_signal = winners[0] if len(winners) == 1 else "NO_TRADE"
+        vote_summary = ", ".join(
+            f"{result['provider']}={result['signal']}" for result in provider_results
+        )
+        fear_summary = fear_greed.get("value", "")
+        fear_classification = fear_greed.get("classification", "")
+        why_parts = [
+            f"Consensus {top_votes}/{len(provider_results)} -> {final_signal}. Votes: {vote_summary}.",
+        ]
+        if fear_summary or fear_classification:
+            why_parts.append(
+                f"Fear & Greed background metric: {fear_summary or 'n/a'} {fear_classification}".strip() + "."
+            )
+        sources = []
+        for result in provider_results:
+            for source in result["sources"]:
+                tagged = f"{result['provider']}: {source}"
+                if tagged not in sources:
+                    sources.append(tagged)
+            if len(sources) >= 3:
+                break
+        return {
+            "signal": final_signal,
+            "why": " ".join(why_parts),
+            "sources": sources[:3],
+        }
+
+    def query_signal(self):
+        fear_greed = fetch_fear_greed()
+        prompt_text = build_ai_prompt(fear_greed)
+        provider_results = []
+        provider_errors = []
+        provider_methods = {
+            "gemini": self._query_gemini_signal,
+            "openai": self._query_openai_signal,
+            "claude": self._query_claude_signal,
+            "perplexity": self._query_perplexity_signal,
+            "grok": self._query_grok_signal,
+        }
+        for provider in AI_PROVIDER_ORDER:
+            try:
+                provider_results.append(provider_methods[provider](prompt_text))
+            except Exception as exc:
+                provider_errors.append(f"{provider}: {exc}")
+                self.log(f"{provider} signal error -> {exc}")
+        if not provider_results:
+            raise RuntimeError("All AI providers failed: " + " | ".join(provider_errors))
+        consensus = self._summarize_consensus(provider_results, fear_greed)
+        consensus["provider_results"] = provider_results
+        consensus["provider_errors"] = provider_errors
+        consensus["fear_greed"] = fear_greed
+        return consensus
 
     def maybe_run_signal(self):
         if now_ts() < self.next_signal_at:
@@ -968,15 +1242,28 @@ class SandboxTrader:
             self.last_signal_why = signal_result["why"]
             self.last_signal_sources = list(signal_result["sources"])
             self.last_signal_error = ""
-            self.log(f"OpenAI signal -> {signal_value}")
+            fear_greed = signal_result.get("fear_greed", {})
+            if fear_greed.get("value") or fear_greed.get("classification"):
+                self.log(
+                    "Fear & Greed -> "
+                    f"{fear_greed.get('value', 'n/a')} {fear_greed.get('classification', '')}".strip()
+                )
+            for provider_result in signal_result.get("provider_results", []):
+                self.log(
+                    f"{provider_result['provider']} signal -> {provider_result['signal']} | "
+                    f"{provider_result['model']}"
+                )
+                if provider_result["why"]:
+                    self.log(f"{provider_result['provider']} why -> {provider_result['why']}")
+            self.log(f"AI consensus signal -> {signal_value}")
             if self.last_signal_why:
-                self.log(f"OpenAI why -> {self.last_signal_why}")
+                self.log(f"AI consensus why -> {self.last_signal_why}")
             if self.last_signal_sources:
-                self.log(f"OpenAI sources -> {' | '.join(self.last_signal_sources)}")
+                self.log(f"AI consensus sources -> {' | '.join(self.last_signal_sources)}")
         except Exception as exc:
             self.last_signal_why = ""
             self.last_signal_sources = []
-            self._defer_signal(f"OpenAI signal error -> {exc}", SIGNAL_RETRY_DELAY_SECONDS)
+            self._defer_signal(f"AI signal error -> {exc}", SIGNAL_RETRY_DELAY_SECONDS)
             return
         self.last_signal_at = signal_time
         self.next_signal_at = signal_time + SIGNAL_INTERVAL_SECONDS
