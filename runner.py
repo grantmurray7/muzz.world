@@ -12,6 +12,7 @@ import signal
 import socket
 import threading
 import time
+import textwrap
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,7 +158,7 @@ DISPLAY_COLUMNS = 15
 DISPLAY_MINUTE_SECONDS = 60
 PRICE_HISTORY_SECONDS = (DISPLAY_COLUMNS + 2) * DISPLAY_MINUTE_SECONDS
 FEED_STALE_AFTER_SECONDS = 20.0
-LIVE_REFRESH_HZ = 2
+LIVE_REFRESH_HZ = 1
 LIVE_SCREEN = False
 OPENAI_TIMEOUT_SECONDS = 90
 OPENAI_MAX_ATTEMPTS = 3
@@ -169,22 +170,24 @@ SNAPSHOT_LEAD_SECONDS = 20
 LATEST_CHANGE_SUMMARY = "Tape uses time stamps; final column shows live"
 FEAR_GREED_LONG_THRESHOLD = 30
 FEAR_GREED_SHORT_THRESHOLD = 70
-PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using Taker orders and my rates a 0.015% and 0.015% each way, so looking to clear 0.03% on any trade to make profit.
+PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using taker orders and my fees are 0.015% and 0.015% each way, so I need to clear 0.03% on any trade to make profit.
 
-Based on fresh market data, recent news, price action, momentum, volatility, and market structure, choose the single best directional trade for the next 15 minutes. Prefer LONG or SHORT whenever one direction appears to have a positive expected edge over the next 15 minutes.
+Decide the single best directional trade for the next 15 minutes using only the BTC market snapshot and sentiment metrics included in this prompt. Treat the supplied data as the full evidence set.
 
-Prioritize BTC price action and immediate market structure e.g. last 1h BTC price action, last 15m and 5m momentum.
-Prioritize current BTC price action, momentum, and market structure over commentary. Only use recent, high-quality news sources. Ignore stale articles, evergreen explainers, and low-quality blog spam. Prefer sources from the last 6 hours unless an older event is still clearly driving BTC today.
+Priority order:
+1. Immediate BTC market structure and momentum.
+2. Order book pressure, spread, and short-term range positioning.
+3. Background sentiment metrics explicitly included in the prompt, such as Fear & Greed or StockGeist if present.
 
-Use NO_TRADE only when:
-• Neither LONG nor SHORT appears likely to achieve +0.03% net profit.
-• The directional edge is too small to overcome costs.
-• News risk, event risk, or abnormal volatility makes short-term direction genuinely unclear.
-
-Do not default to NO_TRADE simply because confidence is below 100%. If one direction has a measurable advantage, choose it.
+Hard rules:
+- Do not introduce ETF flows, Federal Reserve decisions, macro commentary, external news, or any other information unless it is explicitly included in this prompt.
+- Do not rely on outside knowledge, assumed headlines, or guessed context.
+- If the supplied data does not support a measurable edge after fees, return NO_TRADE.
+- Do not default to NO_TRADE just because confidence is imperfect. If one side has the clearest edge from the supplied data, choose it.
+- In the why field, cite the actual supplied metrics by name and value wherever possible.
 
 Return valid JSON only with this exact shape:
-{"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences","sources":["up to 3 short source strings, freshest first"]}"""
+{"signal":"LONG|SHORT|NO_TRADE","why":"1-3 short sentences using the supplied metrics only","sources":["up to 3 short source strings drawn only from the supplied prompt context"]}"""
 VALID_SIGNALS = {"LONG", "SHORT", "NO_TRADE"}
 AI_PROVIDER_ORDER = ("gemini", "openai", "claude", "perplexity", "grok")
 console = Console()
@@ -658,6 +661,43 @@ def format_ai_response_cell(signal, why, error_text=""):
     return f"{signal_text} | {detail}"
 
 
+def wrap_panel_text(value, width=26):
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    return textwrap.fill(text, width=max(16, int(width)))
+
+
+def market_feed_status(market_state):
+    last_message_at = float(market_state.get("last_message_at") or 0.0)
+    last_open_at = float(market_state.get("last_open_at") or 0.0)
+    last_error = str(market_state.get("last_error") or "").strip()
+    if last_message_at > 0:
+        feed_age = max(0.0, now_ts() - last_message_at)
+        if feed_age <= FEED_STALE_AFTER_SECONDS and not last_error:
+            return {
+                "label": "HL Feed: LIVE",
+                "detail": f"last tick {feed_age:.1f}s ago",
+                "style": "bold green",
+            }
+        return {
+            "label": "HL Feed: STALE",
+            "detail": f"last tick {feed_age:.1f}s ago",
+            "style": "bold yellow",
+        }
+    if last_open_at > 0 and not last_error:
+        return {
+            "label": "HL Feed: CONNECTING",
+            "detail": f"ws open {format_ts(last_open_at) or 'n/a'}",
+            "style": "bold yellow",
+        }
+    return {
+        "label": "HL Feed: DISCONNECTED",
+        "detail": last_error or "no market data yet",
+        "style": "bold red",
+    }
+
+
 def extract_openai_output_text(response_data):
     top_level = response_data.get("output_text")
     if isinstance(top_level, str) and top_level.strip():
@@ -900,9 +940,12 @@ class SandboxTrader:
         self.last_signal_at = 0.0
         self.next_signal_at = self.start_time
         self.last_signal_error = ""
+        self.last_provider_results = {}
+        self.last_provider_errors = {}
         self.state_path = STATE_PATH
         self.snapshot_dir = SNAPSHOT_DIR
         self.last_snapshot_key = ""
+        self.snapshot_thread = None
         self.last_state_save_at = 0.0
         self.resume_note = ""
         self.lock = threading.Lock()
@@ -1118,22 +1161,30 @@ class SandboxTrader:
         snapshot_key = str(int(self.next_signal_at))
         if snapshot_key == self.last_snapshot_key:
             return
+        if self.snapshot_thread and self.snapshot_thread.is_alive():
+            return
         os.makedirs(self.snapshot_dir, exist_ok=True)
         stamp = datetime.fromtimestamp(self.next_signal_at, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         png_path = os.path.join(self.snapshot_dir, f"tradebot_{stamp}.png")
         text_path = os.path.join(self.snapshot_dir, f"tradebot_{stamp}.txt")
-        dashboard_text = render_dashboard_text(self, market)
-        try:
-            write_text_image(dashboard_text, png_path)
-            self.last_snapshot_key = snapshot_key
-            self.log(f"Saved dashboard snapshot -> {png_path}")
-            self.persist_state(force=True)
-            return
-        except Exception as exc:
-            Path(text_path).write_text(dashboard_text, encoding="utf-8")
-            self.last_snapshot_key = snapshot_key
-            self.log(f"Saved text snapshot -> {text_path} | png unavailable: {exc}")
-            self.persist_state(force=True)
+        self.last_snapshot_key = snapshot_key
+
+        def save_snapshot():
+            dashboard_text = render_dashboard_text(self, market)
+            try:
+                write_text_image(dashboard_text, png_path)
+                self.log(f"Saved dashboard snapshot -> {png_path}")
+                return
+            except Exception as exc:
+                Path(text_path).write_text(dashboard_text, encoding="utf-8")
+                self.log(f"Saved text snapshot -> {text_path} | png unavailable: {exc}")
+
+        self.snapshot_thread = threading.Thread(
+            target=save_snapshot,
+            daemon=True,
+            name="dashboard-snapshot-writer",
+        )
+        self.snapshot_thread.start()
 
     def live_pnl(self):
         if not self.position:
@@ -1207,7 +1258,6 @@ class SandboxTrader:
         payload = {
             "model": model,
             "input": prompt_text,
-            "tools": [{"type": "web_search_preview"}],
             "max_output_tokens": 10000,
         }
         return self._call_with_retries(
@@ -1406,6 +1456,10 @@ class SandboxTrader:
             self.last_signal_why = signal_result["why"]
             self.last_signal_sources = list(signal_result["sources"])
             self.last_signal_error = ""
+            self.last_provider_results = {
+                item["provider"]: dict(item) for item in signal_result.get("provider_results", [])
+            }
+            self.last_provider_errors = dict(signal_result.get("provider_errors", {}))
             fear_greed = signal_result.get("fear_greed", {})
             self._append_ai_responses_csv(
                 signal_time,
@@ -1435,6 +1489,7 @@ class SandboxTrader:
         except Exception as exc:
             self.last_signal_why = ""
             self.last_signal_sources = []
+            self.last_provider_errors = {}
             self._defer_signal(f"AI signal error -> {exc}", SIGNAL_RETRY_DELAY_SECONDS)
             return
         self.last_signal_at = signal_time
@@ -1722,16 +1777,47 @@ def build_logs_panel(trader):
 
 
 def build_signal_rationale_panel(trader):
-    lines = [Text.assemble(("Signal: ", HEADING_STYLE), (trader.last_signal, BODY_STYLE))]
+    summary_lines = [Text.assemble(("Signal: ", HEADING_STYLE), (trader.last_signal, BODY_STYLE))]
     if trader.last_signal_why:
-        lines.append(Text.assemble(("Why: ", HEADING_STYLE), (trader.last_signal_why, BODY_STYLE)))
+        summary_lines.append(Text.assemble(("Why: ", HEADING_STYLE), (trader.last_signal_why, BODY_STYLE)))
     if trader.last_signal_sources:
-        lines.append(Text("Sources:", style=HEADING_STYLE))
+        summary_lines.append(Text("Sources:", style=HEADING_STYLE))
         for index, source in enumerate(trader.last_signal_sources, start=1):
-            lines.append(Text.assemble((f"{index}. ", HEADING_STYLE), (source, BODY_STYLE)))
-    if len(lines) == 1 and trader.last_signal == "PENDING":
-        lines.append(Text("No model rationale yet.", style=BODY_STYLE))
-    return Group(*lines)
+            summary_lines.append(Text.assemble((f"{index}. ", HEADING_STYLE), (source, BODY_STYLE)))
+
+    provider_table = Table(expand=True, padding=(0, 1), pad_edge=False, collapse_padding=False, box=box.SIMPLE_HEAD)
+    for provider in AI_PROVIDER_ORDER:
+        provider_table.add_column(provider.title(), header_style=HEADING_STYLE, style=BODY_STYLE)
+
+    row = []
+    has_provider_output = False
+    for provider in AI_PROVIDER_ORDER:
+        result = trader.last_provider_results.get(provider)
+        error_text = trader.last_provider_errors.get(provider, "")
+        if result:
+            has_provider_output = True
+            detail_parts = [wrap_panel_text(result.get("why", ""), width=24) or "No rationale returned."]
+            sources = [str(item).strip() for item in result.get("sources", []) if str(item).strip()]
+            if sources:
+                detail_parts.append(wrap_panel_text("Sources: " + " | ".join(sources), width=24))
+            cell_text = f"{result.get('signal', 'NO_RESPONSE')}\n\n" + "\n\n".join(
+                part for part in detail_parts if part
+            )
+            row.append(cell_text)
+            continue
+        if error_text:
+            has_provider_output = True
+            row.append(f"NO_RESPONSE\n\n{wrap_panel_text(error_text, width=24)}")
+            continue
+        row.append("Waiting for next signal.")
+
+    if has_provider_output:
+        provider_table.add_row(*row)
+        return Group(*summary_lines, Text(""), provider_table)
+
+    if len(summary_lines) == 1 and trader.last_signal == "PENDING":
+        summary_lines.append(Text("No model rationale yet.", style=BODY_STYLE))
+    return Group(*summary_lines)
 
 
 def build_dashboard(trader, market):
@@ -1740,16 +1826,24 @@ def build_dashboard(trader, market):
         **state,
         "minute_prices": market.get_minute_prices(),
     }
+    feed_status = market_feed_status(market_state)
     status_text = trader.last_signal_error or (state["last_error"] if state["last_error"] else ("Managing position." if trader.position else "Waiting for next signal."))
-    header = [
-        Text(
-            dashboard_title_text(),
-            style=BODY_STYLE,
-        ),
+    header_table = Table.grid(expand=True)
+    header_table.add_column(ratio=1)
+    header_table.add_column(justify="right", no_wrap=True)
+    header_table.add_row(
+        Text(dashboard_title_text(), style=BODY_STYLE),
+        Text(feed_status["label"], style=feed_status["style"]),
+    )
+    header_table.add_row(
         Text(
             f"BTC only | Runtime {int(now_ts() - trader.start_time)}s | WS open {format_ts(state['last_open_at']) or 'n/a'}",
             style=HEADING_STYLE,
         ),
+        Text(feed_status["detail"], style=HEADING_STYLE),
+    )
+    header = [
+        header_table,
         Text(status_text, style="bold yellow" if (trader.last_signal_error or state["last_error"]) else "bold green"),
     ]
     sections = [
