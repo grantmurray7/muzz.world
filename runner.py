@@ -1070,6 +1070,8 @@ class SandboxTrader:
             "logs": list(self.logs),
             "last_signal": self.last_signal,
             "last_signal_why": self.last_signal_why,
+            "last_provider_results": self.last_provider_results,
+            "last_provider_errors": self.last_provider_errors,
             "last_signal_at": self.last_signal_at,
             "next_signal_at": self.next_signal_at,
             "last_snapshot_key": self.last_snapshot_key,
@@ -1109,6 +1111,10 @@ class SandboxTrader:
             self.last_signal = str(payload.get("last_signal", self.last_signal))
             self.last_signal_why = str(payload.get("last_signal_why", self.last_signal_why))
             self.last_signal_sources = []
+            raw_provider_results = payload.get("last_provider_results", {})
+            self.last_provider_results = raw_provider_results if isinstance(raw_provider_results, dict) else {}
+            raw_provider_errors = payload.get("last_provider_errors", {})
+            self.last_provider_errors = raw_provider_errors if isinstance(raw_provider_errors, dict) else {}
             self.last_signal_at = float(payload.get("last_signal_at", self.last_signal_at) or 0.0)
             self.next_signal_at = float(payload.get("next_signal_at", self.next_signal_at) or self.start_time)
             self.last_snapshot_key = str(payload.get("last_snapshot_key", self.last_snapshot_key))
@@ -1862,9 +1868,11 @@ def main():
             console=console,
             refresh_per_second=LIVE_REFRESH_HZ,
             screen=LIVE_SCREEN,
+            auto_refresh=False,
+            vertical_overflow="crop",
         ) as live:
             while not stop_event.is_set():
-                live.update(build_dashboard(trader, market))
+                live.update(build_dashboard(trader, market), refresh=True)
                 time.sleep(1.0 / LIVE_REFRESH_HZ)
     finally:
         stop_event.set()
