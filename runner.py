@@ -126,6 +126,7 @@ SETTINGS_PATH = os.path.join(BASE_DIR, "settings.txt")
 LOG_CSV_PATH = os.path.join(BASE_DIR, "log.csv")
 OPENAI_DEBUG_CSV_PATH = os.path.join(BASE_DIR, "openai_debug.csv")
 TRADES_CSV_PATH = os.path.join(BASE_DIR, "trades.csv")
+AI_RESPONSES_CSV_PATH = os.path.join(BASE_DIR, "ai_responses.csv")
 STATE_PATH = os.path.join(BASE_DIR, "state.txt")
 SNAPSHOT_DIR = r"G:\My Drive\+tradebot"
 PANEL_BORDER_STYLE = "rgb(237,125,175)"
@@ -155,6 +156,7 @@ DISPLAY_MINUTE_SECONDS = 60
 PRICE_HISTORY_SECONDS = (DISPLAY_COLUMNS + 2) * DISPLAY_MINUTE_SECONDS
 FEED_STALE_AFTER_SECONDS = 20.0
 LIVE_REFRESH_HZ = 2
+LIVE_SCREEN = False
 OPENAI_TIMEOUT_SECONDS = 90
 OPENAI_MAX_ATTEMPTS = 3
 OPENAI_RETRY_DELAY_SECONDS = 3
@@ -463,6 +465,14 @@ def sanitize_request_headers(headers):
     return sanitized
 
 
+def format_ai_response_cell(signal, why, error_text=""):
+    signal_text = str(signal or "").strip().upper() or "NO_RESPONSE"
+    detail = str(why or error_text or "").strip()
+    if not detail:
+        return signal_text
+    return f"{signal_text} | {detail}"
+
+
 def extract_openai_output_text(response_data):
     top_level = response_data.get("output_text")
     if isinstance(top_level, str) and top_level.strip():
@@ -714,9 +724,11 @@ class SandboxTrader:
         self.log_csv_path = LOG_CSV_PATH
         self.openai_debug_csv_path = OPENAI_DEBUG_CSV_PATH
         self.trades_csv_path = TRADES_CSV_PATH
+        self.ai_responses_csv_path = AI_RESPONSES_CSV_PATH
         self._reset_log_csv()
         self._reset_openai_debug_csv()
         self._ensure_trades_csv()
+        self._reset_ai_responses_csv()
         set_terminal_title(dashboard_title_text())
         restored = self._restore_state()
         self.log("BTC sandbox runner started.")
@@ -757,6 +769,23 @@ class SandboxTrader:
                     "parsed_why",
                     "parsed_sources",
                     "error",
+                ]
+            )
+
+    def _reset_ai_responses_csv(self):
+        with open(self.ai_responses_csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "timestamp_utc",
+                    "epoch_ts",
+                    "fear_greed",
+                    "gemini",
+                    "openai",
+                    "claude",
+                    "perplexity",
+                    "grok",
+                    "consensus",
                 ]
             )
 
@@ -842,6 +871,26 @@ class SandboxTrader:
                     f"{float(trade['equity_after']):.4f}",
                 ]
             )
+
+    def _append_ai_responses_csv(self, ts, fear_greed, provider_results, provider_errors, consensus):
+        provider_result_map = {item["provider"]: item for item in provider_results}
+        provider_error_map = dict(provider_errors or {})
+        fear_greed_cell = (
+            f"{fear_greed.get('value', '')} {fear_greed.get('classification', '')}".strip()
+            or fear_greed.get("signal", "")
+            or ""
+        )
+        row = [iso_utc(ts), f"{ts:.6f}", fear_greed_cell]
+        for provider in AI_PROVIDER_ORDER:
+            result = provider_result_map.get(provider)
+            if result:
+                row.append(format_ai_response_cell(result["signal"], result["why"]))
+            else:
+                row.append(format_ai_response_cell("", "", provider_error_map.get(provider, "")))
+        row.append(format_ai_response_cell(consensus["signal"], consensus["why"]))
+        with open(self.ai_responses_csv_path, "a", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(row)
 
     def log(self, message):
         ts = now_ts()
@@ -1206,7 +1255,7 @@ class SandboxTrader:
         fear_greed = fetch_fear_greed()
         prompt_text = build_ai_prompt(fear_greed)
         provider_results = []
-        provider_errors = []
+        provider_errors = {}
         provider_methods = {
             "gemini": self._query_gemini_signal,
             "openai": self._query_openai_signal,
@@ -1218,10 +1267,13 @@ class SandboxTrader:
             try:
                 provider_results.append(provider_methods[provider](prompt_text))
             except Exception as exc:
-                provider_errors.append(f"{provider}: {exc}")
+                provider_errors[provider] = str(exc)
                 self.log(f"{provider} signal error -> {exc}")
         if not provider_results:
-            raise RuntimeError("All AI providers failed: " + " | ".join(provider_errors))
+            raise RuntimeError(
+                "All AI providers failed: "
+                + " | ".join(f"{provider}: {error_text}" for provider, error_text in provider_errors.items())
+            )
         consensus = self._summarize_consensus(provider_results, fear_greed)
         consensus["provider_results"] = provider_results
         consensus["provider_errors"] = provider_errors
@@ -1243,6 +1295,13 @@ class SandboxTrader:
             self.last_signal_sources = list(signal_result["sources"])
             self.last_signal_error = ""
             fear_greed = signal_result.get("fear_greed", {})
+            self._append_ai_responses_csv(
+                signal_time,
+                fear_greed,
+                signal_result.get("provider_results", []),
+                signal_result.get("provider_errors", {}),
+                signal_result,
+            )
             if fear_greed.get("value") or fear_greed.get("classification"):
                 self.log(
                     "Fear & Greed -> "
@@ -1622,7 +1681,12 @@ def main():
     worker.start()
 
     try:
-        with Live(build_dashboard(trader, market), console=console, refresh_per_second=LIVE_REFRESH_HZ, screen=True) as live:
+        with Live(
+            build_dashboard(trader, market),
+            console=console,
+            refresh_per_second=LIVE_REFRESH_HZ,
+            screen=LIVE_SCREEN,
+        ) as live:
             while not stop_event.is_set():
                 live.update(build_dashboard(trader, market))
                 time.sleep(1.0 / LIVE_REFRESH_HZ)
