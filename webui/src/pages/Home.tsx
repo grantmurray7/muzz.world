@@ -16,7 +16,37 @@ const emptyState: AppStateResponse = {
   app: { title: "muzz.world sandbox control room", subtitle: "", build_label: "-", build_modified_at: "-", runtime_seconds: 0 },
   quotes: { bid: 0, ask: 0, mid: 0, spread_bps: 0, last_tick_at: 0, feed_label: "Starting", feed_detail: "waiting", feed_style: "yellow" },
   account: { available: 0, equity: 0, live_pnl: 0, position_side: "FLAT", next_signal_at: 0, next_signal_in: 0, leverage: 0, stack_fraction: 0, stop_loss_usdc: 0 },
-  signal: { last_signal: "PENDING", last_signal_why: "", last_signal_score: 0, last_signal_at: 0, last_signal_sources: [], last_error: "", providers: [] },
+  signal: {
+    last_signal: "PENDING",
+    last_signal_why: "",
+    last_signal_score: 0,
+    last_signal_at: 0,
+    last_signal_sources: [],
+    last_error: "",
+    background: {
+      fear_greed: { value: "", classification: "", signal: "" },
+      twitter_btc_15m: {
+        available: false,
+        tweet_count: 0,
+        valid_tweet_count: 0,
+        bullish_count: 0,
+        bearish_count: 0,
+        neutral_count: 0,
+        bullish_pct: 0,
+        bearish_pct: 0,
+        neutral_pct: 0,
+        avg_score: 0,
+        signal: "",
+        baseline_window_count: 0,
+        delta_bullish_pct: null,
+        delta_avg_score: null,
+        unavailable_reason: "",
+        summary: "",
+        window_minutes: 15,
+      },
+    },
+    providers: [],
+  },
   position: null,
   trades: [],
   logs: [],
@@ -160,6 +190,10 @@ export default function Home() {
   const data = state.data;
   const consensusTone =
     data.signal.last_signal === "LONG" ? "text-emerald-300" : data.signal.last_signal === "SHORT" ? "text-rose-300" : "text-zinc-100";
+  const fearGreed = data.signal.background.fear_greed;
+  const twitter = data.signal.background.twitter_btc_15m;
+  const twitterTone =
+    twitter.signal === "LONG" ? "text-emerald-300" : twitter.signal === "SHORT" ? "text-rose-300" : "text-zinc-100";
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.12),_transparent_32%),linear-gradient(180deg,#0b0c0f_0%,#11131a_48%,#090a0d_100%)] px-4 py-4 text-zinc-100 md:px-6 xl:px-8">
@@ -211,6 +245,41 @@ export default function Home() {
                 {data.signal.last_signal_why || "Waiting for the first complete model cycle."}
               </p>
               {data.signal.last_error ? <p className="mt-2 text-sm leading-5 text-rose-300">{data.signal.last_error}</p> : null}
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="rounded-[24px] border border-white/10 bg-white/[0.03] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">Fear &amp; Greed</div>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  <div className="font-mono text-2xl font-semibold text-zinc-100">{fearGreed.value || "n/a"}</div>
+                  <div className="text-sm text-zinc-400">{fearGreed.classification || "waiting"}</div>
+                </div>
+                <div className="mt-2 text-xs uppercase tracking-[0.24em] text-zinc-500">
+                  Background {fearGreed.signal || "n/a"}
+                </div>
+              </div>
+              <div className="rounded-[24px] border border-white/10 bg-white/[0.03] px-4 py-3">
+                <div className="text-[10px] uppercase tracking-[0.28em] text-zinc-500">Twitter/X BTC 15m</div>
+                {twitter.available ? (
+                  <>
+                    <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <div className="font-mono text-2xl font-semibold text-zinc-100">{twitter.valid_tweet_count}</div>
+                      <div className="text-sm text-zinc-400">valid tweets</div>
+                      <div className={`font-mono text-sm ${twitterTone}`}>{twitter.signal || "NO_TRADE"}</div>
+                    </div>
+                    <div className="mt-2 text-sm text-zinc-300">
+                      Bull {twitter.bullish_pct.toFixed(1)}% | Bear {twitter.bearish_pct.toFixed(1)}% | Avg {twitter.avg_score >= 0 ? "+" : ""}
+                      {twitter.avg_score.toFixed(2)}
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      Baseline {twitter.baseline_window_count} windows
+                      {twitter.delta_bullish_pct !== null ? ` | Bull delta ${twitter.delta_bullish_pct >= 0 ? "+" : ""}${twitter.delta_bullish_pct.toFixed(1)} pts` : ""}
+                      {twitter.delta_avg_score !== null ? ` | Score delta ${twitter.delta_avg_score >= 0 ? "+" : ""}${twitter.delta_avg_score.toFixed(2)}` : ""}
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-2 text-sm text-zinc-500">{twitter.unavailable_reason || "Waiting for next cycle."}</div>
+                )}
+              </div>
             </div>
             <div className="text-[10px] uppercase tracking-[0.32em] text-cyan-200/70">Consensus</div>
             <div className="grid gap-2.5 xl:grid-cols-5">

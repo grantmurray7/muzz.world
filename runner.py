@@ -45,6 +45,7 @@ WEB_DIST_DIR = os.path.join(BASE_DIR, "webui", "dist")
 BTC_PERP = "BTC"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1&format=json"
+TWITTERAPI_ADVANCED_SEARCH_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 CLAUDE_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 PERPLEXITY_SONAR_URL = "https://api.perplexity.ai/v1/sonar"
@@ -62,6 +63,10 @@ LEVERAGE = 10.0
 TAKER_FEE_PCT = 0.015
 STOP_LOSS_USDC = 250.0
 SIGNAL_INTERVAL_SECONDS = 15 * 60
+TWITTER_SENTIMENT_WINDOW_SECONDS = 15 * 60
+TWITTER_SENTIMENT_LIMIT = 100
+TWITTER_SENTIMENT_AUTHOR_CAP = 2
+TWITTER_SENTIMENT_BASELINE_WINDOWS = 24
 DISPLAY_COLUMNS = 15
 DISPLAY_MINUTE_SECONDS = 60
 PRICE_HISTORY_SECONDS = (DISPLAY_COLUMNS + 2) * DISPLAY_MINUTE_SECONDS
@@ -78,11 +83,82 @@ OPENAI_RETRY_DELAY_SECONDS = 2
 LATEST_CHANGE_SUMMARY = "Browser dashboard replaces the terminal renderer"
 FEAR_GREED_LONG_THRESHOLD = 30
 FEAR_GREED_SHORT_THRESHOLD = 70
+TWITTER_SENTIMENT_BULLISH_THRESHOLD = 0.2
+TWITTER_SENTIMENT_BEARISH_THRESHOLD = -0.2
+TWITTER_SENTIMENT_LONG_THRESHOLD = 0.12
+TWITTER_SENTIMENT_SHORT_THRESHOLD = -0.12
 
 VALID_SIGNALS = {"LONG", "SHORT", "NO_TRADE"}
 AI_PROVIDER_ORDER = ("gemini", "openai", "claude", "perplexity", "grok")
 SIGNAL_SCORE_MAP = {"SHORT": 1, "NO_TRADE": 0, "LONG": -1}
 CONSENSUS_SCORE_THRESHOLD = 2
+TWITTER_SPAM_KEYWORDS = (
+    "telegram",
+    "signal",
+    "join now",
+    "accuracy",
+    "vip",
+    "premium",
+    "dm me",
+    "whatsapp",
+    "discord",
+    "members only",
+    "100x",
+    "guaranteed",
+    "copy trade",
+    "follow for more",
+    "subscribe",
+)
+TWITTER_BULLISH_PHRASES = {
+    "bullish": 1.4,
+    "moon": 1.6,
+    "pump": 1.2,
+    "breakout": 1.4,
+    "rip": 1.0,
+    "squeeze": 1.1,
+    "long": 0.8,
+    "buy": 0.8,
+    "bought": 0.8,
+    "bid": 0.7,
+    "support": 0.6,
+    "bounce": 0.8,
+    "higher": 0.5,
+    "uptrend": 1.1,
+    "accumulation": 1.0,
+    "strong": 0.8,
+    "strength": 0.7,
+    "green": 0.5,
+    "recovery": 0.9,
+}
+TWITTER_BEARISH_PHRASES = {
+    "bearish": -1.4,
+    "dump": -1.2,
+    "breakdown": -1.4,
+    "crash": -1.5,
+    "short": -0.8,
+    "sell": -0.8,
+    "sold": -0.8,
+    "rejection": -1.0,
+    "resistance": -0.6,
+    "lower": -0.5,
+    "downtrend": -1.1,
+    "weak": -0.8,
+    "weakness": -0.8,
+    "red": -0.5,
+    "capitulation": -1.5,
+    "flush": -1.0,
+    "rug": -1.3,
+    "panic": -1.0,
+}
+TWITTER_INTENSIFIERS = {
+    "very": 1.2,
+    "super": 1.25,
+    "extremely": 1.35,
+    "massively": 1.35,
+    "strongly": 1.2,
+    "really": 1.15,
+}
+TWITTER_NEGATIONS = {"not", "no", "never", "isnt", "isn't", "dont", "don't", "cant", "can't", "without"}
 
 PROMPT = """I am trading on the Hyperliquid BTC Perpetual market using taker orders and my fees are 0.015% and 0.015% each way, so I need to clear 0.03% on any trade to make profit.
 
@@ -91,7 +167,7 @@ Decide the single best directional trade for the next 15 minutes using only the 
 Priority order:
 1. Immediate BTC market structure and momentum.
 2. Order book pressure, spread, and short-term range positioning.
-3. Background sentiment metrics explicitly included in this prompt, such as Fear & Greed if present.
+3. Background sentiment metrics explicitly included in this prompt, such as Fear & Greed and Twitter/X BTC sentiment if present.
 
 Hard rules:
 - Do not introduce ETF flows, Federal Reserve decisions, macro commentary, external news, or any other information unless it is explicitly included in this prompt.
@@ -394,6 +470,14 @@ def fear_greed_to_signal(value_text):
     return "NO_TRADE"
 
 
+def twitter_sentiment_to_signal(avg_score, bullish_pct, bearish_pct):
+    if avg_score >= TWITTER_SENTIMENT_LONG_THRESHOLD and bullish_pct >= 55.0:
+        return "LONG"
+    if avg_score <= TWITTER_SENTIMENT_SHORT_THRESHOLD and bearish_pct >= 55.0:
+        return "SHORT"
+    return "NO_TRADE"
+
+
 def fetch_fear_greed():
     try:
         data = read_json_response(FEAR_GREED_URL, None, timeout=15)
@@ -411,18 +495,307 @@ def fetch_fear_greed():
     }
 
 
-def build_ai_prompt(snapshot, fear_greed):
-    sentiment_context = {
-        "fear_greed_value": fear_greed.get("value", ""),
-        "fear_greed_classification": fear_greed.get("classification", ""),
-        "fear_greed_background_signal": fear_greed.get("signal", ""),
-        "note": "Treat Fear & Greed as background BTC sentiment context, not a standalone trading command.",
+def _clean_tweet_text(text):
+    text = re.sub(r"https?://\S+", " ", str(text or ""))
+    text = re.sub(r"[@#]\w+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _tweet_author_key(tweet):
+    for key in ("author_id", "authorId", "user_id", "userId", "username", "screen_name", "screenName"):
+        value = tweet.get(key)
+        if value:
+            return str(value).strip().lower()
+    author = tweet.get("author")
+    if isinstance(author, dict):
+        for key in ("userName", "username", "screen_name", "id"):
+            value = author.get(key)
+            if value:
+                return str(value).strip().lower()
+    user = tweet.get("user")
+    if isinstance(user, dict):
+        for key in ("userName", "username", "screen_name", "id"):
+            value = user.get(key)
+            if value:
+                return str(value).strip().lower()
+    return ""
+
+
+def _is_spammy_tweet(raw_text, cleaned_text):
+    lowered = cleaned_text.lower()
+    if len(cleaned_text) < 24:
+        return True, "too_short"
+    if len(cleaned_text.split()) < 5:
+        return True, "too_few_words"
+    if any(keyword in lowered for keyword in TWITTER_SPAM_KEYWORDS):
+        return True, "spam_keyword"
+    if raw_text.count("http") > 1:
+        return True, "too_many_links"
+    if raw_text.count("$") > 4:
+        return True, "too_many_cashtags"
+    if raw_text.count("#") > 4:
+        return True, "too_many_hashtags"
+    alpha_count = sum(1 for char in cleaned_text if char.isalpha())
+    if alpha_count < max(10, int(len(cleaned_text) * 0.45)):
+        return True, "low_alpha_ratio"
+    return False, ""
+
+
+def _score_tweet_sentiment(text):
+    tokens = re.findall(r"[a-z0-9']+", text.lower())
+    if not tokens:
+        return 0.0
+    total = 0.0
+    matched = 0
+    for index, token in enumerate(tokens):
+        if token in TWITTER_BULLISH_PHRASES:
+            weight = TWITTER_BULLISH_PHRASES[token]
+        elif token in TWITTER_BEARISH_PHRASES:
+            weight = TWITTER_BEARISH_PHRASES[token]
+        else:
+            continue
+        window = tokens[max(0, index - 3) : index]
+        if any(item in TWITTER_NEGATIONS for item in window):
+            weight *= -0.85
+        if window:
+            intensifier = max((TWITTER_INTENSIFIERS.get(item, 1.0) for item in window), default=1.0)
+            weight *= intensifier
+        total += weight
+        matched += 1
+    if not matched:
+        return 0.0
+    if "higher high" in text.lower():
+        total += 0.6
+    if "lower low" in text.lower():
+        total -= 0.6
+    if "bear trap" in text.lower():
+        total += 0.4
+    if "bull trap" in text.lower():
+        total -= 0.4
+    normalized = total / (matched + 1.5)
+    return clamp(normalized, -1.0, 1.0)
+
+
+def _extract_twitterapi_tweets(payload):
+    if isinstance(payload, dict):
+        tweets = payload.get("tweets")
+        if isinstance(tweets, list):
+            return tweets
+        data = payload.get("data")
+        if isinstance(data, dict):
+            nested = data.get("tweets")
+            if isinstance(nested, list):
+                return nested
+        if isinstance(data, list):
+            return data
+    return []
+
+
+def _summarize_twitter_baseline(history):
+    rows = [item for item in history if item.get("valid_tweet_count", 0) > 0]
+    if not rows:
+        return {
+            "window_count": 0,
+            "avg_score": None,
+            "bullish_pct": None,
+            "bearish_pct": None,
+            "valid_tweet_count": None,
+        }
+    count = len(rows)
+    return {
+        "window_count": count,
+        "avg_score": sum(item["avg_score"] for item in rows) / count,
+        "bullish_pct": sum(item["bullish_pct"] for item in rows) / count,
+        "bearish_pct": sum(item["bearish_pct"] for item in rows) / count,
+        "valid_tweet_count": sum(item["valid_tweet_count"] for item in rows) / count,
     }
+
+
+def _build_twitter_summary(metrics):
+    if not metrics.get("available"):
+        return metrics.get("summary", "Twitter/X BTC sentiment unavailable.")
+    baseline = metrics.get("baseline") or {}
+    baseline_bits = []
+    if baseline.get("window_count"):
+        baseline_bits.append(
+            f"vs {int(baseline['window_count'])}-window baseline bullish {baseline['bullish_pct']:.1f}%"
+        )
+        if metrics.get("delta_bullish_pct") is not None:
+            baseline_bits[-1] += f" ({metrics['delta_bullish_pct']:+.1f} pts)"
+        baseline_bits.append(f"avg score {baseline['avg_score']:+.2f}")
+        if metrics.get("delta_avg_score") is not None:
+            baseline_bits[-1] += f" ({metrics['delta_avg_score']:+.2f})"
+    baseline_text = f" {'; '.join(baseline_bits)}." if baseline_bits else "."
+    return (
+        f"Twitter/X BTC 15m sentiment: {metrics['valid_tweet_count']} valid tweets from {metrics['tweet_count']} fetched, "
+        f"{metrics['bullish_pct']:.1f}% bullish, {metrics['bearish_pct']:.1f}% bearish, "
+        f"avg score {metrics['avg_score']:+.2f}, background signal {metrics['signal'] or 'NO_TRADE'}"
+        f"{baseline_text}"
+    )
+
+
+def fetch_twitter_btc_sentiment(settings, history):
+    api_key = settings.get("TWITTERAPI_API_KEY", "").strip()
+    empty_baseline = _summarize_twitter_baseline(history)
+    base = {
+        "available": False,
+        "query": "",
+        "tweet_count": 0,
+        "valid_tweet_count": 0,
+        "bullish_count": 0,
+        "bearish_count": 0,
+        "neutral_count": 0,
+        "bullish_pct": 0.0,
+        "bearish_pct": 0.0,
+        "neutral_pct": 0.0,
+        "avg_score": 0.0,
+        "signal": "",
+        "baseline": empty_baseline,
+        "baseline_window_count": int(empty_baseline.get("window_count") or 0),
+        "delta_bullish_pct": None,
+        "delta_avg_score": None,
+        "unavailable_reason": "",
+        "summary": "",
+        "window_minutes": 15,
+    }
+    if not api_key:
+        base["unavailable_reason"] = "TWITTERAPI_API_KEY missing from setup/settings.txt"
+        base["summary"] = "Twitter/X BTC 15m sentiment unavailable: TWITTERAPI_API_KEY missing."
+        return base
+    now = int(time.time())
+    since_time = now - TWITTER_SENTIMENT_WINDOW_SECONDS
+    query = f"$BTC lang:en since_time:{since_time}"
+    params = urllib_parse.urlencode({"query": query, "limit": TWITTER_SENTIMENT_LIMIT})
+    url = f"{TWITTERAPI_ADVANCED_SEARCH_URL}?{params}"
+    try:
+        payload = read_json_response(
+            url,
+            None,
+            headers={"X-API-Key": api_key, "Accept": "application/json"},
+            timeout=20,
+        )
+    except Exception as exc:
+        base["query"] = query
+        base["unavailable_reason"] = str(exc)
+        base["summary"] = f"Twitter/X BTC 15m sentiment unavailable: {exc}"
+        return base
+
+    tweets = _extract_twitterapi_tweets(payload)
+    seen_texts = set()
+    author_counts = {}
+    scores = []
+    bullish_count = 0
+    bearish_count = 0
+    neutral_count = 0
+
+    for tweet in tweets:
+        raw_text = str((tweet or {}).get("text", "") or "")
+        cleaned_text = _clean_tweet_text(raw_text)
+        spammy, _reason = _is_spammy_tweet(raw_text, cleaned_text)
+        if spammy:
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", " ", cleaned_text.lower()).strip()
+        if not normalized or normalized in seen_texts:
+            continue
+        seen_texts.add(normalized)
+        author_key = _tweet_author_key(tweet)
+        if author_key:
+            author_count = author_counts.get(author_key, 0) + 1
+            author_counts[author_key] = author_count
+            if author_count > TWITTER_SENTIMENT_AUTHOR_CAP:
+                continue
+        score = _score_tweet_sentiment(cleaned_text)
+        scores.append(score)
+        if score >= TWITTER_SENTIMENT_BULLISH_THRESHOLD:
+            bullish_count += 1
+        elif score <= TWITTER_SENTIMENT_BEARISH_THRESHOLD:
+            bearish_count += 1
+        else:
+            neutral_count += 1
+
+    valid_tweet_count = len(scores)
+    if valid_tweet_count <= 0:
+        base["query"] = query
+        base["tweet_count"] = len(tweets)
+        base["unavailable_reason"] = "no valid tweets after filtering"
+        base["summary"] = "Twitter/X BTC 15m sentiment omitted for this cycle: no valid tweets after filtering."
+        return base
+
+    avg_score = sum(scores) / valid_tweet_count
+    bullish_pct = (bullish_count / valid_tweet_count) * 100.0
+    bearish_pct = (bearish_count / valid_tweet_count) * 100.0
+    neutral_pct = (neutral_count / valid_tweet_count) * 100.0
+    signal = twitter_sentiment_to_signal(avg_score, bullish_pct, bearish_pct)
+    result = {
+        "available": True,
+        "query": query,
+        "tweet_count": len(tweets),
+        "valid_tweet_count": valid_tweet_count,
+        "bullish_count": bullish_count,
+        "bearish_count": bearish_count,
+        "neutral_count": neutral_count,
+        "bullish_pct": bullish_pct,
+        "bearish_pct": bearish_pct,
+        "neutral_pct": neutral_pct,
+        "avg_score": avg_score,
+        "signal": signal,
+        "baseline": empty_baseline,
+        "baseline_window_count": int(empty_baseline.get("window_count") or 0),
+        "delta_bullish_pct": None,
+        "delta_avg_score": None,
+        "unavailable_reason": "",
+        "summary": "",
+        "window_minutes": 15,
+    }
+    baseline_avg_score = empty_baseline.get("avg_score")
+    baseline_bullish_pct = empty_baseline.get("bullish_pct")
+    if baseline_avg_score is not None:
+        result["delta_avg_score"] = avg_score - baseline_avg_score
+    if baseline_bullish_pct is not None:
+        result["delta_bullish_pct"] = bullish_pct - baseline_bullish_pct
+    result["summary"] = _build_twitter_summary(result)
+    return result
+
+
+def build_ai_prompt(snapshot, fear_greed, twitter_sentiment):
+    sentiment_context = {
+        "fear_greed": {
+            "value": fear_greed.get("value", ""),
+            "classification": fear_greed.get("classification", ""),
+            "background_signal": fear_greed.get("signal", ""),
+            "note": "Treat Fear & Greed as background BTC sentiment context, not a standalone trading command.",
+        }
+    }
+    if twitter_sentiment.get("available"):
+        sentiment_context["twitter_btc_15m"] = {
+            "tweet_count_fetched": twitter_sentiment.get("tweet_count", 0),
+            "tweet_count_valid": twitter_sentiment.get("valid_tweet_count", 0),
+            "bullish_tweet_count": twitter_sentiment.get("bullish_count", 0),
+            "bearish_tweet_count": twitter_sentiment.get("bearish_count", 0),
+            "neutral_tweet_count": twitter_sentiment.get("neutral_count", 0),
+            "bullish_pct": round_or_none(twitter_sentiment.get("bullish_pct"), 1),
+            "bearish_pct": round_or_none(twitter_sentiment.get("bearish_pct"), 1),
+            "neutral_pct": round_or_none(twitter_sentiment.get("neutral_pct"), 1),
+            "avg_score": round_or_none(twitter_sentiment.get("avg_score"), 3),
+            "background_signal": twitter_sentiment.get("signal", ""),
+            "baseline_window_count": twitter_sentiment.get("baseline_window_count", 0),
+            "baseline_bullish_pct": round_or_none(
+                (twitter_sentiment.get("baseline") or {}).get("bullish_pct"), 1
+            ),
+            "baseline_avg_score": round_or_none(
+                (twitter_sentiment.get("baseline") or {}).get("avg_score"), 3
+            ),
+            "delta_bullish_pct": round_or_none(twitter_sentiment.get("delta_bullish_pct"), 1),
+            "delta_avg_score": round_or_none(twitter_sentiment.get("delta_avg_score"), 3),
+            "summary": twitter_sentiment.get("summary", ""),
+            "note": "This is filtered 15-minute BTC social sentiment from Twitter/X and should be treated as background context only.",
+        }
     return (
         PROMPT
         + "\n\nFresh market snapshot:\n"
         + json.dumps(snapshot, separators=(",", ":"), ensure_ascii=True)
-        + "\n\nBackground sentiment metric:\n"
+        + "\n\nBackground sentiment metrics:\n"
         + json.dumps(sentiment_context, separators=(",", ":"), ensure_ascii=True)
     )
 
@@ -564,7 +937,7 @@ def signal_return_pct(signal_value, entry_price, exit_price):
     return directional_move_pct - (TAKER_FEE_PCT * 2.0)
 
 
-def compute_consensus(provider_results, fear_greed):
+def compute_consensus(provider_results, fear_greed, twitter_sentiment):
     counts = {signal: 0 for signal in VALID_SIGNALS}
     total_score = 0
     vote_summary = []
@@ -597,6 +970,14 @@ def compute_consensus(provider_results, fear_greed):
     if fear_summary or fear_classification:
         why_parts.append(
             f"Fear & Greed background metric: {fear_summary or 'n/a'} {fear_classification}".strip() + "."
+        )
+    if twitter_sentiment.get("available"):
+        why_parts.append(
+            "Twitter/X 15m BTC sentiment: "
+            f"{twitter_sentiment.get('valid_tweet_count', 0)} valid tweets, "
+            f"{twitter_sentiment.get('bullish_pct', 0.0):.1f}% bullish, "
+            f"{twitter_sentiment.get('bearish_pct', 0.0):.1f}% bearish, "
+            f"avg score {twitter_sentiment.get('avg_score', 0.0):+.2f}."
         )
     return {
         "signal": final_signal,
@@ -769,6 +1150,28 @@ class SandboxTrader:
         self.last_signal_error = ""
         self.last_provider_results = {}
         self.last_provider_errors = {}
+        self.last_fear_greed = {"value": "", "classification": "", "signal": ""}
+        self.last_twitter_sentiment = {
+            "available": False,
+            "tweet_count": 0,
+            "valid_tweet_count": 0,
+            "bullish_count": 0,
+            "bearish_count": 0,
+            "neutral_count": 0,
+            "bullish_pct": 0.0,
+            "bearish_pct": 0.0,
+            "neutral_pct": 0.0,
+            "avg_score": 0.0,
+            "signal": "",
+            "baseline": {"window_count": 0, "avg_score": None, "bullish_pct": None, "bearish_pct": None, "valid_tweet_count": None},
+            "baseline_window_count": 0,
+            "delta_bullish_pct": None,
+            "delta_avg_score": None,
+            "unavailable_reason": "",
+            "summary": "",
+            "window_minutes": 15,
+        }
+        self.twitter_sentiment_history = deque(maxlen=TWITTER_SENTIMENT_BASELINE_WINDOWS)
         self.pending_strategy_evaluations = []
         self.state_path = STATE_PATH
         self.legacy_state_path = LEGACY_STATE_PATH
@@ -887,12 +1290,21 @@ class SandboxTrader:
     def _append_ai_responses_csv(self, ts, prompt_text, fear_greed, provider_results, provider_errors, consensus):
         provider_result_map = {item["provider"]: item for item in provider_results}
         provider_error_map = dict(provider_errors or {})
-        fear_greed_cell = (
+        twitter_sentiment = consensus.get("twitter_sentiment", {})
+        background_cell = (
             f"{fear_greed.get('value', '')} {fear_greed.get('classification', '')}".strip()
             or fear_greed.get("signal", "")
             or ""
         )
-        row = [iso_utc(ts), f"{ts:.6f}", prompt_text, fear_greed_cell]
+        if twitter_sentiment.get("available"):
+            twitter_cell = (
+                f"X15m {twitter_sentiment.get('valid_tweet_count', 0)} valid, "
+                f"{twitter_sentiment.get('bullish_pct', 0.0):.1f}% bull, "
+                f"{twitter_sentiment.get('bearish_pct', 0.0):.1f}% bear, "
+                f"avg {twitter_sentiment.get('avg_score', 0.0):+.2f}"
+            )
+            background_cell = f"{background_cell} | {twitter_cell}".strip(" |") if background_cell else twitter_cell
+        row = [iso_utc(ts), f"{ts:.6f}", prompt_text, background_cell]
         for provider in AI_PROVIDER_ORDER:
             result = provider_result_map.get(provider)
             if result:
@@ -956,6 +1368,9 @@ class SandboxTrader:
             "last_signal_score": self.last_signal_score,
             "last_provider_results": self.last_provider_results,
             "last_provider_errors": self.last_provider_errors,
+            "last_fear_greed": self.last_fear_greed,
+            "last_twitter_sentiment": self.last_twitter_sentiment,
+            "twitter_sentiment_history": list(self.twitter_sentiment_history),
             "last_signal_at": self.last_signal_at,
             "next_signal_at": self.next_signal_at,
             "pending_strategy_evaluations": self.pending_strategy_evaluations,
@@ -997,6 +1412,18 @@ class SandboxTrader:
             self.last_provider_results = raw_provider_results if isinstance(raw_provider_results, dict) else {}
             raw_provider_errors = payload.get("last_provider_errors", {})
             self.last_provider_errors = raw_provider_errors if isinstance(raw_provider_errors, dict) else {}
+            raw_fear_greed = payload.get("last_fear_greed", self.last_fear_greed)
+            self.last_fear_greed = raw_fear_greed if isinstance(raw_fear_greed, dict) else dict(self.last_fear_greed)
+            raw_twitter_sentiment = payload.get("last_twitter_sentiment", self.last_twitter_sentiment)
+            self.last_twitter_sentiment = (
+                raw_twitter_sentiment if isinstance(raw_twitter_sentiment, dict) else dict(self.last_twitter_sentiment)
+            )
+            raw_twitter_history = payload.get("twitter_sentiment_history", [])
+            if isinstance(raw_twitter_history, list):
+                self.twitter_sentiment_history = deque(
+                    [item for item in raw_twitter_history if isinstance(item, dict)],
+                    maxlen=TWITTER_SENTIMENT_BASELINE_WINDOWS,
+                )
             self.last_signal_at = float(payload.get("last_signal_at", self.last_signal_at) or 0.0)
             self.next_signal_at = float(payload.get("next_signal_at", self.next_signal_at) or self.start_time)
             pending = payload.get("pending_strategy_evaluations", [])
@@ -1216,7 +1643,8 @@ class SandboxTrader:
     def query_signal(self):
         snapshot = fetch_hyperliquid_snapshot()
         fear_greed = fetch_fear_greed()
-        prompt_text = build_ai_prompt(snapshot, fear_greed)
+        twitter_sentiment = fetch_twitter_btc_sentiment(self.settings, self.twitter_sentiment_history)
+        prompt_text = build_ai_prompt(snapshot, fear_greed, twitter_sentiment)
         provider_results = []
         provider_errors = {}
         provider_methods = {
@@ -1246,10 +1674,20 @@ class SandboxTrader:
             error.provider_errors = provider_errors
             raise error
         provider_results.sort(key=lambda item: AI_PROVIDER_ORDER.index(item["provider"]))
-        consensus = compute_consensus(provider_results, fear_greed)
+        if twitter_sentiment.get("available"):
+            self.twitter_sentiment_history.append(
+                {
+                    "avg_score": float(twitter_sentiment.get("avg_score", 0.0) or 0.0),
+                    "bullish_pct": float(twitter_sentiment.get("bullish_pct", 0.0) or 0.0),
+                    "bearish_pct": float(twitter_sentiment.get("bearish_pct", 0.0) or 0.0),
+                    "valid_tweet_count": int(twitter_sentiment.get("valid_tweet_count", 0) or 0),
+                }
+            )
+        consensus = compute_consensus(provider_results, fear_greed, twitter_sentiment)
         consensus["provider_results"] = provider_results
         consensus["provider_errors"] = provider_errors
         consensus["fear_greed"] = fear_greed
+        consensus["twitter_sentiment"] = twitter_sentiment
         consensus["snapshot"] = snapshot
         consensus["prompt_text"] = prompt_text
         return consensus
@@ -1321,6 +1759,9 @@ class SandboxTrader:
             }
             self.last_provider_errors = dict(signal_result.get("provider_errors", {}))
             fear_greed = signal_result.get("fear_greed", {})
+            twitter_sentiment = signal_result.get("twitter_sentiment", {})
+            self.last_fear_greed = dict(fear_greed)
+            self.last_twitter_sentiment = dict(twitter_sentiment)
             self._append_ai_responses_csv(
                 signal_time,
                 signal_result.get("prompt_text", ""),
@@ -1339,6 +1780,14 @@ class SandboxTrader:
                 self.log(
                     "Fear & Greed -> "
                     f"{fear_greed.get('value', 'n/a')} {fear_greed.get('classification', '')}".strip()
+                )
+            if twitter_sentiment.get("available"):
+                self.log(
+                    "Twitter/X BTC 15m -> "
+                    f"{twitter_sentiment.get('valid_tweet_count', 0)} valid | "
+                    f"bull {twitter_sentiment.get('bullish_pct', 0.0):.1f}% | "
+                    f"bear {twitter_sentiment.get('bearish_pct', 0.0):.1f}% | "
+                    f"avg {twitter_sentiment.get('avg_score', 0.0):+.2f}"
                 )
             for provider_result in signal_result.get("provider_results", []):
                 self.log(
@@ -1509,6 +1958,10 @@ class SandboxTrader:
                 "last_signal_at": self.last_signal_at,
                 "last_signal_sources": self.last_signal_sources,
                 "last_error": self.last_signal_error,
+                "background": {
+                    "fear_greed": self.last_fear_greed,
+                    "twitter_btc_15m": self.last_twitter_sentiment,
+                },
                 "providers": provider_cards,
             },
             "position": self.position,

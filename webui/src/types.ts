@@ -30,6 +30,32 @@ export interface ProviderState {
   error: string;
 }
 
+export interface FearGreedState {
+  value: string;
+  classification: string;
+  signal: string;
+}
+
+export interface TwitterSentimentState {
+  available: boolean;
+  tweet_count: number;
+  valid_tweet_count: number;
+  bullish_count: number;
+  bearish_count: number;
+  neutral_count: number;
+  bullish_pct: number;
+  bearish_pct: number;
+  neutral_pct: number;
+  avg_score: number;
+  signal: string;
+  baseline_window_count: number;
+  delta_bullish_pct: number | null;
+  delta_avg_score: number | null;
+  unavailable_reason: string;
+  summary: string;
+  window_minutes: number;
+}
+
 export interface SignalState {
   last_signal: string;
   last_signal_why: string;
@@ -37,6 +63,10 @@ export interface SignalState {
   last_signal_at: number;
   last_signal_sources: string[];
   last_error: string;
+  background: {
+    fear_greed: FearGreedState;
+    twitter_btc_15m: TwitterSentimentState;
+  };
   providers: ProviderState[];
 }
 
